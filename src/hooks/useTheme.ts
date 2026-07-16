@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { SETTING_KEYS, type ThemeMode } from "../types";
+import { terminalManager } from "../features/terminal/terminalManager";
 import { useSettings, useSetSetting } from "./useSettings";
 
 function resolve(mode: ThemeMode): "dark" | "light" {
@@ -12,7 +13,9 @@ function resolve(mode: ThemeMode): "dark" | "light" {
 }
 
 function apply(mode: ThemeMode) {
-  document.documentElement.dataset.theme = resolve(mode);
+  const resolved = resolve(mode);
+  document.documentElement.dataset.theme = resolved;
+  terminalManager.configure({ theme: resolved });
 }
 
 export function useTheme() {

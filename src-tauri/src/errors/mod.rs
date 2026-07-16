@@ -18,6 +18,9 @@ pub enum LumaError {
 
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    #[error("terminal error: {0}")]
+    Pty(String),
 }
 
 impl LumaError {
@@ -27,6 +30,7 @@ impl LumaError {
             LumaError::Migration(_) => "migration",
             LumaError::Io(_) => "io",
             LumaError::InvalidInput(_) => "invalid-input",
+            LumaError::Pty(_) => "pty",
         }
     }
 }

@@ -76,7 +76,7 @@ function SessionsPanel() {
     <div className="space-y-1">
       <button
         type="button"
-        onClick={openLocalSession}
+        onClick={() => void openLocalSession()}
         className="mb-2 flex w-full items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-sm text-foreground transition-colors hover:border-accent hover:text-accent"
       >
         <Plus size={14} /> New local terminal

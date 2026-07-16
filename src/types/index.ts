@@ -15,6 +15,8 @@ export type TerminalSession = {
   hostId?: string;
   status: "connecting" | "connected" | "disconnected" | "error";
   activePaneId: string;
+  exitCode?: number | null;
+  errorMessage?: string;
 };
 
 export type LumaError = {
@@ -26,4 +28,5 @@ export const SETTING_KEYS = {
   theme: "appearance.theme",
   fontSize: "terminal.fontSize",
   scrollback: "terminal.scrollback",
+  defaultShell: "terminal.defaultShell",
 } as const;

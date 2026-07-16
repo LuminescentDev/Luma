@@ -1,8 +1,11 @@
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
+import { useProfiles, useShells } from "../../hooks/useShells";
 import { useTheme } from "../../hooks/useTheme";
+import { parseShellRef, serializeShellRef } from "../../lib/terminal";
 import { SETTING_KEYS, type ThemeMode } from "../../types";
 import { cn } from "../../lib/utils";
+import { ProfilesSection } from "./ProfilesSection";
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: "dark", label: "Dark", icon: Moon },
@@ -14,9 +17,13 @@ export function SettingsScreen() {
   const { mode, setMode } = useTheme();
   const { data: settings, isLoading } = useSettings();
   const setSetting = useSetSetting();
+  const { data: shells } = useShells();
+  const { data: profiles } = useProfiles();
 
   const fontSize = Number(settings?.[SETTING_KEYS.fontSize] ?? 14);
   const scrollback = Number(settings?.[SETTING_KEYS.scrollback] ?? 5000);
+  const defaultShell = parseShellRef(settings?.[SETTING_KEYS.defaultShell]);
+  const defaultShellValue = defaultShell ? serializeShellRef(defaultShell) : "";
 
   return (
     <div className="h-full overflow-y-auto">
@@ -52,7 +59,31 @@ export function SettingsScreen() {
         </Section>
 
         <Section title="Terminal">
-          <Field label="Font size" hint="Applies once terminal rendering lands.">
+          <Field label="Default shell" hint="Used by the + button and Ctrl+Shift+T.">
+            <select
+              value={defaultShellValue}
+              onChange={(e) =>
+                setSetting.mutate({
+                  key: SETTING_KEYS.defaultShell,
+                  value: e.target.value || null,
+                })
+              }
+              className="w-64 rounded-md border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:border-accent"
+            >
+              <option value="">System default</option>
+              {(shells ?? []).map((shell) => (
+                <option key={shell.id} value={`shell:${shell.id}`}>
+                  {shell.name}
+                </option>
+              ))}
+              {(profiles ?? []).map((profile) => (
+                <option key={profile.id} value={`profile:${profile.id}`}>
+                  {profile.name} (profile)
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Font size" hint="Applies to all open terminals.">
             <NumberInput
               value={fontSize}
               min={8}
@@ -73,6 +104,10 @@ export function SettingsScreen() {
               }
             />
           </Field>
+        </Section>
+
+        <Section title="Shell profiles">
+          <ProfilesSection />
         </Section>
 
         <Section title="About">
