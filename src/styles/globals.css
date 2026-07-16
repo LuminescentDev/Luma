@@ -5,15 +5,15 @@
  * alternative. The resolved theme is applied as data-theme on <html>.
  */
 :root {
-  --background: #0b0e14;
-  --surface: #10141c;
-  --raised: #161b26;
-  --border: #222938;
-  --foreground: #e6eaf2;
-  --muted: #8b94a7;
-  --accent: #4cc9f0;
-  --accent-foreground: #06222e;
-  --glow: rgba(76, 201, 240, 0.28);
+  --background: #101217;
+  --surface: #17191f;
+  --raised: #22252d;
+  --border: #2c3039;
+  --foreground: #f2f3f5;
+  --muted: #969ba6;
+  --accent: #7c6cf2;
+  --accent-foreground: #ffffff;
+  --glow: rgba(124, 108, 242, 0.24);
   --danger: #f87171;
 }
 

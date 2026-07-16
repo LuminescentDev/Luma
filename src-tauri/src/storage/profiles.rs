@@ -27,7 +27,7 @@ pub struct ProfileInput {
     pub environment: Option<HashMap<String, String>>,
 }
 
-fn validate(input: &ProfileInput) -> Result<()> {
+pub(crate) fn validate(input: &ProfileInput) -> Result<()> {
     if input.name.trim().is_empty() || input.name.len() > 64 {
         return Err(LumaError::InvalidInput(
             "profile name must be 1-64 characters".into(),
@@ -155,10 +155,22 @@ pub async fn update(pool: &SqlitePool, id: &str, input: ProfileInput) -> Result<
 }
 
 pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
-    sqlx::query("DELETE FROM terminal_profiles WHERE id = ?1")
+    let mut transaction = pool.begin().await?;
+    let result = sqlx::query("DELETE FROM terminal_profiles WHERE id = ?1")
         .bind(id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
+    if result.rows_affected() > 0 {
+        sqlx::query(
+            "INSERT INTO tombstones (object_type, object_id, deleted_at)
+             VALUES ('terminal_profile', ?1, unixepoch())
+             ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+        )
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -197,6 +209,14 @@ mod tests {
 
         delete(&pool, &created.id).await.unwrap();
         assert!(list(&pool).await.unwrap().is_empty());
+        let tombstone: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tombstones WHERE object_type='terminal_profile' AND object_id=?1",
+        )
+        .bind(&created.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tombstone, 1);
     }
 
     #[tokio::test]

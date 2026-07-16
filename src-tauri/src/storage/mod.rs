@@ -1,5 +1,11 @@
+pub mod host_groups;
+pub mod hosts;
+pub mod identities;
+pub mod key_references;
+pub mod port_forwards;
 pub mod profiles;
 pub mod settings;
+pub mod snippets;
 
 use std::path::Path;
 

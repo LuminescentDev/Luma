@@ -6,6 +6,8 @@ import { parseShellRef, serializeShellRef } from "../../lib/terminal";
 import { SETTING_KEYS, type ThemeMode } from "../../types";
 import { cn } from "../../lib/utils";
 import { ProfilesSection } from "./ProfilesSection";
+import { SyncSection } from "../sync/SyncSection";
+import { BackupSection } from "../sync/BackupSection";
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: "dark", label: "Dark", icon: Moon },
@@ -108,6 +110,14 @@ export function SettingsScreen() {
 
         <Section title="Shell profiles">
           <ProfilesSection />
+        </Section>
+
+        <Section title="Sync">
+          <SyncSection />
+        </Section>
+
+        <Section title="Encrypted backup">
+          <BackupSection />
         </Section>
 
         <Section title="About">

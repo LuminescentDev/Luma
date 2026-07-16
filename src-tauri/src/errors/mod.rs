@@ -21,6 +21,24 @@ pub enum LumaError {
 
     #[error("terminal error: {0}")]
     Pty(String),
+
+    #[error("SSH executable unavailable: {0}")]
+    SshUnavailable(String),
+
+    #[error("private key unavailable: {0}")]
+    KeyUnavailable(String),
+
+    #[error("vault locked: {0}")]
+    VaultLocked(String),
+
+    #[error("sync authentication failed: {0}")]
+    SyncAuthFailed(String),
+
+    #[error("sync conflict: {0}")]
+    SyncConflict(String),
+
+    #[error("sync unavailable: {0}")]
+    SyncUnavailable(String),
 }
 
 impl LumaError {
@@ -31,6 +49,12 @@ impl LumaError {
             LumaError::Io(_) => "io",
             LumaError::InvalidInput(_) => "invalid-input",
             LumaError::Pty(_) => "pty",
+            LumaError::SshUnavailable(_) => "ssh-unavailable",
+            LumaError::KeyUnavailable(_) => "key-unavailable",
+            LumaError::VaultLocked(_) => "vault-locked",
+            LumaError::SyncAuthFailed(_) => "sync-auth-failed",
+            LumaError::SyncConflict(_) => "sync-conflict",
+            LumaError::SyncUnavailable(_) => "sync-unavailable",
         }
     }
 }

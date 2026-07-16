@@ -11,8 +11,25 @@ import {
   spawnPty,
   writePty,
   type ShellRef,
-  type SpawnResult,
 } from "../../lib/terminal";
+import { spawnSsh, type SshExitPayload } from "../../lib/ssh";
+
+/** What a managed session should launch. Local shells resolve a ShellRef;
+ * SSH sessions send only a hostId (the backend owns the connection details). */
+export type SpawnDescriptor =
+  | { kind: "local"; ref: ShellRef | undefined }
+  | { kind: "ssh"; hostId: string };
+
+/** Normalized exit info delivered to the session store. `errorCategory` is only
+ * populated for SSH failures; local shells report a plain exit code. */
+export type SessionExit = {
+  code: number | null;
+  errorCategory?: string | null;
+  errorMessage?: string | null;
+};
+
+/** Normalized spawn result across local and SSH backends. */
+export type ManagedSpawnResult = { sessionId: string; title: string };
 
 /*
  * Owns every xterm.js instance and its backend PTY session, entirely outside
@@ -73,7 +90,7 @@ const FONT_FAMILY =
 
 type SessionCallbacks = {
   onTitle: (title: string) => void;
-  onExit: (code: number | null) => void;
+  onExit: (exit: SessionExit) => void;
   onSearchRequested: () => void;
 };
 
@@ -82,7 +99,7 @@ type ManagedSession = {
   fit: FitAddon;
   search: SearchAddon;
   backendId: string | null;
-  ref: ShellRef | undefined;
+  descriptor: SpawnDescriptor;
   callbacks: SessionCallbacks;
   pendingInput: string[];
   exited: boolean;
@@ -152,24 +169,56 @@ function installKeyHandlers(session: ManagedSession): void {
       session.callbacks.onSearchRequested();
       return false;
     }
+    // App-level chords (new tab, split, close pane, command palette) must not
+    // reach the shell. Returning false lets the event bubble to the global
+    // window handler in Layout without inserting anything at the prompt.
+    if (
+      mod &&
+      event.shiftKey &&
+      ["KeyT", "KeyD", "KeyE", "KeyW", "KeyP"].includes(event.code)
+    ) {
+      return false;
+    }
     return true;
   });
 }
 
-async function spawnBackend(sessionId: string): Promise<SpawnResult> {
+async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error("unknown session");
-  const { term } = session;
+  const { term, descriptor } = session;
 
-  const result = await spawnPty(
-    { cols: term.cols, rows: term.rows, ref: session.ref },
-    (data) => term.write(data),
-    (code) => {
-      session.exited = true;
-      session.backendId = null;
-      session.callbacks.onExit(code);
-    },
-  );
+  const handleData = (data: Uint8Array | string) => term.write(data);
+
+  let result: ManagedSpawnResult;
+  if (descriptor.kind === "ssh") {
+    const spawned = await spawnSsh(
+      { hostId: descriptor.hostId, cols: term.cols, rows: term.rows },
+      handleData,
+      (payload: SshExitPayload) => {
+        session.exited = true;
+        session.backendId = null;
+        session.callbacks.onExit({
+          code: payload.code,
+          errorCategory: payload.errorCategory,
+          errorMessage: payload.errorMessage,
+        });
+      },
+    );
+    result = { sessionId: spawned.sessionId, title: spawned.title };
+  } else {
+    const spawned = await spawnPty(
+      { cols: term.cols, rows: term.rows, ref: descriptor.ref },
+      handleData,
+      (code) => {
+        session.exited = true;
+        session.backendId = null;
+        session.callbacks.onExit({ code });
+      },
+    );
+    result = { sessionId: spawned.sessionId, title: spawned.shellName };
+  }
+
   if (session.disposed) {
     // Session was closed while the backend was spawning.
     void killPty(result.sessionId);
@@ -207,9 +256,15 @@ export const terminalManager = {
 
   async createSession(
     sessionId: string,
-    ref: ShellRef | undefined,
+    descriptor: SpawnDescriptor,
     callbacks: SessionCallbacks,
-  ): Promise<SpawnResult> {
+  ): Promise<ManagedSpawnResult> {
+    // Resolve the configured default shell for local sessions launched without
+    // an explicit ref (the + button / Ctrl+Shift+T).
+    const resolved: SpawnDescriptor =
+      descriptor.kind === "local"
+        ? { kind: "local", ref: descriptor.ref ?? config.defaultShell }
+        : descriptor;
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
@@ -233,7 +288,7 @@ export const terminalManager = {
       fit,
       search,
       backendId: null,
-      ref: ref ?? config.defaultShell,
+      descriptor: resolved,
       callbacks,
       pendingInput: [],
       exited: false,
@@ -297,7 +352,26 @@ export const terminalManager = {
     sessions.get(sessionId)?.term.focus();
   },
 
-  async restart(sessionId: string): Promise<SpawnResult> {
+  /** Insert text at the prompt (snippet "Insert"). Uses xterm's paste path so
+   * bracketed-paste-aware shells receive it as a single edit, not execution. */
+  insertText(sessionId: string, text: string): void {
+    const session = sessions.get(sessionId);
+    if (!session || session.exited) return;
+    session.term.paste(text);
+    session.term.focus();
+  },
+
+  /** Send raw input to the backend PTY (snippet "Run" appends a carriage
+   * return). Mirrors the onData path so pre-spawn input is queued. */
+  sendInput(sessionId: string, data: string): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    if (session.backendId) void writePty(session.backendId, data);
+    else if (!session.exited) session.pendingInput.push(data);
+    session.term.focus();
+  },
+
+  async restart(sessionId: string): Promise<ManagedSpawnResult> {
     const session = sessions.get(sessionId);
     if (!session) throw new Error("unknown session");
     if (session.backendId) {

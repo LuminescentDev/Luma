@@ -843,4 +843,31 @@ The first stable release is complete when:
 
 * Phase 1: Foundation — **complete** (commit c10ef92)
 * Phase 2: Local Terminal — **complete** (commit 1370e68)
-* Phase 3: SSH Hosts — not started
+* Phase 3: SSH Hosts — **complete** (not yet committed)
+* Phase 4: Layout and Productivity — **complete** (not yet committed) — split panes
+  (nestable horizontal/vertical splits with draggable dividers, per-pane
+  sessions, move/swap, layout survives tab switches, closing a tab disposes all
+  its panes' sessions), command palette (Ctrl/Cmd+Shift+P), snippets UI
+  (insert/run with variable prompting), and port forwarding (per-host CRUD plus
+  independently start/stoppable tunnels with active-tunnel indicators). Split
+  panes spawn a new default local shell, or duplicate the source pane's SSH host
+  when splitting an SSH session. Shortcuts: Ctrl/Cmd+Shift+D split right,
+  Ctrl/Cmd+Shift+E split down, Ctrl/Cmd+Shift+W close pane.
+* Phase 5: Encryption and Sync — **complete** (not yet committed) — the vault
+  (create/unlock/lock with remember-on-device) plus the full encryption + sync
+  UI on top of the validated backend. Settings gains a Sync section (provider
+  selection for local folder / WebDAV / GitHub Gist with folder picking via the
+  dialog plugin, transient-only credentials, a set-passphrase flow with
+  remember-on-device, relative last-synced status, and a Sync now / disable
+  flow) and an Encrypted backup section (encrypted export/import via save/open
+  dialogs with passphrase prompts, import preview with object counts, and
+  wrong-passphrase retry without re-picking the file). A reusable blocking
+  conflict-resolution dialog (per-row keep-local / take-remote plus bulk
+  actions, Apply gated until every row is chosen) is shared by live sync
+  (sync_resolve) and import (import_apply), so conflicts can never silently
+  destroy data. A lightweight sync store wraps sync_now/sync_resolve and backs
+  both the settings UI and a title-bar cloud indicator (idle/syncing/error/
+  conflict) that runs sync or opens pending conflicts on click. Secrets stay in
+  transient form state only — never in stores, the query cache, or storage.
+  Typed wrappers live in src/lib/sync.ts, query/mutation hooks in
+  src/hooks/useSync.ts.

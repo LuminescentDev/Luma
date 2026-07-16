@@ -8,7 +8,7 @@ use crate::errors::{LumaError, Result};
 const MAX_KEY_LENGTH: usize = 128;
 const MAX_VALUE_BYTES: usize = 64 * 1024;
 
-fn validate_key(key: &str) -> Result<()> {
+pub(crate) fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.len() > MAX_KEY_LENGTH {
         return Err(LumaError::InvalidInput(format!(
             "setting key must be 1-{MAX_KEY_LENGTH} characters"
@@ -61,10 +61,22 @@ pub async fn set(pool: &SqlitePool, key: &str, value: &Value) -> Result<()> {
 
 pub async fn delete(pool: &SqlitePool, key: &str) -> Result<()> {
     validate_key(key)?;
-    sqlx::query("DELETE FROM settings WHERE key = ?1")
+    let mut transaction = pool.begin().await?;
+    let result = sqlx::query("DELETE FROM settings WHERE key = ?1")
         .bind(key)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
+    if result.rows_affected() > 0 {
+        sqlx::query(
+            "INSERT INTO tombstones (object_type, object_id, deleted_at)
+             VALUES ('setting', ?1, unixepoch())
+             ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+        )
+        .bind(key)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -95,6 +107,13 @@ mod tests {
         delete(&pool, "terminal.scrollback").await.unwrap();
         let settings = all(&pool).await.unwrap();
         assert!(!settings.contains_key("terminal.scrollback"));
+        let tombstone: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tombstones WHERE object_type='setting' AND object_id='terminal.scrollback'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tombstone, 1);
     }
 
     #[tokio::test]

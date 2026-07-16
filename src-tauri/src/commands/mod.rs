@@ -12,6 +12,20 @@ use crate::storage::settings;
 use crate::terminal::{PtyManager, ResolvedShell};
 use crate::AppState;
 
+mod hosts;
+mod port_forwards;
+mod snippets;
+mod ssh;
+mod sync;
+mod vault;
+
+pub use hosts::*;
+pub use port_forwards::*;
+pub use snippets::*;
+pub use ssh::*;
+pub use sync::*;
+pub use vault::*;
+
 // --- Settings ---
 
 #[tauri::command]

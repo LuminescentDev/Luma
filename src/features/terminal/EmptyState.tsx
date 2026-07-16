@@ -1,20 +1,23 @@
-import { ChevronDown, Server, SquareTerminal } from "lucide-react";
+import { ChevronDown, Command, Server, SquareTerminal } from "lucide-react";
 import { useSessionStore } from "../../stores/sessionStore";
+import { useUiStore } from "../../stores/uiStore";
 import { NewTerminalMenu } from "./TabBar";
 
 export function EmptyState() {
   const openLocalSession = useSessionStore((s) => s.openLocalSession);
+  const openSection = useUiStore((s) => s.openSection);
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-8">
+    <div className="flex h-full flex-col items-center justify-center gap-8 bg-[radial-gradient(circle_at_50%_45%,var(--glow),transparent_32%)]">
       <div className="text-center">
-        <h1 className="text-4xl font-semibold tracking-tight">
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-border bg-surface shadow-glow"><Command size={28} className="text-accent" /></div>
+        <h1 className="text-2xl font-semibold tracking-tight">
           <span className="bg-gradient-to-r from-accent to-foreground bg-clip-text text-transparent drop-shadow-[0_0_18px_var(--glow)]">
             Luma
           </span>
         </h1>
         <p className="mt-2 text-sm text-muted">
-          A lightweight terminal &amp; SSH client
+          Where do you want to connect?
         </p>
       </div>
 
@@ -23,7 +26,7 @@ export function EmptyState() {
           <button
             type="button"
             onClick={() => void openLocalSession()}
-            className="flex items-center gap-2 rounded-l-lg border border-border bg-surface px-4 py-2.5 text-sm transition-all hover:border-accent hover:text-accent hover:shadow-glow"
+            className="flex items-center gap-2 rounded-l-xl border border-border bg-surface px-5 py-3 text-sm transition-all hover:border-accent hover:text-accent hover:shadow-glow"
           >
             <SquareTerminal size={16} />
             New local terminal
@@ -40,9 +43,8 @@ export function EmptyState() {
         </div>
         <button
           type="button"
-          disabled
-          title="SSH hosts arrive in the next milestones"
-          className="flex cursor-not-allowed items-center gap-2 rounded-lg border border-dashed border-border px-4 py-2.5 text-sm text-muted"
+          onClick={() => openSection("hosts")}
+          className="flex items-center gap-2 rounded-xl bg-accent px-5 py-3 text-sm font-medium text-accent-foreground transition-all hover:brightness-110 hover:shadow-glow"
         >
           <Server size={16} />
           Connect to host
