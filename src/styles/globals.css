@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/*
+ * Luma theme tokens. Dark is the default identity; light is a first-class
+ * alternative. The resolved theme is applied as data-theme on <html>.
+ */
+:root {
+  --background: #0b0e14;
+  --surface: #10141c;
+  --raised: #161b26;
+  --border: #222938;
+  --foreground: #e6eaf2;
+  --muted: #8b94a7;
+  --accent: #4cc9f0;
+  --accent-foreground: #06222e;
+  --glow: rgba(76, 201, 240, 0.28);
+  --danger: #f87171;
+}
+
+:root[data-theme="light"] {
+  --background: #f6f7fa;
+  --surface: #ffffff;
+  --raised: #eef1f6;
+  --border: #dde3ec;
+  --foreground: #1c2433;
+  --muted: #64708a;
+  --accent: #0e7ea8;
+  --accent-foreground: #ffffff;
+  --glow: rgba(14, 126, 168, 0.18);
+  --danger: #dc2626;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-danger: var(--danger);
+  --shadow-glow: 0 0 24px 0 var(--glow);
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", "SF Mono", Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-background text-foreground font-sans antialiased overflow-hidden;
+}
+
+/* Subtle scrollbars that match the theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+::selection {
+  background: var(--glow);
+}
