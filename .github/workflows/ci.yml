@@ -109,7 +109,7 @@ jobs:
 
       - name: Build Tauri bundles
         # Release builds use release.yml to inject the updater key and sign artifacts.
-        run: pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: pnpm tauri build --config src-tauri/tauri.ci.conf.json
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
