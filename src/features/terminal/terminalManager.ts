@@ -152,7 +152,14 @@ type ManagedSession = {
   sshStage: "starting" | "network" | "host-key" | "authentication" | "ready";
   sshIssueReported: boolean;
   sshFinalizing: boolean;
+  resizeTimer: ReturnType<typeof window.setTimeout> | null;
 };
+
+// Split-pane and window drags can produce dozens of xterm sizes per second.
+// Sending every intermediate size makes remote prompt themes redraw repeatedly
+// and asynchronous IPC calls can arrive out of order. Keep xterm responsive,
+// but notify the backing PTY only after the layout has briefly settled.
+const BACKEND_RESIZE_DEBOUNCE_MS = 100;
 
 type ManagerConfig = {
   fontSize: number;
@@ -267,19 +274,15 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
       session.sshStage = stage;
       session.callbacks.onSshProgress(stage);
     };
-    if (/Connecting to .+ port \d+/.test(readableTranscript)) reportStage("network");
-    if (/Server host key:/.test(readableTranscript)) reportStage("host-key");
-    if (/Authentications that can continue:|Offering public key:/.test(readableTranscript)) reportStage("authentication");
+    if (/__LUMA_SSH_AUTHENTICATED__/.test(readableTranscript)) reportStage("authentication");
     if (!session.sshIssueReported && /Load key [^\r\n]+: invalid format/i.test(readableTranscript)) {
       session.sshIssueReported = true;
       session.callbacks.onSshIssue("The selected identity's private key is not in a format OpenSSH can read. Re-save it as an OpenSSH or PEM private key.");
     }
-    if (!session.sshFinalizing && /Authenticated to .+ \(/.test(readableTranscript)) {
+    if (!session.sshFinalizing && /__LUMA_SSH_AUTHENTICATED__/.test(readableTranscript)) {
       session.sshFinalizing = true;
-      // OpenSSH emits a short tail of verbose negotiation and known_hosts
-      // maintenance after authentication. Keep the connection overlay visible
-      // until that burst settles, then reveal a clean terminal and ask the
-      // remote shell to redraw its prompt.
+      // Keep the overlay visible until the local authentication marker settles,
+      // then reveal a clean terminal and ask the remote shell to redraw.
       window.setTimeout(() => {
         if (session.disposed || session.exited) return;
         session.sshTranscript = "";
@@ -429,6 +432,7 @@ export const terminalManager = {
       sshStage: "starting",
       sshIssueReported: false,
       sshFinalizing: false,
+      resizeTimer: null,
     };
     sessions.set(sessionId, session);
 
@@ -444,7 +448,12 @@ export const terminalManager = {
       // Serial has no cols/rows: fit the local xterm but never resize the
       // backend (there is deliberately no serial resize command).
       if (session.backendId && session.descriptor.kind !== "serial") {
-        void resizePty(session.backendId, cols, rows);
+        if (session.resizeTimer !== null) window.clearTimeout(session.resizeTimer);
+        session.resizeTimer = window.setTimeout(() => {
+          session.resizeTimer = null;
+          if (session.disposed || session.exited || !session.backendId) return;
+          void resizePty(session.backendId, cols, rows);
+        }, BACKEND_RESIZE_DEBOUNCE_MS);
       }
     });
 
@@ -592,6 +601,10 @@ export const terminalManager = {
   async restart(sessionId: string): Promise<ManagedSpawnResult> {
     const session = sessions.get(sessionId);
     if (!session) throw new Error("unknown session");
+    if (session.resizeTimer !== null) {
+      window.clearTimeout(session.resizeTimer);
+      session.resizeTimer = null;
+    }
     if (session.backendId) {
       const old = session.backendId;
       session.backendId = null;
@@ -618,6 +631,10 @@ export const terminalManager = {
     const session = sessions.get(sessionId);
     if (!session) return;
     session.disposed = true;
+    if (session.resizeTimer !== null) {
+      window.clearTimeout(session.resizeTimer);
+      session.resizeTimer = null;
+    }
     if (session.backendId) {
       void killBackend(session.descriptor, session.backendId).catch(() => {});
       session.backendId = null;

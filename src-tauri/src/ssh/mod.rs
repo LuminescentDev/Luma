@@ -1,4 +1,5 @@
 mod config;
+mod embedded;
 mod known_hosts;
 mod remote_os;
 mod tunnels;
@@ -23,6 +24,9 @@ pub use config::{
     import_config, preview_config, SshConfigCandidate, SshConfigImportRequest,
     SshConfigImportResult,
 };
+pub use embedded::EmbeddedSshManager;
+pub(crate) use embedded::{authenticated_handle, Client as EmbeddedClient};
+pub(crate) use embedded::{select_backend, SshBackend};
 pub use known_hosts::{
     file_path as known_hosts_file_path, status as host_key_status, trust as trust_host_key,
     validate_host_id, SshHostKeyStatus,
@@ -76,6 +80,7 @@ pub(crate) struct SshConnectionConfig {
     askpass_identity_id: Option<String>,
     askpass_service: Option<String>,
     askpass_prompt: Option<String>,
+    fallback_password_identity_id: Option<String>,
     ephemeral_credential: Option<Arc<EphemeralCredential>>,
     ephemeral_identity_file: Option<Arc<EphemeralIdentityFile>>,
 }
@@ -137,7 +142,7 @@ struct AuthenticationObserver {
 
 impl AuthenticationObserver {
     fn observe(&mut self, bytes: &[u8]) -> bool {
-        const MARKERS: [&[u8]; 2] = [b"Authenticated to ", b"Entering interactive session."];
+        const MARKERS: [&[u8]; 1] = [b"__LUMA_SSH_AUTHENTICATED__"];
         const MAX_TAIL_BYTES: usize = 128;
 
         self.tail.extend_from_slice(bytes);
@@ -171,6 +176,9 @@ pub(crate) fn askpass_environment(config: &SshConnectionConfig) -> Result<HashMa
         }
         if let Some(prompt) = &config.askpass_prompt {
             environment.insert("LUMA_ASKPASS_PROMPT".into(), prompt.clone());
+        }
+        if let Some(identity_id) = &config.fallback_password_identity_id {
+            environment.insert("LUMA_ASKPASS_PASSWORD_ID".into(), identity_id.clone());
         }
     }
     Ok(environment)
@@ -286,25 +294,23 @@ impl SshEngine for OpenSshEngine<'_> {
 pub fn detect() -> SshDetection {
     let Some(path) = find_ssh_executable() else {
         return SshDetection {
-            available: false,
+            available: true,
             path: None,
-            version: None,
+            version: Some("embedded russh".into()),
         };
     };
 
-    let version = Command::new(&path)
-        .arg("-V")
-        .output()
-        .ok()
-        .and_then(|output| {
-            let text = if output.stderr.is_empty() {
-                String::from_utf8_lossy(&output.stdout).into_owned()
-            } else {
-                String::from_utf8_lossy(&output.stderr).into_owned()
-            };
-            let text = text.trim();
-            (!text.is_empty()).then(|| text.to_string())
-        });
+    let mut command = Command::new(&path);
+    crate::platform::hide_background_std_command(&mut command);
+    let version = command.arg("-V").output().ok().and_then(|output| {
+        let text = if output.stderr.is_empty() {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        } else {
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        };
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    });
 
     SshDetection {
         available: true,
@@ -376,6 +382,10 @@ fn build_connection_options_with_policy(
         arguments.push(identity_file.clone());
         arguments.push("-o".into());
         arguments.push("IdentitiesOnly=yes".into());
+        if config.fallback_password_identity_id.is_some() {
+            arguments.push("-o".into());
+            arguments.push("PreferredAuthentications=publickey,password".into());
+        }
     }
     arguments.push("-o".into());
     arguments.push(format!(
@@ -475,10 +485,13 @@ fn build_interactive_arguments(
     multiplex_control: Option<&MultiplexControl>,
 ) -> Vec<String> {
     let mut arguments = build_connection_options(config, false);
-    // DEBUG2 is needed to distinguish an undecryptable private key from a
-    // generic server-side public-key rejection (OpenSSH reports the former as
-    // "bad passphrase given" only at this verbosity).
-    arguments.insert(0, "-vv".into());
+    // LocalCommand runs only after authentication succeeds. Its marker gives
+    // the backend and connection overlay a deterministic readiness signal
+    // without exposing OpenSSH's verbose diagnostics in the user's terminal.
+    arguments.push("-o".into());
+    arguments.push("PermitLocalCommand=yes".into());
+    arguments.push("-o".into());
+    arguments.push("LocalCommand=echo __LUMA_SSH_AUTHENTICATED__".into());
     if let Some(control) = multiplex_control {
         arguments.extend(control.master_arguments());
     }
@@ -669,9 +682,7 @@ pub(crate) async fn host_key_connection_config(
     known_hosts_file: PathBuf,
 ) -> Result<SshConnectionConfig> {
     let route = resolve_connection_route(pool, host_id).await?;
-    let executable = detect().path.ok_or_else(|| {
-        LumaError::SshUnavailable("system OpenSSH executable was not found".into())
-    })?;
+    let executable = detect().path.unwrap_or_default();
 
     Ok(SshConnectionConfig {
         executable,
@@ -685,6 +696,7 @@ pub(crate) async fn host_key_connection_config(
         askpass_identity_id: None,
         askpass_service: None,
         askpass_prompt: None,
+        fallback_password_identity_id: None,
         ephemeral_credential: None,
         ephemeral_identity_file: None,
     })
@@ -701,6 +713,11 @@ pub async fn connection_config(
     let mut askpass_service = None;
     let mut askpass_prompt = None;
     let mut ephemeral_credential = None;
+    let fallback_password_identity_id = route
+        .identity
+        .as_ref()
+        .filter(|identity| identity.key_id.is_some() && identity.has_password)
+        .map(|identity| identity.id.clone());
     if let Some(identity) = &route.identity {
         if identity.key_id.is_none() && identity.has_password {
             askpass_identity_id = Some(identity.id.clone());
@@ -708,10 +725,7 @@ pub async fn connection_config(
             askpass_prompt = Some("password".into());
         }
     }
-    let detection = detect();
-    let executable = detection.path.ok_or_else(|| {
-        LumaError::SshUnavailable("system OpenSSH executable was not found".into())
-    })?;
+    let executable = detect().path.unwrap_or_default();
     let known_hosts_file = known_hosts::file_path_for_pool(pool).await?;
     let (identity_file, ephemeral_identity_file) = identity_file(pool, vault_state, &host).await?;
     if host.authentication_type == "key" {
@@ -759,6 +773,7 @@ pub async fn connection_config(
             askpass_identity_id,
             askpass_service,
             askpass_prompt,
+            fallback_password_identity_id,
             ephemeral_credential,
             ephemeral_identity_file,
         },
@@ -829,6 +844,7 @@ mod tests {
             askpass_identity_id: None,
             askpass_service: None,
             askpass_prompt: None,
+            fallback_password_identity_id: None,
             ephemeral_credential: None,
             ephemeral_identity_file: None,
         }
@@ -843,7 +859,6 @@ mod tests {
             assert_eq!(
                 arguments,
                 vec![
-                    "-vv",
                     "-p",
                     "2222",
                     "-l",
@@ -858,12 +873,38 @@ mod tests {
                     "StrictHostKeyChecking=yes",
                     "-o",
                     "UpdateHostKeys=no",
+                    "-o",
+                    "PermitLocalCommand=yes",
+                    "-o",
+                    "LocalCommand=echo __LUMA_SSH_AUTHENTICATED__",
                     "server.example.com"
                 ],
                 "unexpected arguments for {authentication_type} authentication"
             );
             assert!(!arguments.iter().any(|argument| argument == "-tt"));
         }
+    }
+
+    #[test]
+    fn key_identity_with_password_falls_back_after_public_key() {
+        let mut config = base_config();
+        config.identity_file = Some("C:/keys/id_rsa".into());
+        config.askpass_identity_id = Some("passphrase-entry".into());
+        config.askpass_service = Some("luma.ssh.key-passphrase".into());
+        config.askpass_prompt = Some("passphrase".into());
+        config.fallback_password_identity_id = Some("identity-password".into());
+
+        let arguments = build_arguments(&config);
+        assert!(arguments
+            .iter()
+            .any(|argument| argument == "PreferredAuthentications=publickey,password"));
+        let environment = askpass_environment(&config).unwrap();
+        assert_eq!(
+            environment
+                .get("LUMA_ASKPASS_PASSWORD_ID")
+                .map(String::as_str),
+            Some("identity-password")
+        );
     }
 
     #[test]
@@ -887,7 +928,6 @@ mod tests {
         assert_eq!(
             build_arguments(&config),
             vec![
-                "-vv",
                 "-p",
                 "2222",
                 "-l",
@@ -908,6 +948,10 @@ mod tests {
                 "UpdateHostKeys=no",
                 "-J",
                 "jump@edge.example.com:22,[2001:db8::1]:2200",
+                "-o",
+                "PermitLocalCommand=yes",
+                "-o",
+                "LocalCommand=echo __LUMA_SSH_AUTHENTICATED__",
                 "-t",
                 "server.example.com",
                 "cd /srv && exec bash -l"
@@ -1037,10 +1081,10 @@ mod tests {
     }
 
     #[test]
-    fn authentication_observer_handles_split_openssh_markers() {
+    fn authentication_observer_handles_split_local_command_marker() {
         let mut observer = AuthenticationObserver::default();
-        assert!(!observer.observe(b"debug1: Entering inter"));
-        assert!(observer.observe(b"active session.\r\n"));
+        assert!(!observer.observe(b"__LUMA_SSH_AUTH"));
+        assert!(observer.observe(b"ENTICATED__\r\n"));
     }
 
     #[test]

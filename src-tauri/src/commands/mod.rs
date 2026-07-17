@@ -166,21 +166,40 @@ pub async fn pty_spawn(
 }
 
 #[tauri::command]
-pub async fn pty_write(pty: State<'_, PtyManager>, session_id: String, data: String) -> Result<()> {
+pub async fn pty_write(
+    pty: State<'_, PtyManager>,
+    embedded: State<'_, crate::ssh::EmbeddedSshManager>,
+    session_id: String,
+    data: String,
+) -> Result<()> {
+    if embedded.write(&session_id, data.clone()).await? {
+        return Ok(());
+    }
     pty.write(&session_id, &data)
 }
 
 #[tauri::command]
 pub async fn pty_resize(
     pty: State<'_, PtyManager>,
+    embedded: State<'_, crate::ssh::EmbeddedSshManager>,
     session_id: String,
     cols: u16,
     rows: u16,
 ) -> Result<()> {
+    if embedded.resize(&session_id, cols, rows).await? {
+        return Ok(());
+    }
     pty.resize(&session_id, cols, rows)
 }
 
 #[tauri::command]
-pub async fn pty_kill(pty: State<'_, PtyManager>, session_id: String) -> Result<()> {
+pub async fn pty_kill(
+    pty: State<'_, PtyManager>,
+    embedded: State<'_, crate::ssh::EmbeddedSshManager>,
+    session_id: String,
+) -> Result<()> {
+    if embedded.disconnect(&session_id).await? {
+        return Ok(());
+    }
     pty.kill(&session_id)
 }

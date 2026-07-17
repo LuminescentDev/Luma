@@ -336,6 +336,7 @@ mod tests {
             askpass_identity_id: None,
             askpass_service: None,
             askpass_prompt: None,
+            fallback_password_identity_id: None,
             ephemeral_credential: None,
             ephemeral_identity_file: None,
         }

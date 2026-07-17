@@ -211,7 +211,9 @@ fn control_arguments(target: &RemoteOsTarget, control: &MultiplexControl) -> Vec
 }
 
 async fn run_ssh(executable: &str, arguments: Vec<String>) -> Option<(bool, Vec<u8>)> {
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    crate::platform::hide_background_tokio_command(&mut command);
+    let mut child = command
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -244,7 +246,7 @@ async fn run_ssh(executable: &str, arguments: Vec<String>) -> Option<(bool, Vec<
     }
 }
 
-fn parse_os_release(contents: &str) -> SshRemoteOs {
+pub(super) fn parse_os_release(contents: &str) -> SshRemoteOs {
     let mut id = None;
     let mut id_like = None;
     let mut pretty_name = None;

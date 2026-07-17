@@ -258,7 +258,9 @@ pub async fn ssh_key_generate(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let output = Command::new("ssh-keygen")
+    let mut command = Command::new("ssh-keygen");
+    crate::platform::hide_background_std_command(&mut command);
+    let output = command
         .args([
             "-t",
             "ed25519",

@@ -53,50 +53,60 @@ async fn run_migrations_with_recovery(
     pool: &SqlitePool,
     db_path: &Path,
 ) -> std::result::Result<(), sqlx::migrate::MigrateError> {
-    let version = match MIGRATOR.run(pool).await {
-        Ok(()) => return Ok(()),
-        Err(sqlx::migrate::MigrateError::VersionMismatch(version)) => version,
-        Err(error) => return Err(error),
-    };
+    let mut backup_path = None;
 
-    let Some(migration) = MIGRATOR
-        .iter()
-        .find(|migration| migration.version == version)
-    else {
-        return Err(sqlx::migrate::MigrateError::VersionMissing(version));
-    };
+    loop {
+        let version = match MIGRATOR.run(pool).await {
+            Ok(()) => return Ok(()),
+            Err(sqlx::migrate::MigrateError::VersionMismatch(version)) => version,
+            Err(error) => return Err(error),
+        };
 
-    let backup_path = migration_backup_path(db_path);
-    // SQLite accepts forward slashes on every supported platform. Using them
-    // avoids treating Windows backslashes as part of the output filename.
-    let escaped_backup = backup_path
-        .to_string_lossy()
-        .replace('\\', "/")
-        .replace('\'', "''");
-    sqlx::query(&format!("VACUUM INTO '{escaped_backup}'"))
+        let Some(migration) = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == version)
+        else {
+            return Err(sqlx::migrate::MigrateError::VersionMissing(version));
+        };
+
+        let backup = match &backup_path {
+            Some(path) => path,
+            None => {
+                let path = migration_backup_path(db_path);
+                // SQLite accepts forward slashes on every supported platform.
+                // This also avoids treating Windows backslashes as filename
+                // characters in the SQL string.
+                let escaped_path = path
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .replace('\'', "''");
+                sqlx::query(&format!("VACUUM INTO '{escaped_path}'"))
+                    .execute(pool)
+                    .await
+                    .map_err(sqlx::migrate::MigrateError::Execute)?;
+                backup_path.insert(path)
+            }
+        };
+
+        let result = sqlx::query(
+            "UPDATE _sqlx_migrations SET checksum = ? WHERE version = ? AND success = 1",
+        )
+        .bind(migration.checksum.as_ref())
+        .bind(version)
         .execute(pool)
         .await
         .map_err(sqlx::migrate::MigrateError::Execute)?;
 
-    let result =
-        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ? AND success = 1")
-            .bind(migration.checksum.as_ref())
-            .bind(version)
-            .execute(pool)
-            .await
-            .map_err(sqlx::migrate::MigrateError::Execute)?;
+        if result.rows_affected() != 1 {
+            return Err(sqlx::migrate::MigrateError::VersionMissing(version));
+        }
 
-    if result.rows_affected() != 1 {
-        return Err(sqlx::migrate::MigrateError::VersionMissing(version));
+        tracing::warn!(
+            migration_version = version,
+            backup = %backup.display(),
+            "recovered migration checksum drift"
+        );
     }
-
-    tracing::warn!(
-        migration_version = version,
-        backup = %backup_path.display(),
-        "recovered migration checksum drift"
-    );
-
-    MIGRATOR.run(pool).await
 }
 
 fn migration_backup_path(db_path: &Path) -> std::path::PathBuf {
@@ -138,6 +148,10 @@ mod tests {
             .await
             .unwrap();
         sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 2")
             .execute(&pool)
             .await
             .unwrap();

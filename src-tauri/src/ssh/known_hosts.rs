@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use base64::Engine as _;
+use russh::client;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -269,6 +270,9 @@ where
 }
 
 async fn scan_host_keys(config: &SshConnectionConfig) -> Result<Vec<HostKey>> {
+    if config.proxy_jumps.is_empty() {
+        return scan_host_key_embedded(config).await;
+    }
     let temporary_known_hosts = EphemeralKnownHostsFile::create()?;
     let arguments = build_host_key_probe_arguments(
         config,
@@ -276,6 +280,7 @@ async fn scan_host_keys(config: &SshConnectionConfig) -> Result<Vec<HostKey>> {
         PROBE_CONNECT_TIMEOUT_SECONDS,
     );
     let mut command = Command::new(&config.executable);
+    crate::platform::hide_background_tokio_command(&mut command);
     command
         .args(arguments)
         .stdin(Stdio::null())
@@ -327,6 +332,84 @@ async fn scan_host_keys(config: &SshConnectionConfig) -> Result<Vec<HostKey>> {
         tracing::warn!(reason = %diagnostic, "SSH host-key probe did not record a target key");
     }
     Err(probe_failure_error(&diagnostic))
+}
+
+#[derive(Clone)]
+struct ProbeClient {
+    key: std::sync::Arc<Mutex<Option<tokio::sync::oneshot::Sender<russh::keys::PublicKey>>>>,
+}
+
+impl client::Handler for ProbeClient {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        key: &russh::keys::PublicKey,
+    ) -> std::result::Result<bool, Self::Error> {
+        if let Some(sender) = self.key.lock().unwrap().take() {
+            let _ = sender.send(key.clone());
+        }
+        Ok(false)
+    }
+}
+
+async fn scan_host_key_embedded(config: &SshConnectionConfig) -> Result<Vec<HostKey>> {
+    let (key_sender, key_receiver) = tokio::sync::oneshot::channel();
+    let captured = std::sync::Arc::new(Mutex::new(Some(key_sender)));
+    let client_config = std::sync::Arc::new(client::Config {
+        inactivity_timeout: Some(Duration::from_secs(PROBE_CONNECT_TIMEOUT_SECONDS)),
+        ..Default::default()
+    });
+    let hostname = config.hostname.clone();
+    let port = config.port;
+    let operation = tokio::spawn(client::connect(
+        client_config,
+        (hostname, port),
+        ProbeClient {
+            key: std::sync::Arc::clone(&captured),
+        },
+    ));
+    let result = timeout(
+        Duration::from_secs(PROBE_PROCESS_TIMEOUT_SECONDS),
+        key_receiver,
+    )
+    .await;
+    if let Ok(Ok(ref key)) = result {
+        operation.abort();
+        let encoded = key.to_openssh().map_err(|error| LumaError::SshConnection {
+            category: "host-key-scan-failed",
+            message: format!("The server host key could not be encoded: {error}"),
+        })?;
+        let mut fields = encoded.split_whitespace();
+        if let (Some(key_type), Some(key_data)) = (fields.next(), fields.next()) {
+            if let Some(key) = host_key(key_type, key_data) {
+                return Ok(vec![key]);
+            }
+        }
+    }
+    match result {
+        Err(_) => {
+            operation.abort();
+            Err(LumaError::SshConnection {
+                category: "timeout",
+                message: format!(
+                    "The SSH host-key probe timed out after {PROBE_PROCESS_TIMEOUT_SECONDS} seconds."
+                ),
+            })
+        }
+        Ok(Err(_)) => match operation.await {
+            Ok(Err(error)) => Err(probe_failure_error(&error.to_string())),
+            Ok(Ok(_)) => Err(LumaError::SshConnection {
+                category: "host-key-scan-failed",
+                message: "The SSH server did not present a host key.".into(),
+            }),
+            Err(error) => Err(LumaError::SshConnection {
+                category: "host-key-scan-failed",
+                message: format!("The SSH host-key probe failed: {error}"),
+            }),
+        },
+        Ok(Ok(_)) => unreachable!("successful key delivery returns above"),
+    }
 }
 
 fn read_probe_keys(path: &Path) -> Result<Vec<HostKey>> {

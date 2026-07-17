@@ -834,6 +834,18 @@ The first stable release is complete when:
 
 ## Decisions Log (project-specific, made 2026-07-15)
 
+* 2026-07-17 — **SSH transport migration is hybrid and capability-gated.** A
+  native async Rust engine based on `russh` runs direct saved-password hosts
+  behind the existing SSH boundary, with strict trusted-key
+  checks, PTY streaming, resize/write/disconnect, startup commands, and remote
+  OS detection. SFTP uses the same embedded authentication and host-key policy,
+  falling back to OpenSSH only for non-security setup/protocol failures. System
+  OpenSSH remains the compatibility fallback for
+  capabilities the embedded engine cannot preserve, including ProxyJump,
+  agent/hardware-backed authentication, and unusual OpenSSH configurations.
+  Backend selection is centralized and capability-gated.
+  Private-key authentication remains on OpenSSH until the embedded RSA/key
+  compatibility path is validated end-to-end against real desktop sessions.
 * SSH password auth in v0.1 is **interactive-only**: users type passwords in the terminal when system OpenSSH prompts. Saved-password autofill (SSH_ASKPASS or a native Rust SSH engine) is deferred.
 * Sequencing is **breadth-first**: complete each phase fully before starting the next.
 * Visual identity: **dark-first** with luminous cyan accent (#4cc9f0); light and follow-system themes supported. Resolved theme is applied via `data-theme` on `<html>`.

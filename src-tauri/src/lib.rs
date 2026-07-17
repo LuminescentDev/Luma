@@ -18,7 +18,7 @@ use tauri::Manager;
 
 use serial::SerialManager;
 use sftp::SftpManager;
-use ssh::TunnelManager;
+use ssh::{EmbeddedSshManager, TunnelManager};
 use terminal::PtyManager;
 
 pub struct AppState {
@@ -55,6 +55,7 @@ pub fn run() {
             ))?;
             app.manage(sync_state);
             app.manage(PtyManager::default());
+            app.manage(EmbeddedSshManager::default());
             app.manage(SerialManager::default());
             app.manage(TunnelManager::default());
             app.manage(SftpManager::default());
@@ -156,6 +157,7 @@ pub fn run() {
             // No serial device, tunnel, SFTP, transfer, or shell may outlive the application.
             app_handle.state::<SerialManager>().kill_all();
             app_handle.state::<SftpManager>().kill_all();
+            app_handle.state::<EmbeddedSshManager>().kill_all();
             let pty = app_handle.state::<PtyManager>();
             app_handle.state::<TunnelManager>().kill_all(&pty);
             pty.kill_all();

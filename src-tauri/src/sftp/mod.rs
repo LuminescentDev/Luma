@@ -16,8 +16,8 @@ use tokio::sync::watch;
 
 use crate::errors::{LumaError, Result};
 use crate::ssh::{
-    askpass_environment, build_sftp_arguments, classify_error_output, connection_config,
-    CAPTURE_LIMIT_BYTES,
+    askpass_environment, authenticated_handle, build_sftp_arguments, classify_error_output,
+    connection_config, select_backend, EmbeddedClient, SshBackend, CAPTURE_LIMIT_BYTES,
 };
 use crate::vault::VaultState;
 
@@ -115,7 +115,8 @@ impl<T> SessionStore<T> {
 
 struct ActiveSession {
     client: Arc<SftpSession>,
-    child: Mutex<Child>,
+    child: Mutex<Option<Child>>,
+    embedded: Option<russh::client::Handle<EmbeddedClient>>,
     _connection_config: crate::ssh::SshConnectionConfig,
 }
 
@@ -140,10 +141,42 @@ impl SftpManager {
         validate_identifier(host_id, "hostId")?;
         let (mut config, _) = connection_config(pool, vault_state, host_id).await?;
         config.startup_command = None;
+        if select_backend(&config) == SshBackend::Embedded {
+            match connect_embedded_sftp(&config).await {
+                Ok((client, embedded, initial_path)) => {
+                    let session_id = uuid::Uuid::new_v4().to_string();
+                    self.sessions.lock().unwrap().insert(
+                        session_id.clone(),
+                        host_id.to_string(),
+                        Arc::new(ActiveSession {
+                            client,
+                            child: Mutex::new(None),
+                            embedded: Some(embedded),
+                            _connection_config: config,
+                        }),
+                    );
+                    tracing::info!(sftp_session_id = %session_id, host_id = %host_id, backend = "russh", "opened SFTP session");
+                    return Ok(SftpConnectResponse {
+                        sftp_session_id: session_id,
+                        initial_path,
+                    });
+                }
+                Err(error) if embedded_fallback_allowed(&error) => {
+                    tracing::warn!(host_id = %host_id, reason = %error, "embedded SFTP unavailable; falling back to OpenSSH");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if config.executable.is_empty() {
+            return Err(LumaError::SshUnavailable(
+                "embedded SFTP failed and system OpenSSH is unavailable".into(),
+            ));
+        }
         let arguments = build_sftp_arguments(&config);
         let environment = askpass_environment(&config)?;
 
         let mut command = Command::new(&config.executable);
+        crate::platform::hide_background_tokio_command(&mut command);
         command
             .args(&arguments)
             .stdin(Stdio::piped())
@@ -199,7 +232,8 @@ impl SftpManager {
             host_id.to_string(),
             Arc::new(ActiveSession {
                 client,
-                child: Mutex::new(child),
+                child: Mutex::new(Some(child)),
+                embedded: None,
                 _connection_config: config,
             }),
         );
@@ -221,7 +255,18 @@ impl SftpManager {
             .ok_or_else(|| LumaError::InvalidInput("unknown SFTP session".into()))?;
         self.cancel_session_transfers(session_id);
         let _ = session.client.close().await;
-        let _ = session.child.lock().unwrap().start_kill();
+        if let Some(child) = session.child.lock().unwrap().as_mut() {
+            let _ = child.start_kill();
+        }
+        if let Some(embedded) = &session.embedded {
+            let _ = embedded
+                .disconnect(
+                    russh::Disconnect::ByApplication,
+                    "SFTP session closed",
+                    "en",
+                )
+                .await;
+        }
         tracing::info!(sftp_session_id = %session_id, "closed SFTP session");
         Ok(())
     }
@@ -265,10 +310,49 @@ impl SftpManager {
         }
         let sessions = self.sessions.lock().unwrap().drain();
         for session in sessions {
-            let _ = session.child.lock().unwrap().start_kill();
+            if let Some(child) = session.child.lock().unwrap().as_mut() {
+                let _ = child.start_kill();
+            }
         }
         tracing::info!("closed all SFTP sessions and cancelled transfers on shutdown");
     }
+}
+
+async fn connect_embedded_sftp(
+    config: &crate::ssh::SshConnectionConfig,
+) -> Result<(
+    Arc<SftpSession>,
+    russh::client::Handle<EmbeddedClient>,
+    String,
+)> {
+    let handle = authenticated_handle(config).await?;
+    let channel = handle.channel_open_session().await.map_err(|error| {
+        LumaError::SftpFailed(format!("could not open embedded SSH channel: {error}"))
+    })?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|error| LumaError::SftpFailed(format!("SFTP subsystem failed: {error}")))?;
+    let client = Arc::new(
+        SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|error| LumaError::SftpFailed(format!("SFTP handshake failed: {error}")))?,
+    );
+    let initial_path = client.canonicalize(".").await.map_err(remote_error)?;
+    validate_remote_path(&initial_path)?;
+    Ok((client, handle, initial_path))
+}
+
+fn embedded_fallback_allowed(error: &LumaError) -> bool {
+    !matches!(
+        error.category(),
+        "host-key"
+            | "host-key-changed"
+            | "host-key-rejected"
+            | "authentication"
+            | "auth-failed"
+            | "key-unavailable"
+    )
 }
 
 pub async fn list(manager: &SftpManager, session_id: &str, path: &str) -> Result<DirectoryListing> {
@@ -671,5 +755,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Alpha", "beta", "z.txt"]
         );
+    }
+
+    #[test]
+    fn embedded_fallback_never_bypasses_security_failures() {
+        let host_key = LumaError::SshConnection {
+            category: "host-key-rejected",
+            message: "mismatch".into(),
+        };
+        let authentication = LumaError::SshConnection {
+            category: "authentication",
+            message: "denied".into(),
+        };
+        assert!(!embedded_fallback_allowed(&host_key));
+        assert!(!embedded_fallback_allowed(&authentication));
+        assert!(embedded_fallback_allowed(&LumaError::SftpFailed(
+            "subsystem unsupported".into()
+        )));
     }
 }

@@ -6,8 +6,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::errors::{LumaError, Result};
 use crate::ssh::{
-    self, OpenSshEngine, SshConfigCandidate, SshConfigImportRequest, SshConfigImportResult,
-    SshDetection, SshEngine, SshExit, SshHostKeyStatus, SshRemoteOs,
+    self, EmbeddedSshManager, OpenSshEngine, SshBackend, SshConfigCandidate,
+    SshConfigImportRequest, SshConfigImportResult, SshDetection, SshEngine, SshExit,
+    SshHostKeyStatus, SshRemoteOs,
 };
 use crate::storage::hosts;
 use crate::terminal::PtyManager;
@@ -101,10 +102,12 @@ pub async fn ssh_host_key_trust(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ssh_spawn(
     app: AppHandle,
     state: State<'_, AppState>,
     pty: State<'_, PtyManager>,
+    embedded: State<'_, EmbeddedSshManager>,
     vault_state: State<'_, VaultState>,
     request: SshSpawnRequest,
     on_data: Channel<InvokeResponseBody>,
@@ -118,34 +121,61 @@ pub async fn ssh_spawn(
     }
     let (config, title) =
         ssh::connection_config(&state.pool, &vault_state, &request.host_id).await?;
-    let engine = OpenSshEngine::new(&pty);
+    let backend = ssh::select_backend(&config);
+    tracing::debug!(?backend, host_id = %request.host_id, "selected SSH backend");
     let pending_remote_os = Arc::new(Mutex::new(PendingRemoteOsEvent::default()));
     let pending_remote_os_callback = Arc::clone(&pending_remote_os);
     let app_for_remote_os = app.clone();
-    let session_id = engine.connect(
-        config,
-        request.cols,
-        request.rows,
-        Box::new(move |bytes| {
-            let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
-        }),
-        Box::new(move |exit| {
-            let _ = on_exit.send(exit);
-        }),
-        Box::new(move |metadata| {
-            pending_remote_os_callback.lock().unwrap().metadata = Some(metadata);
-            if let Some(event) = take_remote_os_event(&pending_remote_os_callback) {
-                let _ = app_for_remote_os.emit_to("main", SSH_REMOTE_OS_EVENT_NAME, event);
-            }
-        }),
-    )?;
+    let data_callback = Box::new(move |bytes: &[u8]| {
+        let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
+    });
+    let exit_callback = Box::new(move |exit| {
+        let _ = on_exit.send(exit);
+    });
+    let remote_os_callback = Box::new(move |metadata| {
+        pending_remote_os_callback.lock().unwrap().metadata = Some(metadata);
+        if let Some(event) = take_remote_os_event(&pending_remote_os_callback) {
+            let _ = app_for_remote_os.emit_to("main", SSH_REMOTE_OS_EVENT_NAME, event);
+        }
+    });
+    let session_id = match backend {
+        SshBackend::Embedded => {
+            embedded
+                .connect(
+                    config,
+                    request.cols,
+                    request.rows,
+                    data_callback,
+                    exit_callback,
+                    remote_os_callback,
+                )
+                .await?
+        }
+        SshBackend::OpenSsh => OpenSshEngine::new(&pty).connect(
+            {
+                if config.executable.is_empty() {
+                    return Err(LumaError::SshUnavailable(
+                        "system OpenSSH is required for this host's authentication or proxy configuration".into(),
+                    ));
+                }
+                config
+            },
+            request.cols,
+            request.rows,
+            data_callback,
+            exit_callback,
+            remote_os_callback,
+        )?,
+    };
 
     {
         pending_remote_os.lock().unwrap().session_id = Some(session_id.clone());
     }
 
     if let Err(error) = hosts::record_recent_connection(&state.pool, &request.host_id).await {
-        let _ = engine.disconnect(&session_id);
+        if !embedded.disconnect(&session_id).await.unwrap_or(false) {
+            let _ = pty.kill(&session_id);
+        }
         return Err(error);
     }
 
