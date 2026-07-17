@@ -14,6 +14,7 @@ use crate::AppState;
 
 mod hosts;
 mod port_forwards;
+mod sftp;
 mod snippets;
 mod ssh;
 mod sync;
@@ -21,6 +22,7 @@ mod vault;
 
 pub use hosts::*;
 pub use port_forwards::*;
+pub use sftp::*;
 pub use snippets::*;
 pub use ssh::*;
 pub use sync::*;

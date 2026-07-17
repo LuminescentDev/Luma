@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { Sidebar } from "../components/Sidebar";
 import { Workspace } from "../features/terminal/Workspace";
-import { TabBar } from "../features/terminal/TabBar";
 import { SettingsScreen } from "../features/settings/SettingsScreen";
 import { terminalManager } from "../features/terminal/terminalManager";
 import { useUiStore } from "../stores/uiStore";
@@ -19,6 +18,7 @@ import { SnippetsScreen } from "../features/snippets/SnippetsScreen";
 import { SnippetRunner } from "../features/snippets/SnippetRunner";
 import { CommandPalette } from "../features/palette/CommandPalette";
 import { SyncDialogs } from "../features/sync/SyncDialogs";
+import { SftpScreen } from "../features/sftp/SftpScreen";
 
 export function Layout() {
   // Applies the persisted theme to <html> and tracks system changes.
@@ -53,7 +53,7 @@ export function Layout() {
       switch (event.code) {
         case "KeyT":
           event.preventDefault();
-          void session.openLocalSession();
+          useUiStore.getState().openNewTab();
           break;
         case "KeyD":
           event.preventDefault();
@@ -87,7 +87,6 @@ export function Layout() {
       <div className="flex min-h-0 flex-1">
         {navOpen && <Sidebar />}
         <main className="flex min-w-0 flex-1 flex-col bg-background">
-        {view === "workspace" && section === "terminal" && <TabBar />}
         <div className="relative min-h-0 flex-1">
           {/* Keep the workspace mounted (hidden) under settings so terminals
               stay attached and refit cleanly when switching back. */}
@@ -96,7 +95,7 @@ export function Layout() {
           </div>
           {view === "workspace" && section === "hosts" && <HostsScreen />}
           {view === "workspace" && section === "logs" && <SectionScreen section="logs" />}
-          {view === "workspace" && section === "sftp" && <SectionScreen section="sftp" />}
+          {view === "workspace" && section === "sftp" && <SftpScreen />}
           {view === "workspace" && section === "snippets" && <SnippetsScreen />}
           {view === "settings" && <SettingsScreen />}
           {view === "keychain" && <KeychainScreen />}

@@ -7,6 +7,7 @@ export type TerminalSession = {
   title: string;
   type: "local" | "ssh";
   hostId?: string;
+  connectionTarget?: string;
   status: "connecting" | "connected" | "disconnected" | "error";
   activePaneId: string;
   exitCode?: number | null;
@@ -14,6 +15,11 @@ export type TerminalSession = {
   /** SSH failure category (e.g. host-key-changed, auth-failed) when status is
    * "error". Undefined for local shells and clean disconnects. */
   errorCategory?: string | null;
+  connectionPrompt?:
+    | { type: "host-key"; host: string; fingerprint: string }
+    | { type: "credential"; label: string };
+  connectionStage?: "starting" | "network" | "host-key" | "authentication" | "ready";
+  connectionIssue?: string;
 };
 
 export type LumaError = {

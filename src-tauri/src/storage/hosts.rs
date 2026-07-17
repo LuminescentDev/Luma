@@ -72,6 +72,14 @@ fn optional_trimmed(value: Option<String>) -> Option<String> {
     })
 }
 
+fn clear_host_credentials_when_using_identity(input: &mut HostInput) {
+    if optional_trimmed(input.identity_id.clone()).is_some() {
+        input.username = None;
+        input.authentication_type = default_authentication_type();
+        input.key_id = None;
+    }
+}
+
 pub(crate) fn validate_safe_hostname(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > MAX_HOSTNAME_LENGTH {
         return Err(LumaError::InvalidInput(format!(
@@ -318,6 +326,7 @@ async fn validate_references(
 }
 
 pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
+    clear_host_credentials_when_using_identity(&mut input);
     validate_fields(&input)?;
     validate_references(pool, None, &input).await?;
 
@@ -378,6 +387,7 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result
     if get(pool, id).await?.is_none() {
         return Err(LumaError::InvalidInput("unknown host".into()));
     }
+    clear_host_credentials_when_using_identity(&mut input);
     validate_fields(&input)?;
     validate_references(pool, Some(id), &input).await?;
 
@@ -539,6 +549,21 @@ mod tests {
             tags: vec!["test".into()],
             favorite: false,
         }
+    }
+
+    #[test]
+    fn identity_selection_discards_host_specific_credentials() {
+        let mut input = sample_input("Identity host", "example.com");
+        input.identity_id = Some("identity-1".into());
+        input.username = Some("duplicate-user".into());
+        input.authentication_type = "key".into();
+        input.key_id = Some("duplicate-key".into());
+
+        clear_host_credentials_when_using_identity(&mut input);
+
+        assert_eq!(input.username, None);
+        assert_eq!(input.authentication_type, "agent");
+        assert_eq!(input.key_id, None);
     }
 
     #[tokio::test]

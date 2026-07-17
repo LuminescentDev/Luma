@@ -25,6 +25,15 @@ pub enum LumaError {
     #[error("SSH executable unavailable: {0}")]
     SshUnavailable(String),
 
+    #[error("{message}")]
+    SshConnection {
+        category: &'static str,
+        message: String,
+    },
+
+    #[error("SFTP operation failed: {0}")]
+    SftpFailed(String),
+
     #[error("private key unavailable: {0}")]
     KeyUnavailable(String),
 
@@ -50,6 +59,8 @@ impl LumaError {
             LumaError::InvalidInput(_) => "invalid-input",
             LumaError::Pty(_) => "pty",
             LumaError::SshUnavailable(_) => "ssh-unavailable",
+            LumaError::SshConnection { category, .. } => category,
+            LumaError::SftpFailed(_) => "sftp-failed",
             LumaError::KeyUnavailable(_) => "key-unavailable",
             LumaError::VaultLocked(_) => "vault-locked",
             LumaError::SyncAuthFailed(_) => "sync-auth-failed",

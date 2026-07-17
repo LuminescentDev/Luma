@@ -3,11 +3,19 @@
 
 fn main() {
     if let Some(identity_id) = std::env::var_os("LUMA_ASKPASS_ID") {
-        if let Ok(entry) =
-            keyring::Entry::new("luma.ssh.identity", identity_id.to_string_lossy().as_ref())
-        {
-            if let Ok(password) = entry.get_password() {
-                print!("{password}");
+        let service =
+            std::env::var("LUMA_ASKPASS_SERVICE").unwrap_or_else(|_| "luma.ssh.identity".into());
+        let prompt = std::env::args()
+            .nth(1)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let expected_prompt = std::env::var("LUMA_ASKPASS_PROMPT").unwrap_or_default();
+        if expected_prompt.is_empty() || prompt.contains(&expected_prompt) {
+            if let Ok(entry) = keyring::Entry::new(&service, identity_id.to_string_lossy().as_ref())
+            {
+                if let Ok(password) = entry.get_password() {
+                    print!("{password}");
+                }
             }
         }
         return;

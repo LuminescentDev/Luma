@@ -92,6 +92,10 @@ type SessionCallbacks = {
   onTitle: (title: string) => void;
   onExit: (exit: SessionExit) => void;
   onSearchRequested: () => void;
+  onSshAuthenticated: () => void;
+  onSshPrompt: (prompt: { type: "host-key"; host: string; fingerprint: string } | { type: "credential"; label: string }) => void;
+  onSshProgress: (stage: "starting" | "network" | "host-key" | "authentication" | "ready") => void;
+  onSshIssue: (message: string) => void;
 };
 
 type ManagedSession = {
@@ -104,6 +108,11 @@ type ManagedSession = {
   pendingInput: string[];
   exited: boolean;
   disposed: boolean;
+  sshTranscript: string;
+  lastPromptSignature: string;
+  sshStage: "starting" | "network" | "host-key" | "authentication" | "ready";
+  sshIssueReported: boolean;
+  sshFinalizing: boolean;
 };
 
 type ManagerConfig = {
@@ -187,8 +196,71 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error("unknown session");
   const { term, descriptor } = session;
+  if (descriptor.kind === "ssh") {
+    session.sshTranscript = "";
+    session.lastPromptSignature = "";
+    session.sshStage = "starting";
+    session.sshIssueReported = false;
+    session.sshFinalizing = false;
+  }
 
-  const handleData = (data: Uint8Array | string) => term.write(data);
+  const handleData = (data: Uint8Array | string) => {
+    term.write(data);
+    if (descriptor.kind !== "ssh") return;
+    const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+    session.sshTranscript = (session.sshTranscript + text).slice(-16_384);
+    const readableTranscript = session.sshTranscript
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "");
+    const reportStage = (stage: ManagedSession["sshStage"]) => {
+      if (session.sshStage === stage) return;
+      session.sshStage = stage;
+      session.callbacks.onSshProgress(stage);
+    };
+    if (/Connecting to .+ port \d+/.test(readableTranscript)) reportStage("network");
+    if (/Server host key:/.test(readableTranscript)) reportStage("host-key");
+    if (/Authentications that can continue:|Offering public key:/.test(readableTranscript)) reportStage("authentication");
+    if (!session.sshIssueReported && /Load key [^\r\n]+: invalid format/i.test(readableTranscript)) {
+      session.sshIssueReported = true;
+      session.callbacks.onSshIssue("The selected identity's private key is not in a format OpenSSH can read. Re-save it as an OpenSSH or PEM private key.");
+    }
+    if (!session.sshFinalizing && /Authenticated to .+ \(/.test(readableTranscript)) {
+      session.sshFinalizing = true;
+      // OpenSSH emits a short tail of verbose negotiation and known_hosts
+      // maintenance after authentication. Keep the connection overlay visible
+      // until that burst settles, then reveal a clean terminal and ask the
+      // remote shell to redraw its prompt.
+      window.setTimeout(() => {
+        if (session.disposed || session.exited) return;
+        session.sshTranscript = "";
+        session.lastPromptSignature = "";
+        term.clear();
+        if (session.backendId) void writePty(session.backendId, "\r");
+        else session.pendingInput.push("\r");
+        session.callbacks.onSshAuthenticated();
+      }, 750);
+      return;
+    }
+    const hostMatch = readableTranscript.match(/authenticity of host '([^']+)' can't be established[\s\S]*?key fingerprint is ([^\r\n.]+)/i);
+    if (/Are you sure you want to continue connecting/.test(readableTranscript) && hostMatch) {
+      const signature = `host:${hostMatch[1]}:${hostMatch[2]}`;
+      if (signature !== session.lastPromptSignature) {
+        session.lastPromptSignature = signature;
+        session.callbacks.onSshPrompt({ type: "host-key", host: hostMatch[1], fingerprint: hostMatch[2].trim() });
+      }
+      return;
+    }
+    const credentialMatches = [...readableTranscript.matchAll(/(?:Enter passphrase for key '[^']+'|password):\s*/gi)];
+    const credentialMatch = credentialMatches[credentialMatches.length - 1];
+    if (credentialMatch) {
+      const label = credentialMatch[0].toLowerCase().includes("passphrase") ? "Private key passphrase" : "Password";
+      const signature = `credential:${credentialMatch[0]}`;
+      if (signature !== session.lastPromptSignature) {
+        session.lastPromptSignature = signature;
+        session.callbacks.onSshPrompt({ type: "credential", label });
+      }
+    }
+  };
 
   let result: ManagedSpawnResult;
   if (descriptor.kind === "ssh") {
@@ -293,6 +365,11 @@ export const terminalManager = {
       pendingInput: [],
       exited: false,
       disposed: false,
+      sshTranscript: "",
+      lastPromptSignature: "",
+      sshStage: "starting",
+      sshIssueReported: false,
+      sshFinalizing: false,
     };
     sessions.set(sessionId, session);
 
@@ -369,6 +446,15 @@ export const terminalManager = {
     if (session.backendId) void writePty(session.backendId, data);
     else if (!session.exited) session.pendingInput.push(data);
     session.term.focus();
+  },
+
+  answerSshPrompt(sessionId: string, value: string): void {
+    const session = sessions.get(sessionId);
+    if (!session || session.descriptor.kind !== "ssh") return;
+    session.lastPromptSignature = "";
+    session.sshTranscript = "";
+    if (session.backendId) void writePty(session.backendId, `${value}\r`);
+    else session.pendingInput.push(`${value}\r`);
   },
 
   async restart(sessionId: string): Promise<ManagedSpawnResult> {

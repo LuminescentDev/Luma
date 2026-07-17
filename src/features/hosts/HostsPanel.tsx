@@ -3,11 +3,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   Cable,
-  ChevronDown,
   ChevronRight,
   Copy,
   DownloadCloud,
   FolderPlus,
+  Folder,
+  Home,
   KeyRound,
   MoreHorizontal,
   Pencil,
@@ -72,7 +73,10 @@ export function HostsPanel() {
   const allGroups = groups ?? [];
 
   const [query, setQuery] = useState("");
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [currentGroupId, setCurrentGroupId] = useState<string | null>(null);
+  const [selectedHostIds, setSelectedHostIds] = useState<Set<string>>(new Set());
+  const [draggingHostIds, setDraggingHostIds] = useState<string[]>([]);
+  const [dropTargetId, setDropTargetId] = useState<string | null | undefined>(undefined);
 
   const [editorHost, setEditorHost] = useState<Host | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -119,11 +123,25 @@ export function HostsPanel() {
       setDeletingGroup(null);
     },
   });
+  const moveHosts = useMutation({
+    mutationFn: async ({ ids, groupId }: { ids: string[]; groupId: string | null }) => {
+      const byId = new Map(allHosts.map((host) => [host.id, host]));
+      await Promise.all(ids.map((id) => {
+        const host = byId.get(id);
+        return host ? updateHost(id, { ...hostToInput(host), groupId }) : Promise.resolve();
+      }));
+    },
+    onSuccess: () => {
+      invalidate();
+      setSelectedHostIds(new Set());
+      setDraggingHostIds([]);
+    },
+  });
 
   const connect = (host: Host) => {
     // The backend records the recent connection on a successful spawn; refresh
     // the Recent list once the connection attempt settles.
-    void openSshSession(host.id, host.name).then(() => {
+    void openSshSession(host.id, host.name, host.hostname).then(() => {
       openSection("terminal");
       return queryClient.invalidateQueries({ queryKey: RECENT_HOSTS_KEY });
     });
@@ -134,16 +152,37 @@ export function HostsPanel() {
     setEditorOpen(true);
   };
 
-  const toggleGroup = (id: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
   const searching = query.trim().length > 0;
   const filtered = allHosts.filter((h) => matchesQuery(h, query.trim()));
+
+  const currentGroup = currentGroupId
+    ? allGroups.find((group) => group.id === currentGroupId) ?? null
+    : null;
+  const childGroups = allGroups.filter((group) => group.parentId === currentGroupId);
+  const visibleGroupIds = currentGroupId
+    ? descendantGroupIds(currentGroupId, allGroups)
+    : null;
+  const visibleHosts = visibleGroupIds
+    ? allHosts.filter((host) => host.groupId !== null && visibleGroupIds.has(host.groupId))
+    : allHosts;
+  const breadcrumbs = currentGroup ? groupPath(currentGroup, allGroups) : [];
+
+  const startHostDrag = (event: React.DragEvent, host: Host) => {
+    const ids = selectedHostIds.has(host.id) ? [...selectedHostIds] : [host.id];
+    if (!selectedHostIds.has(host.id)) setSelectedHostIds(new Set([host.id]));
+    setDraggingHostIds(ids);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-luma-hosts", JSON.stringify(ids));
+    event.dataTransfer.setData("text/plain", `${ids.length} host${ids.length === 1 ? "" : "s"}`);
+  };
+  const dropHosts = (event: React.DragEvent, groupId: string | null) => {
+    event.preventDefault();
+    const raw = event.dataTransfer.getData("application/x-luma-hosts");
+    let ids = draggingHostIds;
+    try { if (raw) ids = JSON.parse(raw) as string[]; } catch { /* use in-memory drag */ }
+    setDropTargetId(undefined);
+    if (ids.length > 0) moveHosts.mutate({ ids, groupId });
+  };
 
   const rowProps = {
     onConnect: connect,
@@ -153,33 +192,14 @@ export function HostsPanel() {
     onToggleFavorite: (h: Host) => favoriteToggle.mutate(h),
     onPortForwards: (h: Host) => setPortForwardsHost(h),
     runningByHost,
-  };
-
-  const renderGroup = (group: HostGroup): React.ReactNode => {
-    const groupHosts = allHosts.filter((host) => host.groupId === group.id);
-    const childGroups = allGroups.filter((candidate) => candidate.parentId === group.id);
-    return (
-      <GroupSection
-        key={group.id}
-        group={group}
-        collapsed={collapsed.has(group.id)}
-        onToggle={() => toggleGroup(group.id)}
-        onRename={() => {
-          setGroupDialogGroup(group);
-          setGroupDialogOpen(true);
-        }}
-        onDelete={() => setDeletingGroup(group)}
-      >
-        {groupHosts.length === 0 && childGroups.length === 0 ? (
-          <p className="px-1 py-1 text-xs text-muted/70">No hosts.</p>
-        ) : (
-          <>
-            {groupHosts.map((host) => <HostRow key={host.id} host={host} {...rowProps} />)}
-            {childGroups.map(renderGroup)}
-          </>
-        )}
-      </GroupSection>
-    );
+    selectedHostIds,
+    onSelect: (host: Host, additive: boolean) => setSelectedHostIds((previous) => {
+      const next = additive ? new Set(previous) : new Set<string>();
+      if (additive && next.has(host.id)) next.delete(host.id); else next.add(host.id);
+      return next;
+    }),
+    onDragStart: startHostDrag,
+    onDragEnd: () => { setDraggingHostIds([]); setDropTargetId(undefined); },
   };
 
   return (
@@ -250,7 +270,7 @@ export function HostsPanel() {
         </div>
       )}
 
-      {allHosts.length === 0 ? (
+      {allHosts.length === 0 && allGroups.length === 0 ? (
         <EmptyHosts
           onAdd={() => openEditor(null)}
           onImport={() => setImportOpen(true)}
@@ -266,9 +286,13 @@ export function HostsPanel() {
           )}
         </div>
       ) : (
-        <div className="space-y-8">
-          {allGroups.length > 0 && <section><h2 className="mb-3 text-sm font-semibold">Groups</h2><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{allGroups.filter((group) => !group.parentId).map((group) => <button key={group.id} type="button" className="flex items-center gap-3 rounded-xl bg-raised px-4 py-3 text-left hover:ring-1 hover:ring-accent"><span className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/20 text-accent"><Server size={18}/></span><span><span className="block text-sm font-semibold">{group.name}</span><span className="block text-xs text-muted">{allHosts.filter((host) => host.groupId === group.id).length} Hosts</span></span></button>)}</div></section>}
-          <Section title="Hosts">{allHosts.map((host) => <HostRow key={host.id} host={host} {...rowProps} />)}</Section>
+        <div className="space-y-6" onClick={(event) => { if (event.target === event.currentTarget) setSelectedHostIds(new Set()); }}>
+          <nav className="flex items-center gap-1 text-sm text-muted" aria-label="Group path">
+            <button type="button" onClick={() => setCurrentGroupId(null)} onDragOver={(e) => { if (draggingHostIds.length) { e.preventDefault(); setDropTargetId(null); } }} onDrop={(e) => dropHosts(e, null)} className={cn("flex items-center gap-1 rounded-md px-2 py-1 hover:bg-raised hover:text-foreground", dropTargetId === null && "bg-accent/15 text-accent")}><Home size={14} /> Hosts</button>
+            {breadcrumbs.map((group) => <span key={group.id} className="flex items-center gap-1"><ChevronRight size={13} /><button type="button" onClick={() => setCurrentGroupId(group.id)} className="rounded-md px-2 py-1 hover:bg-raised hover:text-foreground">{group.name}</button></span>)}
+          </nav>
+          {childGroups.length > 0 && <section><h2 className="mb-3 text-sm font-semibold">Folders</h2><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{childGroups.map((group) => <FolderCard key={group.id} group={group} groups={allGroups} hosts={allHosts} active={dropTargetId === group.id} onOpen={() => { setCurrentGroupId(group.id); setSelectedHostIds(new Set()); }} onDragOver={(e) => { if (draggingHostIds.length) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDropTargetId(group.id); } }} onDragLeave={() => setDropTargetId(undefined)} onDrop={(e) => dropHosts(e, group.id)} onRename={() => { setGroupDialogGroup(group); setGroupDialogOpen(true); }} onDelete={() => setDeletingGroup(group)} />)}</div></section>}
+          <Section title={currentGroup ? "Hosts in this folder and subfolders" : "All hosts"}>{visibleHosts.length ? visibleHosts.map((host) => <HostRow key={host.id} host={host} {...rowProps} />) : <p className="col-span-full rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">This folder is empty. Drag hosts here to add them.</p>}</Section>
         </div>
       )}
 
@@ -277,6 +301,7 @@ export function HostsPanel() {
         onOpenChange={setEditorOpen}
         host={editorHost}
         groups={allGroups}
+        initialGroupId={currentGroupId}
         keyReferences={keyReferences ?? []}
         identities={identities ?? []}
         hosts={allHosts}
@@ -295,6 +320,7 @@ export function HostsPanel() {
         onOpenChange={setGroupDialogOpen}
         group={groupDialogGroup}
         groups={allGroups}
+        initialParentId={currentGroupId}
       />
       <ConfirmDialog
         open={deletingHost !== null}
@@ -385,60 +411,65 @@ function Section({
   );
 }
 
-function GroupSection({
-  group,
-  collapsed,
-  onToggle,
-  onRename,
-  onDelete,
-  children,
-}: {
+function groupPath(group: HostGroup, groups: HostGroup[]): HostGroup[] {
+  const byId = new Map(groups.map((candidate) => [candidate.id, candidate]));
+  const path: HostGroup[] = [];
+  let cursor: HostGroup | undefined = group;
+  while (cursor) {
+    path.unshift(cursor);
+    cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
+  }
+  return path;
+}
+
+function descendantGroupIds(rootId: string, groups: HostGroup[]): Set<string> {
+  const result = new Set<string>([rootId]);
+  const pending = [rootId];
+  while (pending.length > 0) {
+    const parentId = pending.pop();
+    for (const group of groups) {
+      if (group.parentId === parentId && !result.has(group.id)) {
+        result.add(group.id);
+        pending.push(group.id);
+      }
+    }
+  }
+  return result;
+}
+
+function FolderCard({ group, groups, hosts, active, onOpen, onRename, onDelete, ...dropProps }: {
   group: HostGroup;
-  collapsed: boolean;
-  onToggle: () => void;
+  groups: HostGroup[];
+  hosts: Host[];
+  active: boolean;
+  onOpen: () => void;
   onRename: () => void;
   onDelete: () => void;
-  children: React.ReactNode;
+  onDragOver: React.DragEventHandler<HTMLDivElement>;
+  onDragLeave: React.DragEventHandler<HTMLDivElement>;
+  onDrop: React.DragEventHandler<HTMLDivElement>;
 }) {
+  const containedGroupIds = descendantGroupIds(group.id, groups);
+  const containedHosts = hosts.filter((host) => host.groupId !== null && containedGroupIds.has(host.groupId)).length;
+  const subgroups = groups.filter((candidate) => candidate.parentId === group.id).length;
   return (
-    <div className="group/section">
-      <div className="flex items-center gap-1">
+    <div {...dropProps} className={cn("group/folder flex items-center gap-3 rounded-xl bg-raised px-4 py-3 transition-all hover:ring-1 hover:ring-accent", active && "ring-2 ring-accent bg-accent/10")}>
+      <button type="button" onClick={onOpen} onDoubleClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/20 text-accent"><Folder size={19} fill="currentColor" /></span>
+        <span className="min-w-0"><span className="block truncate text-sm font-semibold text-foreground">{group.name}</span><span className="block text-xs text-muted">{containedHosts} host{containedHosts === 1 ? "" : "s"}{subgroups > 0 ? ` · ${subgroups} folder${subgroups === 1 ? "" : "s"}` : ""}</span></span>
+      </button>
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          onClick={onToggle}
-          aria-expanded={!collapsed}
-          className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-muted hover:text-foreground"
+          aria-label={`${group.name} folder actions`}
+          className="invisible rounded p-1 text-muted hover:text-foreground group-hover/folder:visible"
         >
-          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-          <span className="truncate">{group.name}</span>
+          <MoreHorizontal size={15} />
         </button>
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button
-              type="button"
-              aria-label={`Group ${group.name} actions`}
-              className="invisible shrink-0 rounded p-0.5 text-muted hover:text-foreground group-hover/section:visible"
-            >
-              <MoreHorizontal size={14} />
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              align="end"
-              sideOffset={4}
-              className="z-50 min-w-36 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"
-            >
-              <MenuItem icon={<Pencil size={14} />} onSelect={onRename}>
-                Rename
-              </MenuItem>
-              <MenuItem icon={<Trash2 size={14} />} destructive onSelect={onDelete}>
-                Delete
-              </MenuItem>
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-      </div>
-      {!collapsed && <div className="space-y-0.5 pl-1">{children}</div>}
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-36 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"><MenuItem icon={<Pencil size={14} />} onSelect={onRename}>Rename</MenuItem><MenuItem icon={<Trash2 size={14} />} destructive onSelect={onDelete}>Delete</MenuItem></DropdownMenu.Content></DropdownMenu.Portal>
+      </DropdownMenu.Root>
     </div>
   );
 }
@@ -452,6 +483,10 @@ function HostRow({
   onToggleFavorite,
   onPortForwards,
   runningByHost,
+  selectedHostIds,
+  onSelect,
+  onDragStart,
+  onDragEnd,
 }: {
   host: Host;
   onConnect: (host: Host) => void;
@@ -461,13 +496,22 @@ function HostRow({
   onToggleFavorite: (host: Host) => void;
   onPortForwards: (host: Host) => void;
   runningByHost: Map<string, number>;
+  selectedHostIds: Set<string>;
+  onSelect: (host: Host, additive: boolean) => void;
+  onDragStart: (event: React.DragEvent, host: Host) => void;
+  onDragEnd: () => void;
 }) {
   const runningTunnels = runningByHost.get(host.id) ?? 0;
+  const selected = selectedHostIds.has(host.id);
   return (
-    <div className="group/row flex min-h-[62px] items-center gap-2 rounded-xl bg-raised px-3 py-2 text-sm text-muted transition-all hover:ring-1 hover:ring-accent hover:text-foreground">
+    <div draggable onDragStart={(event) => onDragStart(event, host)} onDragEnd={onDragEnd} onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onSelect(host, event.ctrlKey || event.metaKey); }} aria-selected={selected} className={cn("group/row flex min-h-[62px] cursor-grab items-center gap-2 rounded-xl bg-raised px-3 py-2 text-sm text-muted transition-all hover:ring-1 hover:ring-accent hover:text-foreground active:cursor-grabbing", selected && "ring-2 ring-accent bg-accent/10")}>
       <button
         type="button"
-        onClick={() => onConnect(host)}
+        onClick={(event) => {
+          if (event.ctrlKey || event.metaKey) onSelect(host, true);
+          else if (selectedHostIds.size > 0) onSelect(host, false);
+          else onConnect(host);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();

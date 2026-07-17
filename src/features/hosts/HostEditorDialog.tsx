@@ -35,13 +35,13 @@ type FormState = {
   env: EnvRow[];
 };
 
-function initialState(host: Host | null): FormState {
+function initialState(host: Host | null, initialGroupId: string | null = null): FormState {
   return {
     name: host?.name ?? "",
     hostname: host?.hostname ?? "",
     port: String(host?.port ?? 22),
     username: host?.username ?? "",
-    groupId: host?.groupId ?? "",
+    groupId: host?.groupId ?? initialGroupId ?? "",
     authenticationType: host?.authenticationType ?? "agent",
     keyId: host?.keyId ?? "",
     identityId: host?.identityId ?? "",
@@ -75,7 +75,7 @@ function validate(state: FormState): FieldErrors {
   else if (hostname.startsWith("-")) errors.hostname = "Hostname cannot start with '-'.";
 
   const username = state.username.trim();
-  if (username) {
+  if (!state.identityId && username) {
     if (/\s/.test(username)) errors.username = "Username cannot contain whitespace.";
     else if (username.startsWith("-")) errors.username = "Username cannot start with '-'.";
   }
@@ -85,7 +85,7 @@ function validate(state: FormState): FieldErrors {
     errors.port = "Port must be between 1 and 65535.";
   }
 
-  if (state.authenticationType === "key" && !state.keyId) {
+  if (!state.identityId && state.authenticationType === "key" && !state.keyId) {
     errors.keyId = "Select a key reference for key authentication.";
   }
   return errors;
@@ -93,14 +93,15 @@ function validate(state: FormState): FieldErrors {
 
 function toInput(state: FormState): HostInput {
   const env = state.env.filter((row) => row.key.trim());
+  const usesIdentity = Boolean(state.identityId);
   return {
     name: state.name.trim(),
     hostname: state.hostname.trim(),
     port: Number(state.port),
-    username: state.username.trim() || null,
+    username: usesIdentity ? null : state.username.trim() || null,
     groupId: state.groupId || null,
-    authenticationType: state.authenticationType,
-    keyId: state.authenticationType === "key" ? state.keyId || null : null,
+    authenticationType: usesIdentity ? "agent" : state.authenticationType,
+    keyId: !usesIdentity && state.authenticationType === "key" ? state.keyId || null : null,
     identityId: state.identityId || null,
     proxyJumpHostId: state.proxyJumpHostId || null,
     startupCommand: state.startupCommand.trim() || null,
@@ -130,6 +131,7 @@ export function HostEditorDialog({
   identities,
   hosts,
   onManageKeys,
+  initialGroupId = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -139,18 +141,19 @@ export function HostEditorDialog({
   identities: Identity[];
   hosts: Host[];
   onManageKeys: () => void;
+  initialGroupId?: string | null;
 }) {
   const invalidate = useInvalidateHosts();
-  const [state, setState] = useState<FormState>(() => initialState(host));
+  const [state, setState] = useState<FormState>(() => initialState(host, initialGroupId));
   const [showErrors, setShowErrors] = useState(false);
 
   // Re-seed the form whenever the dialog opens for a different host.
   useEffect(() => {
     if (open) {
-      setState(initialState(host));
+      setState(initialState(host, initialGroupId));
       setShowErrors(false);
     }
-  }, [open, host]);
+  }, [open, host, initialGroupId]);
 
   const errors = useMemo(() => validate(state), [state]);
   const hasErrors = Object.keys(errors).length > 0;
@@ -248,15 +251,17 @@ export function HostEditorDialog({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <TextField
-            label="Username"
-            mono
-            value={state.username}
-            onChange={(v) => patch({ username: v })}
-            placeholder="root"
-            error={err("username")}
-          />
+        <div className={`grid gap-3 ${state.identityId ? "grid-cols-1" : "grid-cols-2"}`}>
+          {!state.identityId && (
+            <TextField
+              label="Username"
+              mono
+              value={state.username}
+              onChange={(v) => patch({ username: v })}
+              placeholder="root"
+              error={err("username")}
+            />
+          )}
           <SelectField
             label="Group"
             value={state.groupId}
@@ -271,46 +276,48 @@ export function HostEditorDialog({
           </SelectField>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <SelectField
-            label="Authentication"
-            value={state.authenticationType}
-            onChange={(v) => patch({ authenticationType: v as AuthenticationType })}
-          >
-            {AUTH_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </SelectField>
-          {state.authenticationType === "key" && (
-            <div>
-              <SelectField
-                label="Key reference"
-                required
-                value={state.keyId}
-                onChange={(v) => patch({ keyId: v })}
-                error={err("keyId")}
-              >
-                <option value="">Select a key…</option>
-                {keyReferences.map((k) => (
-                  <option key={k.id} value={k.id}>
-                    {k.name}
-                  </option>
-                ))}
-              </SelectField>
-              <button
-                type="button"
-                onClick={onManageKeys}
-                className="mt-1 flex items-center gap-1 text-xs text-accent hover:underline"
-              >
-                <KeyRound size={11} /> Manage keys
-              </button>
-            </div>
-          )}
-        </div>
+        {!state.identityId && (
+          <div className="grid grid-cols-2 gap-3">
+            <SelectField
+              label="Authentication"
+              value={state.authenticationType}
+              onChange={(v) => patch({ authenticationType: v as AuthenticationType })}
+            >
+              {AUTH_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </SelectField>
+            {state.authenticationType === "key" && (
+              <div>
+                <SelectField
+                  label="Key reference"
+                  required
+                  value={state.keyId}
+                  onChange={(v) => patch({ keyId: v })}
+                  error={err("keyId")}
+                >
+                  <option value="">Select a key…</option>
+                  {keyReferences.map((k) => (
+                    <option key={k.id} value={k.id}>
+                      {k.name}
+                    </option>
+                  ))}
+                </SelectField>
+                <button
+                  type="button"
+                  onClick={onManageKeys}
+                  className="mt-1 flex items-center gap-1 text-xs text-accent hover:underline"
+                >
+                  <KeyRound size={11} /> Manage keys
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
-        {(state.authenticationType === "password" ||
+        {!state.identityId && (state.authenticationType === "password" ||
           state.authenticationType === "interactive") && (
           <p className="rounded-md border border-border bg-background px-3 py-2 text-xs text-muted">
             You will be prompted for the password in the terminal. Luma does not

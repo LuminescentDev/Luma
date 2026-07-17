@@ -24,6 +24,9 @@ type UiState = {
   showWorkspace: () => void;
   terminalSearchOpen: boolean;
   setTerminalSearchOpen: (open: boolean) => void;
+  newTabOpen: boolean;
+  openNewTab: () => void;
+  closeNewTab: () => void;
   /** Command palette overlay visibility. */
   paletteOpen: boolean;
   openPalette: () => void;
@@ -45,6 +48,9 @@ export const useUiStore = create<UiState>((set) => ({
   showWorkspace: () => set({ view: "workspace" }),
   terminalSearchOpen: false,
   setTerminalSearchOpen: (open) => set({ terminalSearchOpen: open }),
+  newTabOpen: false,
+  openNewTab: () => set({ view: "workspace", section: "terminal", newTabOpen: true }),
+  closeNewTab: () => set({ newTabOpen: false }),
   paletteOpen: false,
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),

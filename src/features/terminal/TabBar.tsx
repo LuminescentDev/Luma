@@ -1,6 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
-  ChevronDown,
   Columns2,
   Command,
   Loader2,
@@ -23,9 +22,10 @@ export function TabBar() {
   const activeTabId = useSessionStore((s) => s.activeTabId);
   const setActiveTab = useSessionStore((s) => s.setActiveTab);
   const closeTab = useSessionStore((s) => s.closeTab);
-  const openLocalSession = useSessionStore((s) => s.openLocalSession);
   const splitActivePane = useSessionStore((s) => s.splitActivePane);
   const openPalette = useUiStore((s) => s.openPalette);
+  const openNewTab = useUiStore((s) => s.openNewTab);
+  const newTabOpen = useUiStore((s) => s.newTabOpen);
 
   const activeSessionOf = (tab: WorkspaceTab): TerminalSession | undefined => {
     const leaf = findLeaf(tab.root, tab.activePaneId);
@@ -33,7 +33,7 @@ export function TabBar() {
   };
 
   return (
-    <div className="flex h-[46px] shrink-0 items-stretch gap-2 border-b border-border bg-surface px-2 pt-2">
+    <div className="flex h-full min-w-0 flex-1 items-center gap-1">
       <div className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto">
         {tabs.map((tab) => {
           const session = activeSessionOf(tab);
@@ -43,9 +43,9 @@ export function TabBar() {
             <div
               key={tab.id}
               className={cn(
-                "group flex min-w-0 max-w-56 shrink-0 items-center gap-1.5 rounded-t-lg border border-b-0 px-3 text-sm",
+                "group flex h-7 min-w-32 max-w-52 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs",
                 active
-                  ? "border-border bg-background text-foreground"
+                  ? "border-border bg-raised text-foreground"
                   : "border-transparent text-muted hover:bg-raised hover:text-foreground",
               )}
             >
@@ -73,27 +73,16 @@ export function TabBar() {
         })}
       </div>
 
-      <div className="my-auto flex shrink-0 items-center gap-1">
-        <div className="flex items-center">
-          <button
-            type="button"
-            aria-label="New terminal (default shell)"
-            title="New terminal"
-            onClick={() => void openLocalSession()}
-            className="flex h-7 w-6 items-center justify-center rounded-l-md text-muted hover:bg-raised hover:text-foreground"
-          >
-            <Plus size={15} />
-          </button>
-          <NewTerminalMenu>
-            <button
-              type="button"
-              aria-label="Choose shell"
-              className="flex h-7 w-4 items-center justify-center rounded-r-md text-muted hover:bg-raised hover:text-foreground"
-            >
-              <ChevronDown size={12} />
-            </button>
-          </NewTerminalMenu>
-        </div>
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          aria-label="New tab"
+          title="New tab (Ctrl+Shift+T)"
+          onClick={openNewTab}
+          className={cn("flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-raised hover:text-foreground", newTabOpen && "bg-raised text-foreground")}
+        >
+          <Plus size={15} />
+        </button>
         {activeTabId && (
           <>
             <button

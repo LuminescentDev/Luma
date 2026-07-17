@@ -1,4 +1,4 @@
-import { FolderOpen, KeyRound, ScrollText, Server, Settings, SquareCode, TerminalSquare } from "lucide-react";
+import { KeyRound, ScrollText, Server, Settings, SquareCode, TerminalSquare } from "lucide-react";
 import { useUiStore } from "../stores/uiStore";
 import type { SidebarSection } from "../types";
 import { cn } from "../lib/utils";
@@ -7,7 +7,6 @@ const ITEMS: { section: SidebarSection; label: string; icon: typeof Server }[] =
   { section: "terminal", label: "Terminal", icon: TerminalSquare },
   { section: "hosts", label: "Hosts", icon: Server },
   { section: "logs", label: "Logs", icon: ScrollText },
-  { section: "sftp", label: "SFTP", icon: FolderOpen },
   { section: "snippets", label: "Snippets", icon: SquareCode },
 ];
 

@@ -9,6 +9,7 @@ use crate::ssh::{
 };
 use crate::storage::hosts;
 use crate::terminal::PtyManager;
+use crate::vault::VaultState;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -35,11 +36,13 @@ pub async fn ssh_detect() -> Result<SshDetection> {
 pub async fn ssh_spawn(
     state: State<'_, AppState>,
     pty: State<'_, PtyManager>,
+    vault_state: State<'_, VaultState>,
     request: SshSpawnRequest,
     on_data: Channel<InvokeResponseBody>,
     on_exit: Channel<SshExit>,
 ) -> Result<SshSpawnResponse> {
-    let (config, title) = ssh::connection_config(&state.pool, &request.host_id).await?;
+    let (config, title) =
+        ssh::connection_config(&state.pool, &vault_state, &request.host_id).await?;
     let engine = OpenSshEngine::new(&pty);
     let session_id = engine.connect(
         config,

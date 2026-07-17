@@ -2,6 +2,7 @@ mod commands;
 mod errors;
 mod logging;
 mod platform;
+mod sftp;
 mod ssh;
 mod storage;
 mod sync;
@@ -13,6 +14,7 @@ use std::path::PathBuf;
 use sqlx::SqlitePool;
 use tauri::Manager;
 
+use sftp::SftpManager;
 use ssh::TunnelManager;
 use terminal::PtyManager;
 
@@ -49,6 +51,7 @@ pub fn run() {
             app.manage(sync_state);
             app.manage(PtyManager::default());
             app.manage(TunnelManager::default());
+            app.manage(SftpManager::default());
 
             Ok(())
         })
@@ -73,6 +76,7 @@ pub fn run() {
             commands::host_group_update,
             commands::host_group_delete,
             commands::key_references_list,
+            commands::key_reference_secrets,
             commands::key_reference_create,
             commands::key_reference_update,
             commands::key_reference_delete,
@@ -96,6 +100,20 @@ pub fn run() {
             commands::tunnel_start,
             commands::tunnel_stop,
             commands::tunnels_list,
+            commands::sftp_connect,
+            commands::sftp_disconnect,
+            commands::sftp_sessions,
+            commands::sftp_list,
+            commands::sftp_mkdir,
+            commands::sftp_rename,
+            commands::sftp_delete,
+            commands::local_list,
+            commands::local_mkdir,
+            commands::local_rename,
+            commands::local_delete,
+            commands::sftp_upload,
+            commands::sftp_download,
+            commands::sftp_cancel,
             commands::pty_spawn,
             commands::pty_write,
             commands::pty_resize,
@@ -120,7 +138,8 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
-            // No tunnel or shell process may outlive the application.
+            // No tunnel, SFTP, transfer, or shell process may outlive the application.
+            app_handle.state::<SftpManager>().kill_all();
             let pty = app_handle.state::<PtyManager>();
             app_handle.state::<TunnelManager>().kill_all(&pty);
             pty.kill_all();

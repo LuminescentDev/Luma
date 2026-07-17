@@ -5,6 +5,7 @@ use crate::errors::{LumaError, Result};
 use crate::ssh::{self, TunnelExit, TunnelInfo, TunnelManager, TunnelStartResponse};
 use crate::storage::port_forwards::{self, PortForward, PortForwardInput};
 use crate::terminal::PtyManager;
+use crate::vault::VaultState;
 use crate::AppState;
 
 #[tauri::command]
@@ -46,13 +47,15 @@ pub async fn tunnel_start(
     state: State<'_, AppState>,
     pty: State<'_, PtyManager>,
     tunnels: State<'_, TunnelManager>,
+    vault_state: State<'_, VaultState>,
     port_forward_id: String,
     on_exit: Channel<TunnelExit>,
 ) -> Result<TunnelStartResponse> {
     let port_forward = port_forwards::get(&state.pool, &port_forward_id)
         .await?
         .ok_or_else(|| LumaError::InvalidInput("unknown port forward".into()))?;
-    let config = ssh::tunnel_connection_config(&state.pool, &port_forward.host_id).await?;
+    let config =
+        ssh::tunnel_connection_config(&state.pool, &vault_state, &port_forward.host_id).await?;
     let tunnel_id = tunnels.start(&pty, config, port_forward, move |exit| {
         let _ = on_exit.send(exit);
     })?;

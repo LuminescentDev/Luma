@@ -16,11 +16,13 @@ export function GroupDialog({
   onOpenChange,
   group,
   groups,
+  initialParentId = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   group: HostGroup | null;
   groups: HostGroup[];
+  initialParentId?: string | null;
 }) {
   const invalidate = useInvalidateHosts();
   const [name, setName] = useState("");
@@ -29,9 +31,9 @@ export function GroupDialog({
   useEffect(() => {
     if (open) {
       setName(group?.name ?? "");
-      setParentId(group?.parentId ?? "");
+      setParentId(group?.parentId ?? initialParentId ?? "");
     }
-  }, [open, group]);
+  }, [open, group, initialParentId]);
 
   const save = useMutation({
     mutationFn: (value: string) =>
@@ -93,7 +95,7 @@ export function GroupDialog({
           className="w-full rounded-md border border-border bg-background px-2.5 py-2 text-sm outline-none focus:border-accent"
         >
           <option value="">None (top level)</option>
-          {groups.filter((candidate) => candidate.id !== group?.id && !candidate.parentId).map((candidate) => (
+          {groups.filter((candidate) => candidate.id !== group?.id).map((candidate) => (
             <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
           ))}
         </select>

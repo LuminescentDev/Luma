@@ -8,12 +8,14 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use sqlx::SqlitePool;
+use zeroize::Zeroizing;
 
 use crate::errors::{LumaError, Result};
 use crate::storage::hosts::{self, Host};
 use crate::storage::identities;
 use crate::storage::key_references;
 use crate::terminal::{home_dir, PtyManager, ResolvedShell};
+use crate::vault::{self, VaultState};
 
 pub use config::{
     import_config, preview_config, SshConfigCandidate, SshConfigImportRequest,
@@ -23,7 +25,7 @@ pub use tunnels::{
     tunnel_connection_config, TunnelExit, TunnelInfo, TunnelManager, TunnelStartResponse,
 };
 
-const CAPTURE_LIMIT_BYTES: usize = 16 * 1024;
+pub(crate) const CAPTURE_LIMIT_BYTES: usize = 16 * 1024;
 const MAX_PROXY_JUMP_DEPTH: usize = 8;
 
 type DataCallback = Box<dyn FnMut(&[u8]) + Send + 'static>;
@@ -54,14 +56,41 @@ pub(crate) struct ProxyTarget {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SshConnectionConfig {
-    executable: String,
-    hostname: String,
+    pub(crate) executable: String,
+    pub(crate) hostname: String,
     port: u16,
     username: Option<String>,
     identity_file: Option<String>,
     proxy_jumps: Vec<ProxyTarget>,
-    startup_command: Option<String>,
+    pub(crate) startup_command: Option<String>,
     askpass_identity_id: Option<String>,
+    askpass_service: Option<String>,
+    askpass_prompt: Option<String>,
+    ephemeral_credential: Option<Arc<EphemeralCredential>>,
+    ephemeral_identity_file: Option<Arc<EphemeralIdentityFile>>,
+}
+
+#[derive(Debug)]
+struct EphemeralIdentityFile(PathBuf);
+
+#[derive(Debug)]
+struct EphemeralCredential {
+    service: String,
+    account: String,
+}
+
+impl Drop for EphemeralCredential {
+    fn drop(&mut self) {
+        if let Ok(entry) = keyring::Entry::new(&self.service, &self.account) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
+impl Drop for EphemeralIdentityFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 #[allow(dead_code)]
@@ -90,6 +119,29 @@ impl<'a> OpenSshEngine<'a> {
     }
 }
 
+pub(crate) fn askpass_environment(config: &SshConnectionConfig) -> Result<HashMap<String, String>> {
+    let mut environment = HashMap::new();
+    if let Some(identity_id) = &config.askpass_identity_id {
+        let executable = std::env::current_exe().map_err(|error| {
+            LumaError::SshUnavailable(format!("could not configure password helper: {error}"))
+        })?;
+        environment.insert(
+            "SSH_ASKPASS".into(),
+            executable.to_string_lossy().into_owned(),
+        );
+        environment.insert("SSH_ASKPASS_REQUIRE".into(), "force".into());
+        environment.insert("DISPLAY".into(), "luma:0".into());
+        environment.insert("LUMA_ASKPASS_ID".into(), identity_id.clone());
+        if let Some(service) = &config.askpass_service {
+            environment.insert("LUMA_ASKPASS_SERVICE".into(), service.clone());
+        }
+        if let Some(prompt) = &config.askpass_prompt {
+            environment.insert("LUMA_ASKPASS_PROMPT".into(), prompt.clone());
+        }
+    }
+    Ok(environment)
+}
+
 impl SshEngine for OpenSshEngine<'_> {
     fn connect(
         &self,
@@ -100,23 +152,13 @@ impl SshEngine for OpenSshEngine<'_> {
         on_exit: ExitCallback,
     ) -> Result<String> {
         let arguments = build_arguments(&config);
+        let ephemeral_identity_file = config.ephemeral_identity_file.clone();
         let captured = Arc::new(Mutex::new(Vec::with_capacity(CAPTURE_LIMIT_BYTES)));
         let captured_for_data = Arc::clone(&captured);
         let captured_for_exit = Arc::clone(&captured);
 
-        let mut environment = HashMap::new();
-        if let Some(identity_id) = &config.askpass_identity_id {
-            let executable = std::env::current_exe().map_err(|e| {
-                LumaError::SshUnavailable(format!("could not configure password helper: {e}"))
-            })?;
-            environment.insert(
-                "SSH_ASKPASS".into(),
-                executable.to_string_lossy().into_owned(),
-            );
-            environment.insert("SSH_ASKPASS_REQUIRE".into(), "force".into());
-            environment.insert("DISPLAY".into(), "luma:0".into());
-            environment.insert("LUMA_ASKPASS_ID".into(), identity_id.clone());
-        }
+        let environment = askpass_environment(&config)?;
+        let ephemeral_credential = config.ephemeral_credential.clone();
         self.pty
             .spawn(
                 ResolvedShell {
@@ -137,6 +179,8 @@ impl SshEngine for OpenSshEngine<'_> {
                     on_data(bytes);
                 },
                 move |code| {
+                    let _ephemeral_identity_file = ephemeral_identity_file;
+                    let _ephemeral_credential = ephemeral_credential;
                     let (error_category, error_message) = if code == Some(0) {
                         (None, None)
                     } else {
@@ -285,6 +329,7 @@ fn build_connection_options(
 
 pub(crate) fn build_arguments(config: &SshConnectionConfig) -> Vec<String> {
     let mut arguments = build_connection_options(config, false);
+    arguments.insert(0, "-v".into());
     if config.startup_command.is_some() {
         arguments.push("-t".into());
     }
@@ -292,6 +337,14 @@ pub(crate) fn build_arguments(config: &SshConnectionConfig) -> Vec<String> {
     if let Some(command) = &config.startup_command {
         arguments.push(command.clone());
     }
+    arguments
+}
+
+pub(crate) fn build_sftp_arguments(config: &SshConnectionConfig) -> Vec<String> {
+    let mut arguments = build_connection_options(config, false);
+    arguments.push("-s".into());
+    arguments.push(config.hostname.clone());
+    arguments.push("sftp".into());
     arguments
 }
 
@@ -314,9 +367,24 @@ fn resolve_identity_path(path: &str) -> PathBuf {
     path
 }
 
-async fn identity_file(pool: &SqlitePool, host: &Host) -> Result<Option<String>> {
+fn normalize_private_key(value: &str) -> String {
+    let value = value.trim_start_matches('\u{feff}').trim();
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = if !normalized.contains('\n') && normalized.contains("\\n") {
+        normalized.replace("\\n", "\n")
+    } else {
+        normalized
+    };
+    format!("{}\n", normalized.trim_end())
+}
+
+async fn identity_file(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    host: &Host,
+) -> Result<(Option<String>, Option<Arc<EphemeralIdentityFile>>)> {
     if host.authentication_type != "key" {
-        return Ok(None);
+        return Ok((None, None));
     }
     let key_id = host
         .key_id
@@ -325,9 +393,42 @@ async fn identity_file(pool: &SqlitePool, host: &Host) -> Result<Option<String>>
     let key = key_references::get(pool, key_id)
         .await?
         .ok_or_else(|| LumaError::KeyUnavailable("key reference no longer exists".into()))?;
+    if key.storage_mode == "encrypted-vault" {
+        let private_key = Zeroizing::new(
+            vault::load(pool, vault_state, "key", key_id, "private-key")
+                .await?
+                .ok_or_else(|| LumaError::KeyUnavailable("vault key has no private key".into()))?,
+        );
+        let path = std::env::temp_dir().join(format!("luma-ssh-{}.key", uuid::Uuid::new_v4()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        use std::io::Write;
+        let mut file = options.open(&path).map_err(|error| {
+            LumaError::KeyUnavailable(format!("could not prepare vault key: {error}"))
+        })?;
+        let normalized_private_key = Zeroizing::new(normalize_private_key(&private_key));
+        let write_result = file.write_all(normalized_private_key.as_bytes());
+        if let Err(error) = write_result {
+            let _ = std::fs::remove_file(&path);
+            return Err(LumaError::KeyUnavailable(format!(
+                "could not prepare vault key: {error}"
+            )));
+        }
+        drop(file);
+        let guard = Arc::new(EphemeralIdentityFile(path.clone()));
+        return Ok((Some(path.to_string_lossy().into_owned()), Some(guard)));
+    }
+    if key.storage_mode == "ssh-agent" {
+        return Ok((None, None));
+    }
     if key.storage_mode != "local-path" {
         return Err(LumaError::KeyUnavailable(
-            "key authentication requires a local-path key reference".into(),
+            "unsupported key storage mode".into(),
         ));
     }
     let local_path = key
@@ -340,17 +441,21 @@ async fn identity_file(pool: &SqlitePool, host: &Host) -> Result<Option<String>>
             "the configured private key file is unavailable on this device".into(),
         ));
     }
-    Ok(Some(resolved.to_string_lossy().into_owned()))
+    Ok((Some(resolved.to_string_lossy().into_owned()), None))
 }
 
 pub async fn connection_config(
     pool: &SqlitePool,
+    vault_state: &VaultState,
     host_id: &str,
 ) -> Result<(SshConnectionConfig, String)> {
     let mut host = hosts::get(pool, host_id)
         .await?
         .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
     let mut askpass_identity_id = None;
+    let mut askpass_service = None;
+    let mut askpass_prompt = None;
+    let mut ephemeral_credential = None;
     if let Some(identity_id) = &host.identity_id {
         let identity = identities::get(pool, identity_id)
             .await?
@@ -362,13 +467,46 @@ pub async fn connection_config(
         } else if identity.has_password {
             host.authentication_type = "password".into();
             askpass_identity_id = Some(identity_id.clone());
+            askpass_service = Some("luma.ssh.identity".into());
+            askpass_prompt = Some("password".into());
         }
     }
     let detection = detect();
     let executable = detection.path.ok_or_else(|| {
         LumaError::SshUnavailable("system OpenSSH executable was not found".into())
     })?;
-    let identity_file = identity_file(pool, &host).await?;
+    let (identity_file, ephemeral_identity_file) = identity_file(pool, vault_state, &host).await?;
+    if host.authentication_type == "key" {
+        if let Some(key_id) = host.key_id.as_deref() {
+            let has_saved_passphrase = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM vault_secrets WHERE owner_type='key' AND owner_id=?1 AND secret_type='passphrase')",
+            )
+            .bind(key_id)
+            .fetch_one(pool)
+            .await?
+                != 0;
+            if has_saved_passphrase {
+                let passphrase = vault::load(pool, vault_state, "key", key_id, "passphrase")
+                    .await?
+                    .unwrap_or_default();
+                if !passphrase.is_empty() {
+                    let service = "luma.ssh.key-passphrase".to_string();
+                    let account = uuid::Uuid::new_v4().to_string();
+                    keyring::Entry::new(&service, &account)
+                        .and_then(|entry| entry.set_password(&passphrase))
+                        .map_err(|error| {
+                            LumaError::KeyUnavailable(format!(
+                                "could not prepare saved key passphrase: {error}"
+                            ))
+                        })?;
+                    askpass_identity_id = Some(account.clone());
+                    askpass_service = Some(service.clone());
+                    askpass_prompt = Some("passphrase".into());
+                    ephemeral_credential = Some(Arc::new(EphemeralCredential { service, account }));
+                }
+            }
+        }
+    }
 
     let mut proxy_jumps = Vec::new();
     let mut next = host.proxy_jump_host_id.clone();
@@ -406,6 +544,10 @@ pub async fn connection_config(
             proxy_jumps,
             startup_command: host.startup_command,
             askpass_identity_id,
+            askpass_service,
+            askpass_prompt,
+            ephemeral_credential,
+            ephemeral_identity_file,
         },
         host.name,
     ))
@@ -465,6 +607,10 @@ mod tests {
             proxy_jumps: vec![],
             startup_command: None,
             askpass_identity_id: None,
+            askpass_service: None,
+            askpass_prompt: None,
+            ephemeral_credential: None,
+            ephemeral_identity_file: None,
         }
     }
 
@@ -477,6 +623,7 @@ mod tests {
             assert_eq!(
                 arguments,
                 vec![
+                    "-v",
                     "-p",
                     "2222",
                     "-l",
@@ -512,6 +659,7 @@ mod tests {
         assert_eq!(
             build_arguments(&config),
             vec![
+                "-v",
                 "-p",
                 "2222",
                 "-l",
@@ -529,6 +677,30 @@ mod tests {
                 "cd /srv && exec bash -l"
             ]
         );
+    }
+
+    #[test]
+    fn builds_sftp_subsystem_arguments_without_pty_or_startup_command() {
+        let mut config = base_config();
+        config.startup_command = Some("must-not-run".into());
+        let arguments = build_sftp_arguments(&config);
+
+        assert_eq!(
+            arguments,
+            vec![
+                "-p",
+                "2222",
+                "-l",
+                "alice",
+                "-o",
+                "BatchMode=no",
+                "-s",
+                "server.example.com",
+                "sftp"
+            ]
+        );
+        assert!(!arguments.iter().any(|argument| argument == "-t"));
+        assert!(!arguments.iter().any(|argument| argument == "must-not-run"));
     }
 
     #[test]
@@ -574,6 +746,18 @@ mod tests {
                 .ends_with(".ssh/relative-key")
                 || std::path::Path::new(&resolve_identity_path("relative-key"))
                     .ends_with(".ssh\\relative-key")
+        );
+    }
+
+    #[test]
+    fn normalizes_private_keys_for_openssh() {
+        assert_eq!(
+            normalize_private_key("\u{feff}-----BEGIN KEY-----\r\ndata\r\n-----END KEY-----"),
+            "-----BEGIN KEY-----\ndata\n-----END KEY-----\n"
+        );
+        assert_eq!(
+            normalize_private_key("-----BEGIN KEY-----\\ndata\\n-----END KEY-----"),
+            "-----BEGIN KEY-----\ndata\n-----END KEY-----\n"
         );
     }
 }

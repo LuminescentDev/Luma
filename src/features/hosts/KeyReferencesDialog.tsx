@@ -95,6 +95,7 @@ export function KeyReferencesDialog({
         publicKey: draft.publicKey.trim() || null,
         fingerprint: draft.fingerprint.trim() || null,
         certificate: draft.certificate.trim() || null,
+        passphrase: draft.passphrase || undefined,
       },
     });
   };
@@ -190,7 +191,7 @@ export function KeyReferencesDialog({
               onChange={(v) => setDraft({ ...draft, publicKey: v })}
               placeholder="ssh-ed25519 AAAA…"
             />
-            <TextField label="Passphrase (used when generating)" type="password" value={draft.passphrase} onChange={(passphrase) => setDraft({ ...draft, passphrase })} />
+            <TextField label={draft.id ? "Passphrase (leave blank to keep current)" : "Passphrase (saved in encrypted vault)"} type="password" value={draft.passphrase} onChange={(passphrase) => setDraft({ ...draft, passphrase })} />
             <TextField label="Certificate (optional)" mono value={draft.certificate} onChange={(certificate) => setDraft({ ...draft, certificate })} placeholder="ssh-ed25519-cert-v01@openssh.com …" />
             <TextField
               label="Fingerprint (optional)"

@@ -6,13 +6,14 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 
 use super::{
-    build_connection_options, classify_error_output, connection_config, SshConnectionConfig,
-    CAPTURE_LIMIT_BYTES,
+    askpass_environment, build_connection_options, classify_error_output, connection_config,
+    SshConnectionConfig, CAPTURE_LIMIT_BYTES,
 };
 use crate::errors::{LumaError, Result};
 use crate::storage::hosts;
 use crate::storage::port_forwards::PortForward;
 use crate::terminal::{PtyManager, ResolvedShell};
+use crate::vault::VaultState;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -91,12 +92,15 @@ impl TunnelManager {
         let captured_for_data = Arc::clone(&captured);
         let captured_for_exit = Arc::clone(&captured);
         let stopped_for_exit = Arc::clone(&stop_requested);
+        let ephemeral_identity_file = config.ephemeral_identity_file.clone();
+        let ephemeral_credential = config.ephemeral_credential.clone();
+        let environment = askpass_environment(&config)?;
         let spawn_result = pty.spawn(
             ResolvedShell {
                 path: config.executable,
                 args: arguments,
                 working_directory: None,
-                environment: HashMap::new(),
+                environment,
             },
             80,
             24,
@@ -108,6 +112,8 @@ impl TunnelManager {
                 }
             },
             move |code| {
+                let _ephemeral_identity_file = ephemeral_identity_file;
+                let _ephemeral_credential = ephemeral_credential;
                 tunnels_for_exit.lock().unwrap().remove(&tunnel_id_for_exit);
                 let stopped = stopped_for_exit.load(Ordering::SeqCst);
                 let (error_category, error_message) = if code == Some(0) || stopped {
@@ -216,21 +222,24 @@ impl TunnelManager {
 /// authentication must complete without a password prompt.
 pub async fn tunnel_connection_config(
     pool: &SqlitePool,
+    vault_state: &VaultState,
     host_id: &str,
 ) -> Result<SshConnectionConfig> {
     let host = hosts::get(pool, host_id)
         .await?
         .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
+    let (mut config, _) = connection_config(pool, vault_state, host_id).await?;
     if matches!(
         host.authentication_type.as_str(),
         "password" | "interactive"
-    ) {
+    ) || (config.askpass_identity_id.is_some()
+        && config.askpass_prompt.as_deref() != Some("passphrase"))
+    {
         return Err(LumaError::InvalidInput(
             "tunnels require key or agent authentication in this version because interactive authentication prompts cannot be displayed"
                 .into(),
         ));
     }
-    let (mut config, _) = connection_config(pool, host_id).await?;
     config.startup_command = None;
     Ok(config)
 }
@@ -324,6 +333,10 @@ mod tests {
             proxy_jumps: vec![],
             startup_command: Some("must-not-run".into()),
             askpass_identity_id: None,
+            askpass_service: None,
+            askpass_prompt: None,
+            ephemeral_credential: None,
+            ephemeral_identity_file: None,
         }
     }
 
@@ -433,7 +446,10 @@ mod tests {
             )
             .await
             .unwrap();
-            let error = tunnel_connection_config(&pool, &host.id).await.unwrap_err();
+            let vault_state = VaultState::default();
+            let error = tunnel_connection_config(&pool, &vault_state, &host.id)
+                .await
+                .unwrap_err();
             assert_eq!(error.category(), "invalid-input");
             assert!(error.to_string().contains("key or agent authentication"));
         }

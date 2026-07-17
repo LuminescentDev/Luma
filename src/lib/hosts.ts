@@ -176,7 +176,12 @@ export function deleteHostGroup(id: string): Promise<void> {
 // Key references ------------------------------------------------------------
 
 export function listKeyReferences(): Promise<KeyReference[]> {
-  return invoke<KeyReference[]>("key_references_list", {});
+    return invoke<KeyReference[]>("key_references_list", {});
+}
+
+export type KeyReferenceSecrets = { privateKey: string | null; passphrase: string | null };
+export function getKeyReferenceSecrets(id: string): Promise<KeyReferenceSecrets> {
+  return invoke<KeyReferenceSecrets>("key_reference_secrets", { id });
 }
 
 export function createKeyReference(input: KeyReferenceInput): Promise<KeyReference> {

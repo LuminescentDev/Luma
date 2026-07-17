@@ -3,6 +3,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { EmptyState } from "./EmptyState";
 import { PaneTreeView } from "./PaneTreeView";
 import { SearchBar } from "./SearchBar";
+import { NewTabLauncher } from "./NewTabLauncher";
 
 export function Workspace() {
   const sessions = useSessionStore((s) => s.sessions);
@@ -10,11 +11,13 @@ export function Workspace() {
   const activeTabId = useSessionStore((s) => s.activeTabId);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const searchOpen = useUiStore((s) => s.terminalSearchOpen);
+  const newTabOpen = useUiStore((s) => s.newTabOpen);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
   return (
     <div className="relative h-full min-w-0">
+      <div className={newTabOpen ? "hidden" : "h-full"}>
       {activeTab ? (
         <>
           {searchOpen && activeSessionId && <SearchBar sessionId={activeSessionId} />}
@@ -25,6 +28,8 @@ export function Workspace() {
       ) : (
         <EmptyState />
       )}
+      </div>
+      {newTabOpen && <NewTabLauncher />}
     </div>
   );
 }

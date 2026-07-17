@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import {
   ClipboardPaste,
   Columns2,
+  FolderOpen,
   KeyRound,
   Play,
   Rows2,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
 import { useSessionStore } from "../../stores/sessionStore";
+import { useSftpStore } from "../../stores/sftpStore";
 import { useSnippetRunStore } from "../../stores/snippetRunStore";
 import { useShells, useProfiles } from "../../hooks/useShells";
 import { useHosts } from "../../hooks/useHosts";
@@ -197,6 +199,7 @@ function useCommands(onClose: () => void): Command[] {
   const openSettings = useUiStore((s) => s.openSettings);
   const openKeychain = useUiStore((s) => s.openKeychain);
   const openSection = useUiStore((s) => s.openSection);
+  const sftpConnect = useSftpStore((s) => s.connect);
   const requestSnippet = useSnippetRunStore((s) => s.request);
 
   return useMemo(() => {
@@ -299,7 +302,22 @@ function useCommands(onClose: () => void): Command[] {
         hint: host.hostname,
         keywords: `ssh ${host.hostname} ${host.username ?? ""} ${host.tags.join(" ")}`,
         icon: <Server size={15} />,
-        run: wrap(() => void openSshSession(host.id, host.name)),
+        run: wrap(() => void openSshSession(host.id, host.name, host.hostname)),
+      });
+    }
+
+    for (const host of hosts ?? []) {
+      commands.push({
+        id: `sftp-${host.id}`,
+        group: "Open SFTP",
+        label: host.name,
+        hint: host.hostname,
+        keywords: `sftp files transfer ${host.hostname} ${host.tags.join(" ")}`,
+        icon: <FolderOpen size={15} />,
+        run: wrap(() => {
+          openSection("sftp");
+          void sftpConnect(host.id);
+        }),
       });
     }
 
@@ -329,6 +347,13 @@ function useCommands(onClose: () => void): Command[] {
         label: "Hosts",
         icon: <Server size={15} />,
         run: wrap(() => openSection("hosts")),
+      },
+      {
+        id: "go-sftp",
+        group: "Go to",
+        label: "SFTP",
+        icon: <FolderOpen size={15} />,
+        run: wrap(() => openSection("sftp")),
       },
       {
         id: "go-snippets",
@@ -372,6 +397,7 @@ function useCommands(onClose: () => void): Command[] {
     openSettings,
     openKeychain,
     openSection,
+    sftpConnect,
     requestSnippet,
   ]);
 }

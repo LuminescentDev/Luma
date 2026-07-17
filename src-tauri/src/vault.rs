@@ -161,6 +161,25 @@ pub async fn store(
     sqlx::query("INSERT INTO vault_secrets(owner_type,owner_id,secret_type,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(owner_type,owner_id,secret_type) DO UPDATE SET nonce=excluded.nonce,ciphertext=excluded.ciphertext").bind(owner).bind(id).bind(kind).bind(nonce).bind(ciphertext).execute(pool).await?;
     Ok(())
 }
+pub async fn load(
+    pool: &SqlitePool,
+    state: &VaultState,
+    owner: &str,
+    id: &str,
+    kind: &str,
+) -> Result<Option<String>> {
+    let key = state.0.lock().unwrap().ok_or_else(|| {
+        LumaError::InvalidInput("vault is locked; unlock it before viewing secrets".into())
+    })?;
+    let row = sqlx::query("SELECT nonce,ciphertext FROM vault_secrets WHERE owner_type=?1 AND owner_id=?2 AND secret_type=?3")
+        .bind(owner).bind(id).bind(kind).fetch_optional(pool).await?;
+    let Some(row) = row else { return Ok(None) };
+    let nonce: Vec<u8> = row.get(0);
+    let ciphertext: Vec<u8> = row.get(1);
+    String::from_utf8(decrypt(&key, &nonce, &ciphertext)?)
+        .map(Some)
+        .map_err(|_| LumaError::InvalidInput("vault secret is not valid UTF-8".into()))
+}
 pub async fn delete(pool: &SqlitePool, owner: &str, id: &str) -> Result<()> {
     sqlx::query("DELETE FROM vault_secrets WHERE owner_type=?1 AND owner_id=?2")
         .bind(owner)

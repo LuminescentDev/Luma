@@ -40,7 +40,7 @@ type SessionState = {
   activeSessionId: string | null;
 
   openLocalSession: (ref?: ShellRef, title?: string) => Promise<void>;
-  openSshSession: (hostId: string, title?: string) => Promise<void>;
+  openSshSession: (hostId: string, title?: string, hostname?: string) => Promise<void>;
   restartSession: (id: string) => Promise<void>;
   /** Close the pane hosting this session, collapsing its split (and its tab
    * when it was the last pane). */
@@ -99,12 +99,23 @@ type SetFn = (
 function makeCallbacks(set: SetFn, id: string) {
   return {
     onTitle: (title: string) =>
-      set((state) => ({ sessions: patchSession(state.sessions, id, { title }) })),
+      set((state) => {
+        const session = state.sessions.find((candidate) => candidate.id === id);
+        return session?.type === "ssh" ? {} : { sessions: patchSession(state.sessions, id, { title }) };
+      }),
     onExit: (exit: SessionExit) =>
       set((state) => ({
         sessions: patchSession(state.sessions, id, exitPatch(exit)),
       })),
     onSearchRequested: () => useUiStore.getState().setTerminalSearchOpen(true),
+    onSshAuthenticated: () =>
+      set((state) => ({ sessions: patchSession(state.sessions, id, { status: "connected", connectionPrompt: undefined, connectionStage: "ready" }) })),
+    onSshPrompt: (connectionPrompt: TerminalSession["connectionPrompt"]) =>
+      set((state) => ({ sessions: patchSession(state.sessions, id, { connectionPrompt, connectionStage: connectionPrompt?.type === "host-key" ? "host-key" : "authentication" }) })),
+    onSshProgress: (connectionStage: NonNullable<TerminalSession["connectionStage"]>) =>
+      set((state) => ({ sessions: patchSession(state.sessions, id, { connectionStage }) })),
+    onSshIssue: (connectionIssue: string) =>
+      set((state) => ({ sessions: patchSession(state.sessions, id, { connectionIssue }) })),
   };
 }
 
@@ -124,7 +135,7 @@ async function launch(
     );
     set((state) => ({
       sessions: patchSession(state.sessions, id, {
-        status: "connected",
+        ...(descriptor.kind === "local" ? { status: "connected" as const } : {}),
         title: title ?? result.title,
       }),
     }));
@@ -153,6 +164,7 @@ async function openInNewTab(
   title: string | undefined,
 ): Promise<void> {
   const tab = newTab(session.id);
+  useUiStore.getState().closeNewTab();
   useUiStore.getState().openSection("terminal");
   set((state) => ({
     sessions: [...state.sessions, session],
@@ -181,14 +193,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await openInNewTab(set, session, { kind: "local", ref }, title);
   },
 
-  openSshSession: async (hostId, title) => {
+  openSshSession: async (hostId, title, hostname) => {
     const id = crypto.randomUUID();
     const session: TerminalSession = {
       id,
       title: title ?? "SSH",
       type: "ssh",
       hostId,
+      connectionTarget: hostname ?? title ?? "SSH host",
       status: "connecting",
+      connectionStage: "starting",
       activePaneId: id,
     };
     await openInNewTab(set, session, { kind: "ssh", hostId }, title);
@@ -201,13 +215,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         exitCode: undefined,
         errorMessage: undefined,
         errorCategory: undefined,
+        connectionPrompt: undefined,
+        connectionStage: "starting",
+        connectionIssue: undefined,
       }),
     }));
     try {
       const result = await terminalManager.restart(id);
+      const isSsh = get().sessions.find((session) => session.id === id)?.type === "ssh";
       set((state) => ({
         sessions: patchSession(state.sessions, id, {
-          status: "connected",
+          ...(!isSsh ? { status: "connected" as const } : {}),
           title: result.title,
         }),
       }));
@@ -339,7 +357,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         title: source.title,
         type: "ssh",
         hostId: source.hostId,
+        connectionTarget: source.connectionTarget,
         status: "connecting",
+        connectionStage: "starting",
         activePaneId: id,
       };
     } else {
@@ -405,4 +425,3 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
   },
 }));
-

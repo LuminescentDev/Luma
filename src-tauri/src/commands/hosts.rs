@@ -7,7 +7,7 @@ use crate::storage::identities::{self, Identity, IdentityInput};
 use crate::storage::key_references::{self, KeyReference, KeyReferenceInput};
 use crate::vault::{self, VaultState};
 use crate::AppState;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -76,6 +76,28 @@ pub async fn host_group_delete(state: State<'_, AppState>, id: String) -> Result
 #[tauri::command]
 pub async fn key_references_list(state: State<'_, AppState>) -> Result<Vec<KeyReference>> {
     key_references::list(&state.pool).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyReferenceSecrets {
+    private_key: Option<String>,
+    passphrase: Option<String>,
+}
+
+#[tauri::command]
+pub async fn key_reference_secrets(
+    state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
+    id: String,
+) -> Result<KeyReferenceSecrets> {
+    key_references::get(&state.pool, &id)
+        .await?
+        .ok_or_else(|| crate::errors::LumaError::InvalidInput("unknown key reference".into()))?;
+    Ok(KeyReferenceSecrets {
+        private_key: vault::load(&state.pool, &vault_state, "key", &id, "private-key").await?,
+        passphrase: vault::load(&state.pool, &vault_state, "key", &id, "passphrase").await?,
+    })
 }
 
 #[tauri::command]
@@ -161,6 +183,7 @@ pub struct GenerateKeyInput {
 #[tauri::command]
 pub async fn ssh_key_generate(
     state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
     input: GenerateKeyInput,
 ) -> Result<KeyReference> {
     let raw_path = input.local_path.trim();
@@ -222,7 +245,8 @@ pub async fn ssh_key_generate(
     }
     let public_path = PathBuf::from(format!("{}.pub", path.to_string_lossy()));
     let public_key = std::fs::read_to_string(&public_path).ok();
-    key_references::create(
+    let passphrase = input.passphrase.clone();
+    let created = key_references::create_metadata(
         &state.pool,
         KeyReferenceInput {
             name: input.name,
@@ -235,7 +259,19 @@ pub async fn ssh_key_generate(
             passphrase: None,
         },
     )
-    .await
+    .await?;
+    if !passphrase.is_empty() {
+        vault::store(
+            &state.pool,
+            &vault_state,
+            "key",
+            &created.id,
+            "passphrase",
+            &passphrase,
+        )
+        .await?;
+    }
+    Ok(created)
 }
 
 #[tauri::command]

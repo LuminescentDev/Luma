@@ -871,3 +871,30 @@ The first stable release is complete when:
   transient form state only — never in stores, the query cache, or storage.
   Typed wrappers live in src/lib/sync.ts, query/mutation hooks in
   src/hooks/useSync.ts.
+* Phase 6: SFTP — **complete** (not yet committed) — the dual-pane SFTP browser
+  on top of the validated backend contract. Not-connected state is a host picker
+  (recent-first, readable connect errors via describeSshError). Connected state
+  is a Local/Remote dual pane, each with breadcrumb + editable path bar, Up /
+  refresh / New folder, a filterable entry table (kind icon incl. symlink badge,
+  size via formatBytes, defensive unix-seconds date, remote permissions),
+  single + ctrl/shift multi-select, row context menu (Rename dialog, Delete with
+  recursive checkbox for dirs, Upload/Download), and long-list capping (first
+  1000 rows + refine hint). Transfers start via the Upload/Download buttons and
+  via in-window HTML5 drag & drop between panes (onto a pane or a directory row);
+  files only — directory transfer is disabled with a tooltip. Overwrites are
+  confirmed against the destination pane's cached listing before starting. A
+  collapsible transfer-queue drawer (badge with active count) shows per-row
+  direction, progress bar (indeterminate when total is null), live speed, state
+  chip, Cancel while running, Retry on failed/cancelled (with an upload
+  partial-file note), and Clear finished; the queue lives in the store so it
+  survives navigating away, and a TitleBar badge links back to SFTP. Disconnect
+  confirms when transfers are running (they are cancelled); a remote list failure
+  after connect marks the session errored with a Reconnect banner. Terminals are
+  untouched — transfers are backend channel-fed tasks with no polling. Listings
+  go through TanStack Query (["sftp-list", sessionId, path] / ["local-list",
+  path]) invalidated after mkdir/rename/delete/transfer-complete; session
+  metadata + transfer queue live in src/stores/sftpStore.ts; typed wrappers +
+  path/format helpers in src/lib/sftp.ts. Command palette gains per-host "Open
+  SFTP" plus a "Go to SFTP" entry. All 14 backend commands are consumed
+  verbatim; the frontend never touches the filesystem directly and handles no
+  secrets.
