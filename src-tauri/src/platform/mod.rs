@@ -11,6 +11,7 @@ pub struct DetectedShell {
     pub args: Vec<String>,
 }
 
+#[cfg(windows)]
 fn find_in_path(executable: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
