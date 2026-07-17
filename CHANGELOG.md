@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/LuminescentDev/Luma/compare/v0.2.0...v0.3.0) (2026-07-17)
+
+
+### Features
+
+* update .gitignore to exclude Tauri configuration files ([e6206a0](https://github.com/LuminescentDev/Luma/commit/e6206a0c137031f8b316de2f4ef9a24e65dbb410))
+
 ## [0.2.0](https://github.com/LuminescentDev/Luma/compare/v0.1.0...v0.2.0) (2026-07-17)
 
 
