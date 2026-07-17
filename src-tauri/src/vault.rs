@@ -7,7 +7,7 @@ use chacha20poly1305::{
 use keyring::Entry;
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Executor, Row, Sqlite, SqlitePool};
 use std::sync::Mutex;
 
 const SERVICE: &str = "luma.encrypted-vault";
@@ -151,19 +151,22 @@ pub fn is_unlocked(state: &VaultState) -> bool {
     state.0.lock().unwrap().is_some()
 }
 
-pub async fn store(
-    pool: &SqlitePool,
+pub async fn store<'e, E>(
+    executor: E,
     state: &VaultState,
     owner: &str,
     id: &str,
     kind: &str,
     value: &str,
-) -> Result<()> {
+) -> Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     let key = state.0.lock().unwrap().ok_or_else(|| {
         LumaError::InvalidInput("vault is locked; unlock it before saving secrets".into())
     })?;
     let (nonce, ciphertext) = encrypt(&key, value.as_bytes())?;
-    sqlx::query("INSERT INTO vault_secrets(owner_type,owner_id,secret_type,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(owner_type,owner_id,secret_type) DO UPDATE SET nonce=excluded.nonce,ciphertext=excluded.ciphertext").bind(owner).bind(id).bind(kind).bind(nonce).bind(ciphertext).execute(pool).await?;
+    sqlx::query("INSERT INTO vault_secrets(owner_type,owner_id,secret_type,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(owner_type,owner_id,secret_type) DO UPDATE SET nonce=excluded.nonce,ciphertext=excluded.ciphertext").bind(owner).bind(id).bind(kind).bind(nonce).bind(ciphertext).execute(executor).await?;
     Ok(())
 }
 pub async fn load(
@@ -185,11 +188,14 @@ pub async fn load(
         .map(Some)
         .map_err(|_| LumaError::InvalidInput("vault secret is not valid UTF-8".into()))
 }
-pub async fn delete(pool: &SqlitePool, owner: &str, id: &str) -> Result<()> {
+pub async fn delete<'e, E>(executor: E, owner: &str, id: &str) -> Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
     sqlx::query("DELETE FROM vault_secrets WHERE owner_type=?1 AND owner_id=?2")
         .bind(owner)
         .bind(id)
-        .execute(pool)
+        .execute(executor)
         .await?;
     Ok(())
 }

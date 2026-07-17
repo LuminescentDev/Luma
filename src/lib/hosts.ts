@@ -24,6 +24,9 @@ export type Host = {
   environment: Record<string, string> | null;
   tags: string[];
   favorite: boolean;
+  /** Best-effort device-local metadata learned after a successful connection. */
+  osId: string | null;
+  osPrettyName: string | null;
 };
 
 export type HostInput = {

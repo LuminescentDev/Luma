@@ -4,7 +4,7 @@ use pkcs8::der::SecretDocument;
 use pkcs8::{DecodePrivateKey as _, EncryptedPrivateKeyInfo};
 use rsa::pkcs1::DecodeRsaPrivateKey as _;
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqlitePool};
+use sqlx::{Executor, Row, Sqlite, SqlitePool};
 use ssh_key::{HashAlg, PrivateKey, PublicKey};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -376,14 +376,13 @@ pub(crate) async fn create_metadata(
     input: KeyReferenceInput,
 ) -> Result<KeyReference> {
     validate(&input)?;
-    create_validated(pool, input, false).await
+    let id = insert_metadata(pool, input, false).await?;
+    get(pool, &id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("key reference creation failed".into()))
 }
 
-async fn create_validated(
-    pool: &SqlitePool,
-    mut input: KeyReferenceInput,
-    store_credentials: bool,
-) -> Result<KeyReference> {
+fn prepare_metadata_input(mut input: KeyReferenceInput) -> Result<KeyReferenceInput> {
     apply_derived_vault_metadata(&mut input)?;
     validate(&input)?;
     input.public_key = optional_trimmed(input.public_key.take());
@@ -393,7 +392,43 @@ async fn create_validated(
     if input.storage_mode == "ssh-agent" {
         input.local_path = None;
     }
+    Ok(input)
+}
 
+pub(crate) async fn insert_metadata<'e, E>(
+    executor: E,
+    input: KeyReferenceInput,
+    has_private_key: bool,
+) -> Result<String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let input = prepare_metadata_input(input)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO key_references
+             (id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(&id)
+    .bind(input.name.trim())
+    .bind(&input.public_key)
+    .bind(&input.storage_mode)
+    .bind(&input.local_path)
+    .bind(&input.fingerprint)
+    .bind(&input.certificate)
+    .bind(has_private_key)
+    .execute(executor)
+    .await?;
+    Ok(id)
+}
+
+async fn create_validated(
+    pool: &SqlitePool,
+    input: KeyReferenceInput,
+    store_credentials: bool,
+) -> Result<KeyReference> {
+    let input = prepare_metadata_input(input)?;
     let id = uuid::Uuid::new_v4().to_string();
     let has_private_key = if store_credentials {
         let stored =
@@ -424,36 +459,17 @@ async fn create_validated(
         .ok_or_else(|| LumaError::InvalidInput("key reference creation failed".into()))
 }
 
-pub async fn update(
-    pool: &SqlitePool,
+pub(crate) async fn update_metadata<'e, E>(
+    executor: E,
     id: &str,
-    mut input: KeyReferenceInput,
-) -> Result<KeyReference> {
-    if get(pool, id).await?.is_none() {
-        return Err(LumaError::InvalidInput("unknown key reference".into()));
-    }
-    validate(&input)?;
-    apply_derived_vault_metadata(&mut input)?;
-    validate(&input)?;
-    let current = get(pool, id)
-        .await?
-        .ok_or_else(|| LumaError::InvalidInput("unknown key reference".into()))?;
-    input.public_key = optional_trimmed(input.public_key.take());
-    input.local_path = optional_trimmed(input.local_path.take());
-    input.fingerprint = optional_trimmed(input.fingerprint.take());
-    input.certificate = optional_trimmed(input.certificate.take());
-    if input.storage_mode == "ssh-agent" {
-        input.local_path = None;
-    }
-
-    let has_private_key = match input.private_key.as_deref() {
-        None => current.has_private_key,
-        value => store_chunked_secret("luma.ssh.key.private", id, value)?,
-    };
-    if input.passphrase.is_some() {
-        let _ = store_secret("luma.ssh.key.passphrase", id, input.passphrase.as_deref())?;
-    }
-    sqlx::query(
+    input: KeyReferenceInput,
+    has_private_key: bool,
+) -> Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let input = prepare_metadata_input(input)?;
+    let result = sqlx::query(
         "UPDATE key_references SET
              name = ?2, public_key = ?3, storage_mode = ?4, local_path = ?5,
              fingerprint = ?6, certificate = ?7, has_private_key = ?8, updated_at = unixepoch()
@@ -467,19 +483,43 @@ pub async fn update(
     .bind(&input.fingerprint)
     .bind(&input.certificate)
     .bind(has_private_key)
-    .execute(pool)
+    .execute(executor)
     .await?;
+    if result.rows_affected() != 1 {
+        return Err(LumaError::InvalidInput("unknown key reference".into()));
+    }
+    Ok(())
+}
 
+pub async fn update(
+    pool: &SqlitePool,
+    id: &str,
+    input: KeyReferenceInput,
+) -> Result<KeyReference> {
+    validate(&input)?;
+    let current = get(pool, id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown key reference".into()))?;
+    let has_private_key = match input.private_key.as_deref() {
+        None => current.has_private_key,
+        value => store_chunked_secret("luma.ssh.key.private", id, value)?,
+    };
+    if input.passphrase.is_some() {
+        let _ = store_secret("luma.ssh.key.passphrase", id, input.passphrase.as_deref())?;
+    }
+    update_metadata(pool, id, input, has_private_key).await?;
     get(pool, id)
         .await?
         .ok_or_else(|| LumaError::InvalidInput("unknown key reference".into()))
 }
 
-pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
-    let mut transaction = pool.begin().await?;
+pub(crate) async fn delete_metadata(
+    transaction: &mut sqlx::Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<()> {
     let result = sqlx::query("DELETE FROM key_references WHERE id = ?1")
         .bind(id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
     if result.rows_affected() == 0 {
         return Err(LumaError::InvalidInput("unknown key reference".into()));
@@ -490,8 +530,14 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
          ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
     )
     .bind(id)
-    .execute(&mut *transaction)
+    .execute(&mut **transaction)
     .await?;
+    Ok(())
+}
+
+pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
+    let mut transaction = pool.begin().await?;
+    delete_metadata(&mut transaction, id).await?;
     transaction.commit().await?;
     purge_secrets(id);
     Ok(())

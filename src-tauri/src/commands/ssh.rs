@@ -45,6 +45,7 @@ pub struct SshHostKeyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SshRemoteOsEvent {
     pub session_id: String,
+    pub host_id: String,
     pub os_id: String,
     pub pretty_name: Option<String>,
 }
@@ -52,6 +53,7 @@ pub struct SshRemoteOsEvent {
 #[derive(Default)]
 struct PendingRemoteOsEvent {
     session_id: Option<String>,
+    host_id: String,
     ready: bool,
     metadata: Option<SshRemoteOs>,
 }
@@ -65,6 +67,7 @@ fn take_remote_os_event(state: &Arc<Mutex<PendingRemoteOsEvent>>) -> Option<SshR
     let metadata = state.metadata.take()?;
     Some(SshRemoteOsEvent {
         session_id,
+        host_id: state.host_id.clone(),
         os_id: metadata.os_id,
         pretty_name: metadata.pretty_name,
     })
@@ -123,16 +126,36 @@ pub async fn ssh_spawn(
         ssh::connection_config(&state.pool, &vault_state, &request.host_id).await?;
     let backend = ssh::select_backend(&config);
     tracing::debug!(?backend, host_id = %request.host_id, "selected SSH backend");
-    let pending_remote_os = Arc::new(Mutex::new(PendingRemoteOsEvent::default()));
+    let pending_remote_os = Arc::new(Mutex::new(PendingRemoteOsEvent {
+        host_id: request.host_id.clone(),
+        ..PendingRemoteOsEvent::default()
+    }));
     let pending_remote_os_callback = Arc::clone(&pending_remote_os);
     let app_for_remote_os = app.clone();
+    let pool_for_remote_os = state.pool.clone();
+    let host_id_for_remote_os = request.host_id.clone();
     let data_callback = Box::new(move |bytes: &[u8]| {
         let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
     });
     let exit_callback = Box::new(move |exit| {
         let _ = on_exit.send(exit);
     });
-    let remote_os_callback = Box::new(move |metadata| {
+    let remote_os_callback = Box::new(move |metadata: SshRemoteOs| {
+        let stored_metadata = metadata.clone();
+        let pool = pool_for_remote_os.clone();
+        let host_id = host_id_for_remote_os.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = hosts::record_remote_os(
+                &pool,
+                &host_id,
+                &stored_metadata.os_id,
+                stored_metadata.pretty_name.as_deref(),
+            )
+            .await
+            {
+                tracing::warn!(host_id = %host_id, %error, "could not retain remote OS metadata");
+            }
+        });
         pending_remote_os_callback.lock().unwrap().metadata = Some(metadata);
         if let Some(event) = take_remote_os_event(&pending_remote_os_callback) {
             let _ = app_for_remote_os.emit_to("main", SSH_REMOTE_OS_EVENT_NAME, event);
@@ -210,6 +233,7 @@ mod tests {
     fn remote_os_event_is_consumed_exactly_once() {
         let state = Arc::new(Mutex::new(PendingRemoteOsEvent {
             session_id: Some("session-1".into()),
+            host_id: "host-1".into(),
             ready: true,
             metadata: Some(SshRemoteOs {
                 os_id: "ubuntu".into(),
@@ -219,6 +243,7 @@ mod tests {
 
         let event = take_remote_os_event(&state).expect("event should be ready");
         assert_eq!(event.session_id, "session-1");
+        assert_eq!(event.host_id, "host-1");
         assert_eq!(event.os_id, "ubuntu");
         assert_eq!(event.pretty_name.as_deref(), Some("Ubuntu 24.04 LTS"));
         assert!(take_remote_os_event(&state).is_none());

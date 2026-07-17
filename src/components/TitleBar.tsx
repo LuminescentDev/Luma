@@ -8,6 +8,7 @@ import {
   Menu,
   Minus,
   RefreshCw,
+  Server,
   Square,
   X,
 } from 'lucide-react';
@@ -24,6 +25,7 @@ const appWindow = getCurrentWindow();
 export function TitleBar() {
   const navOpen = useUiStore((s) => s.navOpen);
   const toggleNav = useUiStore((s) => s.toggleNav);
+  const openNav = useUiStore((s) => s.openNav);
   const selectSection = useUiStore((s) => s.selectSection);
   const mainView = useUiStore((s) => s.mainView);
   const sftpActive = mainView === 'sftp';
@@ -34,21 +36,35 @@ export function TitleBar() {
     <header
       data-tauri-drag-region
       onDoubleClick={() => void appWindow.toggleMaximize()}
-      className='flex h-9 shrink-0 select-none items-center border-b border-border bg-surface'
+      className='flex h-10 shrink-0 select-none items-center gap-1 border-b border-border bg-surface px-1.5'
     >
       <button
         type='button'
         onClick={toggleNav}
         onDoubleClick={(event) => event.stopPropagation()}
         aria-expanded={navOpen}
-        aria-label='Toggle vaults navigation'
+        aria-label='Toggle navigation'
+        title='Toggle navigation'
+        className='flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-raised hover:text-foreground'
+      >
+        <Menu size={15} />
+      </button>
+      <button
+        type='button'
+        onClick={() => {
+          openNav();
+          selectSection('hosts');
+        }}
+        onDoubleClick={(event) => event.stopPropagation()}
+        aria-pressed={navOpen && mainView === 'hosts'}
+        aria-label='Open Vaults'
         className={
-          navOpen
-            ? 'flex h-full items-center gap-2 border-r border-border bg-raised px-3 text-xs text-foreground'
-            : 'flex h-full items-center gap-2 border-r border-border px-3 text-xs text-muted hover:bg-raised hover:text-foreground'
+          navOpen && mainView === 'hosts'
+            ? 'flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-raised px-2.5 text-xs font-medium text-foreground'
+            : 'flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted transition-colors hover:bg-raised hover:text-foreground'
         }
       >
-        <Menu size={15} className='text-accent' /> Vaults
+        <Server size={13} className='text-accent' /> Vaults
       </button>
       <button
         type='button'
@@ -60,15 +76,15 @@ export function TitleBar() {
         aria-label='Toggle SFTP section'
         className={
           sftpActive
-            ? 'flex h-full items-center gap-2 border-r border-border bg-raised px-3 text-xs text-foreground'
-            : 'flex h-full items-center gap-2 border-r border-border px-3 text-xs text-muted hover:bg-raised hover:text-foreground'
+            ? 'flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-raised px-2.5 text-xs font-medium text-foreground'
+            : 'flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted transition-colors hover:bg-raised hover:text-foreground'
         }
       >
-        <FolderOpen size={15} className='text-accent' /> SFTP
+        <FolderOpen size={13} className='text-accent' /> SFTP
       </button>
       <div
         data-tauri-drag-region
-        className='flex min-w-0 flex-1 items-center px-2'
+        className='flex min-w-0 flex-1 items-center pl-1'
       >
         <TabBar />
       </div>
@@ -89,7 +105,7 @@ export function TitleBar() {
       {runningTunnels > 0 && (
         <div
           title={`${runningTunnels} active tunnel${runningTunnels === 1 ? '' : 's'}`}
-          className='mr-2 flex shrink-0 items-center gap-1 rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-400'
+          className='mr-1 flex shrink-0 items-center gap-1 rounded-full bg-green-500/15 px-2 py-0.5 text-[10px] text-green-400'
         >
           <Cable size={11} /> {runningTunnels} tunnel
           {runningTunnels === 1 ? '' : 's'}
@@ -102,7 +118,7 @@ export function TitleBar() {
           onDoubleClick={(event) => event.stopPropagation()}
           title={`${activeTransfers} active transfer${activeTransfers === 1 ? '' : 's'} — open SFTP`}
           aria-label={`${activeTransfers} active transfer${activeTransfers === 1 ? '' : 's'}, open SFTP`}
-          className='mr-2 flex shrink-0 items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] text-accent hover:brightness-110'
+          className='mr-1 flex shrink-0 items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] text-accent hover:brightness-110'
         >
           <ArrowDownUp size={11} /> {activeTransfers}
         </button>
@@ -177,7 +193,7 @@ function SyncIndicator() {
         aria-label={label}
         onClick={() => activate()}
         onDoubleClick={(event) => event.stopPropagation()}
-        className={`mr-2 flex shrink-0 items-center rounded-md p-1.5 transition-colors hover:bg-raised ${className}`}
+        className={`mr-1 flex shrink-0 items-center rounded-md p-1.5 transition-colors hover:bg-raised ${className}`}
       >
         <Icon size={15} className={spin ? 'animate-spin' : undefined} />
       </button>
@@ -205,8 +221,8 @@ function WindowButton({
       onDoubleClick={(event) => event.stopPropagation()}
       className={
         destructive
-          ? 'flex w-12 items-center justify-center text-muted transition-colors hover:bg-danger hover:text-white'
-          : 'flex w-12 items-center justify-center text-muted transition-colors hover:bg-raised hover:text-foreground'
+          ? 'flex w-10 items-center justify-center rounded-md text-muted transition-colors hover:bg-danger hover:text-white'
+          : 'flex w-10 items-center justify-center rounded-md text-muted transition-colors hover:bg-raised hover:text-foreground'
       }
     >
       {children}

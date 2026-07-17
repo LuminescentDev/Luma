@@ -16,6 +16,7 @@ import {
 import { parseLumaError } from "../lib/hosts";
 import {
   terminalManager,
+  isSpawnAbandoned,
   type SessionExit,
   type SpawnDescriptor,
 } from "../features/terminal/terminalManager";
@@ -323,15 +324,27 @@ async function launch(
       descriptor,
       makeCallbacks(set, id),
     );
-    set((state) => ({
-      sessions: patchSession(state.sessions, id, {
-        // Local and serial sessions are connected the moment the backend spawns;
-        // SSH flips to connected later, after authentication completes.
-        ...(descriptor.kind !== "ssh" ? { status: "connected" as const } : {}),
-        title: title ?? result.title,
-      }),
-    }));
+    set((state) => {
+      const current = state.sessions.find((s) => s.id === id);
+      // A fast backend exit can fire onExit BEFORE createSession resolves, which
+      // already moved the session to disconnected/error. Never overwrite that
+      // with "connected" — that is exactly the ghost-session race.
+      const spawnExited = !!current && current.status !== "connecting";
+      return {
+        sessions: patchSession(state.sessions, id, {
+          // Local and serial sessions are connected the moment the backend spawns;
+          // SSH flips to connected later, after authentication completes.
+          ...(descriptor.kind !== "ssh" && !spawnExited
+            ? { status: "connected" as const }
+            : {}),
+          title: title ?? result.title,
+        }),
+      };
+    });
   } catch (error) {
+    // A superseding restart (or disposal) abandoned this attempt; the winner
+    // owns the session's state, so leave it untouched.
+    if (isSpawnAbandoned(error)) return;
     const { category, message } = parseLumaError(error);
     set((state) => ({
       sessions: patchSession(state.sessions, id, {
@@ -546,14 +559,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     try {
       const result = await terminalManager.restart(id);
-      const isSsh = get().sessions.find((session) => session.id === id)?.type === "ssh";
-      set((state) => ({
-        sessions: patchSession(state.sessions, id, {
-          ...(!isSsh ? { status: "connected" as const } : {}),
-          title: result.title,
-        }),
-      }));
+      set((state) => {
+        const current = state.sessions.find((session) => session.id === id);
+        const isSsh = current?.type === "ssh";
+        // As in launch(): if the freshly spawned backend already exited, onExit
+        // moved the session to disconnected/error — do not resurrect it.
+        const spawnExited = !!current && current.status !== "connecting";
+        return {
+          sessions: patchSession(state.sessions, id, {
+            ...(!isSsh && !spawnExited ? { status: "connected" as const } : {}),
+            title: result.title,
+          }),
+        };
+      });
     } catch (error) {
+      if (isSpawnAbandoned(error)) return;
       const { category, message } = parseLumaError(error);
       set((state) => ({
         sessions: patchSession(state.sessions, id, {

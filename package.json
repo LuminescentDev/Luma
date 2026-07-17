@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -36,6 +37,7 @@
     "lucide-react": "^1.24.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "simple-icons": "^16.26.0",
     "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.14"
   },
@@ -45,8 +47,10 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.2",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^3.2.7"
   }
 }

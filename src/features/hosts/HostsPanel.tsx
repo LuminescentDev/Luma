@@ -39,6 +39,7 @@ import {
 import { cn } from "../../lib/utils";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { DistroIcon } from "../../components/DistroIcon";
 import { HostEditorDialog } from "./HostEditorDialog";
 import { KeyReferencesDialog } from "./KeyReferencesDialog";
 import { IdentitiesDialog } from "./IdentitiesDialog";
@@ -60,6 +61,7 @@ function matchesQuery(host: Host, q: string): boolean {
 
 export function HostsPanel() {
   const openSshSession = useSessionStore((s) => s.openSshSession);
+  const sessions = useSessionStore((s) => s.sessions);
   const invalidate = useInvalidateHosts();
   const queryClient = useQueryClient();
   const showTerminal = useUiStore((s) => s.showTerminal);
@@ -70,7 +72,26 @@ export function HostsPanel() {
   const { data: keyReferences } = useKeyReferences();
   const { data: identities } = useIdentities();
 
-  const allHosts = useMemo(() => hosts ?? [], [hosts]);
+  const liveHostOs = useMemo(() => {
+    const byHost = new Map<string, Pick<Host, "osId" | "osPrettyName">>();
+    for (const session of sessions) {
+      if (session.type === "ssh" && session.hostId && session.osId) {
+        byHost.set(session.hostId, {
+          osId: session.osId,
+          osPrettyName: session.osPrettyName ?? null,
+        });
+      }
+    }
+    return byHost;
+  }, [sessions]);
+  const allHosts = useMemo(
+    () =>
+      (hosts ?? []).map((host) => {
+        const live = liveHostOs.get(host.id);
+        return live ? { ...host, ...live } : host;
+      }),
+    [hosts, liveHostOs],
+  );
   const allGroups = groups ?? [];
 
   const [query, setQuery] = useState("");
@@ -544,7 +565,17 @@ function HostRow({
         title={`${host.username ? `${host.username}@` : ""}${host.hostname}:${host.port}`}
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
       >
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent"><Server size={18} /></span>
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/15 text-accent">
+          {host.osId && host.osId !== "unknown" ? (
+            <DistroIcon
+              osId={host.osId}
+              size={22}
+              label={host.osPrettyName ?? undefined}
+            />
+          ) : (
+            <Server size={18} />
+          )}
+        </span>
         <span className="min-w-0 flex-1"><span className="block truncate font-semibold text-foreground">{host.name}</span><span className="block truncate text-xs text-muted">ssh, {host.username || host.hostname}</span></span>
       </button>
 

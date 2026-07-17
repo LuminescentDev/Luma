@@ -15,6 +15,7 @@ type UiState = {
   mainView: MainView;
   navOpen: boolean;
   toggleNav: () => void;
+  openNav: () => void;
   /** Rail-icon behavior: show the section's screen in the main area. */
   selectSection: (section: SidebarSection) => void;
   /** Force a section's screen into the main area (deep links / shortcuts). */
@@ -45,6 +46,7 @@ export const useUiStore = create<UiState>((set) => ({
   mainView: "hosts",
   navOpen: false,
   toggleNav: () => set((state) => ({ navOpen: !state.navOpen })),
+  openNav: () => set({ navOpen: true }),
   selectSection: (section) => set({ mainView: section }),
   openSection: (section) => set({ mainView: section }),
   showTerminal: () => set({ mainView: "terminal" }),

@@ -1,4 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { useEffect, useRef } from "react";
 import {
   Cable,
   Columns2,
@@ -6,6 +7,7 @@ import {
   Loader2,
   MoreHorizontal,
   Plus,
+  SquarePlus,
   Rows2,
   Server,
   X,
@@ -84,6 +86,7 @@ function workspaceActions(deps: {
 }
 
 export function TabBar() {
+  const tabListRef = useRef<HTMLDivElement>(null);
   const sessions = useSessionStore((s) => s.sessions);
   const tabs = useSessionStore((s) => s.tabs);
   const activeTabId = useSessionStore((s) => s.activeTabId);
@@ -93,6 +96,7 @@ export function TabBar() {
   const closeActivePane = useSessionStore((s) => s.closeActivePane);
   const openPalette = useUiStore((s) => s.openPalette);
   const openNewTab = useUiStore((s) => s.openNewTab);
+  const closeNewTab = useUiStore((s) => s.closeNewTab);
   const newTabOpen = useUiStore((s) => s.newTabOpen);
   // A terminal tab is "active" only when the terminal workspace is the current
   // main view; selecting a sidebar section deselects the tabs (they stay in the
@@ -104,20 +108,43 @@ export function TabBar() {
     return leaf ? sessions.find((s) => s.id === leaf.sessionId) : undefined;
   };
 
+  // Keep keyboard-selected tabs visible when the strip overflows. Mouse wheels
+  // usually report vertical deltas, so translate those into horizontal motion
+  // while the pointer is over the tab strip.
+  useEffect(() => {
+    tabListRef.current
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId, terminalActive, newTabOpen]);
+
+  const scrollTabs = (event: React.WheelEvent<HTMLDivElement>) => {
+    const tabList = event.currentTarget;
+    if (
+      tabList.scrollWidth <= tabList.clientWidth ||
+      Math.abs(event.deltaX) >= Math.abs(event.deltaY)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    tabList.scrollLeft += event.deltaY;
+  };
+
   return (
     <div
       data-tauri-drag-region
       className="flex h-full min-w-0 flex-1 items-center gap-1"
     >
       <div
-        data-tauri-drag-region
+        ref={tabListRef}
         role="tablist"
         aria-label="Terminal tabs"
-        className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto"
+        onWheel={scrollTabs}
+        className="flex min-w-0 flex-1 touch-pan-x items-center gap-1 overflow-x-auto overflow-y-hidden"
       >
         {tabs.map((tab) => {
           const session = activeSessionOf(tab);
-          const active = tab.id === activeTabId && terminalActive;
+          const active = tab.id === activeTabId && terminalActive && !newTabOpen;
           const title = session?.title ?? "Terminal";
           const tabActions = workspaceActions({
             openNewTab,
@@ -143,10 +170,10 @@ export function TabBar() {
               role="presentation"
               onDoubleClick={(event) => event.stopPropagation()}
               className={cn(
-                "group flex h-7 min-w-32 max-w-52 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs",
+                "group flex h-7 min-w-32 max-w-52 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors",
                 active
-                  ? "border-border bg-raised text-foreground"
-                  : "border-transparent text-muted hover:bg-raised hover:text-foreground",
+                  ? "bg-raised text-foreground shadow-sm"
+                  : "bg-raised/45 text-muted hover:bg-raised/75 hover:text-foreground",
               )}
             >
               <button
@@ -175,51 +202,47 @@ export function TabBar() {
             </ContextMenu>
           );
         })}
+        {newTabOpen && (
+          <div
+            role="presentation"
+            onDoubleClick={(event) => event.stopPropagation()}
+            className="group flex h-7 min-w-32 max-w-52 shrink-0 items-center gap-1.5 rounded-lg bg-raised px-2.5 text-xs text-foreground shadow-sm"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-current="page"
+              onClick={openNewTab}
+              className="flex min-w-0 flex-1 items-center gap-1.5 truncate py-1.5 text-left"
+            >
+              <SquarePlus size={13} className="shrink-0 text-accent" />
+              <span className="truncate">New tab</span>
+            </button>
+            <button
+              type="button"
+              aria-label="Close New tab"
+              onClick={closeNewTab}
+              className="shrink-0 rounded p-0.5 hover:bg-surface hover:text-danger"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        )}
       </div>
 
       <div
         onDoubleClick={(event) => event.stopPropagation()}
-        className="flex shrink-0 items-center gap-1"
+        className="flex shrink-0 items-center"
       >
         <button
           type="button"
           aria-label="New tab"
           title="New tab (Ctrl+Shift+T)"
           onClick={openNewTab}
-          className={cn("flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-raised hover:text-foreground", newTabOpen && "bg-raised text-foreground")}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-raised hover:text-foreground"
         >
           <Plus size={15} />
-        </button>
-        {activeTabId && (
-          <>
-            <button
-              type="button"
-              aria-label="Split right"
-              title="Split right (Ctrl+Shift+D)"
-              onClick={() => void splitActivePane("row")}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-raised hover:text-foreground"
-            >
-              <Columns2 size={15} />
-            </button>
-            <button
-              type="button"
-              aria-label="Split down"
-              title="Split down (Ctrl+Shift+E)"
-              onClick={() => void splitActivePane("column")}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-raised hover:text-foreground"
-            >
-              <Rows2 size={15} />
-            </button>
-          </>
-        )}
-        <button
-          type="button"
-          aria-label="Command palette"
-          title="Command palette (Ctrl+Shift+P)"
-          onClick={() => openPalette()}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-raised hover:text-foreground"
-        >
-          <Command size={15} />
         </button>
         <WorkspaceMenu>
           <button
