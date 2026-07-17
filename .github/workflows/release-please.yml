@@ -1,20 +1,32 @@
-name: Release
+name: Release Please
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  release-please:
+    runs-on: ubuntu-22.04
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+
   build:
     name: Build release (${{ matrix.platform }})
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -28,6 +40,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'linux'
@@ -80,27 +94,27 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Luma ${{ github.ref_name }}
-          releaseBody: See the assets below to install Luma or update an existing installation.
+          tagName: ${{ needs.release-please.outputs.tag_name }}
           releaseDraft: true
-          prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
 
   checksums:
     name: Generate release checksums
-    needs: build
+    needs: [release-please, build]
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download release assets
         run: |
           mkdir release-assets
-          gh release download "${GITHUB_REF_NAME}" --dir release-assets
+          gh release download "${RELEASE_TAG}" --dir release-assets
 
       - name: Verify updater metadata and signatures
         shell: bash
@@ -123,5 +137,6 @@ jobs:
 
       - name: Upload checksums and publish release
         run: |
-          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber
-          gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+          gh release upload "${RELEASE_TAG}" SHA256SUMS --clobber
+          gh release edit "${RELEASE_TAG}" --draft=false --latest
+
