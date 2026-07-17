@@ -38,6 +38,15 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
 zeroize = "1"
+ssh-key = { version = "0.6.7", default-features = false, features = [
+  "std",
+  "encryption",
+  "ed25519",
+  "rsa",
+] }
+rsa = { version = "0.9.8", features = ["pkcs5"] }
+ed25519-dalek = { version = "2", features = ["pkcs8"] }
+pkcs8 = { version = "0.10.2", features = ["encryption", "pem"] }
 sqlx = { version = "0.8", default-features = false, features = [
   "runtime-tokio",
   "sqlite",

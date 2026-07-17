@@ -22,6 +22,8 @@ const MESSAGES: Record<string, string> = {
     "The OpenSSH client was not found on this system. Install OpenSSH, then try again.",
   "key-unavailable":
     "The private key file is missing. Update the key reference to point to a valid key file.",
+  "key-passphrase-invalid":
+    "The saved passphrase could not decrypt the configured private key. Re-enter the passphrase or import the matching key again.",
   "host-key-scan-failed":
     "Luma could not scan the server's host key. The host may be unreachable, or OpenSSH could not read the key. Check the address and port, then try again.",
   "host-key-file-invalid":
@@ -49,6 +51,8 @@ export function sshCategoryLabel(category: string): string {
       return "SSH unavailable";
     case "key-unavailable":
       return "Key unavailable";
+    case "key-passphrase-invalid":
+      return "Passphrase rejected";
     case "host-key-scan-failed":
       return "Host key scan failed";
     case "host-key-file-invalid":

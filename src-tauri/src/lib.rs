@@ -81,6 +81,7 @@ pub fn run() {
             commands::host_group_create,
             commands::host_group_update,
             commands::host_group_delete,
+            commands::derive_public_key,
             commands::key_references_list,
             commands::key_reference_secrets,
             commands::key_reference_create,

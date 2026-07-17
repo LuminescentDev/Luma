@@ -13,6 +13,8 @@
     "dialog:allow-save",
     "opener:default",
     "process:allow-restart",
-    "updater:default"
+    "updater:default",
+    "allow-existing-commands",
+    "allow-derive-public-key"
   ]
 }

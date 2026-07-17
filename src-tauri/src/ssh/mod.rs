@@ -475,7 +475,10 @@ fn build_interactive_arguments(
     multiplex_control: Option<&MultiplexControl>,
 ) -> Vec<String> {
     let mut arguments = build_connection_options(config, false);
-    arguments.insert(0, "-v".into());
+    // DEBUG2 is needed to distinguish an undecryptable private key from a
+    // generic server-side public-key rejection (OpenSSH reports the former as
+    // "bad passphrase given" only at this verbosity).
+    arguments.insert(0, "-vv".into());
     if let Some(control) = multiplex_control {
         arguments.extend(control.master_arguments());
     }
@@ -775,6 +778,11 @@ pub(crate) fn classify_error_output(output: &str) -> Option<(&'static str, &'sta
             "host-key-rejected",
             "Host key verification was rejected or could not be completed.",
         ))
+    } else if lower.contains("bad passphrase given") {
+        Some((
+            "key-passphrase-invalid",
+            "The saved passphrase could not decrypt the configured private key. Re-enter the passphrase or import the matching key again.",
+        ))
     } else if lower.contains("permission denied") {
         Some((
             "auth-failed",
@@ -835,7 +843,7 @@ mod tests {
             assert_eq!(
                 arguments,
                 vec![
-                    "-v",
+                    "-vv",
                     "-p",
                     "2222",
                     "-l",
@@ -879,7 +887,7 @@ mod tests {
         assert_eq!(
             build_arguments(&config),
             vec![
-                "-v",
+                "-vv",
                 "-p",
                 "2222",
                 "-l",
@@ -998,6 +1006,10 @@ mod tests {
                 "host-key-changed",
             ),
             ("Host key verification failed.", "host-key-rejected"),
+            (
+                "debug2: bad passphrase given, try again...\nPermission denied (publickey).",
+                "key-passphrase-invalid",
+            ),
             ("Permission denied (publickey,password).", "auth-failed"),
             (
                 "ssh: Could not resolve hostname missing: Name or service not known",
@@ -1052,6 +1064,176 @@ mod tests {
         assert_eq!(
             normalize_private_key("-----BEGIN KEY-----\\ndata\\n-----END KEY-----"),
             "-----BEGIN KEY-----\ndata\n-----END KEY-----\n"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn imported_encrypted_rsa_round_trips_through_connection_config() {
+        use crate::storage::hosts::HostInput;
+        use crate::storage::key_references::KeyReferenceInput;
+
+        struct TestFiles(PathBuf);
+        impl Drop for TestFiles {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let ssh = detect().path.expect("Windows OpenSSH must be available");
+        let ssh_keygen = PathBuf::from(ssh).with_file_name("ssh-keygen.exe");
+        assert!(
+            ssh_keygen.is_file(),
+            "ssh-keygen.exe must accompany ssh.exe"
+        );
+
+        let files = TestFiles(std::env::temp_dir().join(format!(
+            "luma-imported-key-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        )));
+        std::fs::create_dir_all(&files.0).unwrap();
+        let source_key = files.0.join("id_rsa");
+        let passphrase = "synthetic Luma key passphrase !42";
+        let generated = Command::new(&ssh_keygen)
+            .args(["-q", "-t", "rsa", "-b", "2048", "-N", passphrase, "-f"])
+            .arg(&source_key)
+            .output()
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+
+        let source_private_key = std::fs::read_to_string(&source_key).unwrap();
+        let imported_private_key = source_private_key.replace('\n', "\r\n");
+        let public_key = std::fs::read_to_string(source_key.with_extension("pub")).unwrap();
+        let expected_public_fields = public_key
+            .split_whitespace()
+            .take(2)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let vault_state = VaultState::default();
+        vault::setup(&pool, &vault_state, "synthetic vault password", false)
+            .await
+            .unwrap();
+        let key = key_references::create_metadata(
+            &pool,
+            KeyReferenceInput {
+                name: "Imported id_rsa".into(),
+                public_key: Some(public_key),
+                storage_mode: "encrypted-vault".into(),
+                local_path: None,
+                fingerprint: None,
+                certificate: None,
+                private_key: None,
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+        vault::store(
+            &pool,
+            &vault_state,
+            "key",
+            &key.id,
+            "private-key",
+            &imported_private_key,
+        )
+        .await
+        .unwrap();
+        vault::store(
+            &pool,
+            &vault_state,
+            "key",
+            &key.id,
+            "passphrase",
+            passphrase,
+        )
+        .await
+        .unwrap();
+        let host = hosts::create(
+            &pool,
+            HostInput {
+                name: "Local imported-key test".into(),
+                hostname: "127.0.0.1".into(),
+                port: 22,
+                username: Some("luma-test".into()),
+                group_id: None,
+                authentication_type: "key".into(),
+                key_id: Some(key.id.clone()),
+                identity_id: None,
+                proxy_jump_host_id: None,
+                startup_command: None,
+                working_directory: None,
+                environment: None,
+                tags: vec![],
+                favorite: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let (config, _) = connection_config(&pool, &vault_state, &host.id)
+            .await
+            .unwrap();
+        let ephemeral_path = PathBuf::from(config.identity_file.as_deref().unwrap());
+        assert!(ephemeral_path.is_file());
+        assert_ne!(ephemeral_path, source_key);
+        assert_eq!(
+            std::fs::read_to_string(&ephemeral_path).unwrap(),
+            normalize_private_key(&source_private_key)
+        );
+
+        let extracted = Command::new(&ssh_keygen)
+            .args(["-y", "-P", passphrase, "-f"])
+            .arg(&ephemeral_path)
+            .output()
+            .unwrap();
+        assert!(
+            extracted.status.success(),
+            "vault key could not be decrypted after round-trip: {}",
+            String::from_utf8_lossy(&extracted.stderr)
+        );
+        let extracted_text = String::from_utf8(extracted.stdout).unwrap();
+        assert_eq!(
+            extracted_text
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>(),
+            expected_public_fields
+        );
+
+        let service = config.askpass_service.clone().unwrap();
+        let account = config.askpass_identity_id.clone().unwrap();
+        assert_eq!(config.askpass_prompt.as_deref(), Some("passphrase"));
+        assert_eq!(
+            keyring::Entry::new(&service, &account)
+                .unwrap()
+                .get_password()
+                .unwrap(),
+            passphrase
+        );
+        let environment = askpass_environment(&config).unwrap();
+        assert_eq!(environment.get("SSH_ASKPASS_REQUIRE").unwrap(), "force");
+        assert_eq!(environment.get("LUMA_ASKPASS_ID").unwrap(), &account);
+        assert_eq!(environment.get("LUMA_ASKPASS_SERVICE").unwrap(), &service);
+        assert_eq!(
+            environment.get("LUMA_ASKPASS_PROMPT").unwrap(),
+            "passphrase"
+        );
+
+        drop(config);
+        assert!(!ephemeral_path.exists());
+        assert!(
+            keyring::Entry::new(&service, &account)
+                .unwrap()
+                .get_password()
+                .is_err(),
+            "ephemeral passphrase credential was not deleted"
         );
     }
 }

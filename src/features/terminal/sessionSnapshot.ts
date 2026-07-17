@@ -244,8 +244,9 @@ export function startSnapshotPersistence(): () => void {
   // there are zero tabs, so closing everything then quitting clears stale tabs.
   schedule();
 
-  // Flush the latest snapshot before the window closes. Re-entrancy guard: our
-  // own close() call re-fires onCloseRequested, which we let through.
+  // Flush the latest snapshot before the window closes. Remove the listener
+  // before issuing the final close: on some platforms a recursive close from
+  // inside a prevented close-request is ignored while the listener is active.
   let closing = false;
   let unlistenClose: (() => void) | undefined;
   const win = getCurrentWindow();
@@ -254,8 +255,16 @@ export function startSnapshotPersistence(): () => void {
       if (closing) return;
       closing = true;
       event.preventDefault();
-      await writeSnapshot();
-      void win.close();
+      try {
+        await writeSnapshot();
+        unlistenClose?.();
+        unlistenClose = undefined;
+        await win.close();
+      } catch {
+        // Keep shutdown retryable if either persistence or the window API
+        // fails instead of leaving the close button permanently inert.
+        closing = false;
+      }
     })
     .then((unlisten) => {
       if (disposed) unlisten();

@@ -162,6 +162,10 @@ type ManagerConfig = {
 };
 
 const sessions = new Map<string, ManagedSession>();
+// A pane can mount before its asynchronous backend/session setup has created
+// the xterm instance. Remember that host so createSession can complete the
+// initial attachment instead of requiring a tab/view switch to remount it.
+const pendingHosts = new Map<string, HTMLElement>();
 
 let config: ManagerConfig = {
   fontSize: 14,
@@ -444,6 +448,12 @@ export const terminalManager = {
       }
     });
 
+    const pendingHost = pendingHosts.get(sessionId);
+    if (pendingHost) {
+      pendingHosts.delete(sessionId);
+      this.attach(sessionId, pendingHost);
+    }
+
     try {
       return await spawnBackend(sessionId);
     } catch (error) {
@@ -455,7 +465,11 @@ export const terminalManager = {
   /** Mount the terminal into a host element (tab activation). */
   attach(sessionId: string, host: HTMLElement): void {
     const session = sessions.get(sessionId);
-    if (!session) return;
+    if (!session) {
+      pendingHosts.set(sessionId, host);
+      return;
+    }
+    pendingHosts.delete(sessionId);
     // A freshly created terminal renders on open(); an already-opened one is
     // being re-attached after a tab switch and needs an explicit repaint below.
     const existing = session.term.element;
@@ -482,6 +496,7 @@ export const terminalManager = {
 
   /** Unmount from the DOM without destroying the terminal (tab switch). */
   detach(sessionId: string): void {
+    pendingHosts.delete(sessionId);
     const session = sessions.get(sessionId);
     session?.term.element?.remove();
   },
@@ -599,6 +614,7 @@ export const terminalManager = {
   },
 
   dispose(sessionId: string): void {
+    pendingHosts.delete(sessionId);
     const session = sessions.get(sessionId);
     if (!session) return;
     session.disposed = true;

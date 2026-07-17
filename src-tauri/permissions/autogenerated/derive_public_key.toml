@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-derive-public-key"
+description = "Enables the derive_public_key command without any pre-configured scope."
+commands.allow = ["derive_public_key"]
+
+[[permission]]
+identifier = "deny-derive-public-key"
+description = "Denies the derive_public_key command without any pre-configured scope."
+commands.deny = ["derive_public_key"]

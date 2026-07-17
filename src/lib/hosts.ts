@@ -184,6 +184,22 @@ export function getKeyReferenceSecrets(id: string): Promise<KeyReferenceSecrets>
   return invoke<KeyReferenceSecrets>("key_reference_secrets", { id });
 }
 
+/** Authoritative public key + fingerprint derived from a private key by the
+ * backend. The frontend must display these instead of any free-text public
+ * key so it can never show/export a public key that mismatches the private
+ * key Luma actually signs with. */
+export type DerivedPublicKey = { publicKey: string; fingerprint: string };
+
+/** Derive the authoritative public key (single-line authorized_keys form) and
+ * SHA256 fingerprint from a private key. Rejects with an `invalid-input`
+ * LumaError (parse via `parseLumaError`) when the key is unparseable, or when
+ * an encrypted PKCS#8 key needs / was given the wrong passphrase. Encrypted
+ * OpenSSH keys derive their public half without a passphrase, so callers need
+ * not supply one just to derive. */
+export function derivePublicKey(privateKey: string, passphrase?: string): Promise<DerivedPublicKey> {
+  return invoke<DerivedPublicKey>("derive_public_key", { privateKey, passphrase: passphrase ?? null });
+}
+
 export function createKeyReference(input: KeyReferenceInput): Promise<KeyReference> {
   return invoke<KeyReference>("key_reference_create", { input });
 }

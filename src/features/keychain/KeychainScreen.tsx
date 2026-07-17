@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, Copy, Eye, EyeOff, Fingerprint, Grid2X2, KeyRound, List, Plus, Save, Search, ShieldCheck, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Eye, EyeOff, Fingerprint, Grid2X2, KeyRound, List, Loader2, Plus, Save, Search, ShieldCheck, X } from "lucide-react";
 import { useIdentities, useInvalidateHosts, useKeyReferences } from "../../hooks/useHosts";
-import { createIdentity, createKeyReference, getKeyReferenceSecrets, getVaultStatus, parseLumaError, setVaultPolicy, setupVault, unlockVault, updateIdentity, updateKeyReference, type Identity, type KeyReference, type VaultStatus } from "../../lib/hosts";
+import { createIdentity, createKeyReference, derivePublicKey, getKeyReferenceSecrets, getVaultStatus, parseLumaError, setVaultPolicy, setupVault, unlockVault, updateIdentity, updateKeyReference, type DerivedPublicKey, type Identity, type KeyReference, type VaultStatus } from "../../lib/hosts";
 
-type KeyDraft = { id: string | null; label: string; privateKey: string; publicKey: string; passphrase: string; certificate: string };
-const blankKey = (): KeyDraft => ({ id: null, label: "", privateKey: "", publicKey: "", passphrase: "", certificate: "" });
-const editKey = (key: KeyReference): KeyDraft => ({ id: key.id, label: key.name, privateKey: "", publicKey: key.publicKey ?? "", passphrase: "", certificate: key.certificate ?? "" });
+type KeyDraft = { id: string | null; label: string; privateKey: string; passphrase: string; certificate: string };
+const blankKey = (): KeyDraft => ({ id: null, label: "", privateKey: "", passphrase: "", certificate: "" });
+const editKey = (key: KeyReference): KeyDraft => ({ id: key.id, label: key.name, privateKey: "", passphrase: "", certificate: key.certificate ?? "" });
 type IdentityDraft = { id: string | null; label: string; username: string; keyId: string; password: string };
 const blankIdentity = (): IdentityDraft => ({ id: null, label: "", username: "", keyId: "", password: "" });
 const editIdentity = (identity: Identity): IdentityDraft => ({ id: identity.id, label: identity.name, username: identity.username, keyId: identity.keyId ?? "", password: "" });
@@ -27,7 +27,10 @@ export function KeychainScreen() {
   const closeSearch = () => { setSearchOpen(false); setQuery(""); };
   useEffect(() => { void getVaultStatus().then(setVaultStatus); }, []);
   const invalidate = useInvalidateHosts();
-  const save = useMutation({ mutationFn: (value: KeyDraft) => { const input = { name: value.label.trim(), storageMode: "encrypted-vault" as const, localPath: null, publicKey: value.publicKey.trim() || null, fingerprint: null, certificate: value.certificate.trim() || null, privateKey: value.privateKey || (value.id ? null : ""), passphrase: value.passphrase || (value.id ? null : "") }; return value.id ? updateKeyReference(value.id, input) : createKeyReference(input); }, onSuccess: () => { invalidate(); setDraft(null); } });
+  // publicKey/fingerprint are intentionally sent as null: the backend derives
+  // them authoritatively from privateKey on save, so the frontend must never
+  // send a free-text public key that could mismatch the stored private key.
+  const save = useMutation({ mutationFn: (value: KeyDraft) => { const input = { name: value.label.trim(), storageMode: "encrypted-vault" as const, localPath: null, publicKey: null, fingerprint: null, certificate: value.certificate.trim() || null, privateKey: value.privateKey || (value.id ? null : ""), passphrase: value.passphrase || (value.id ? null : "") }; return value.id ? updateKeyReference(value.id, input) : createKeyReference(input); }, onSuccess: () => { invalidate(); setDraft(null); } });
   const saveIdentity = useMutation({ mutationFn: (value: IdentityDraft) => { const input = { name: value.label.trim(), username: value.username.trim(), keyId: value.keyId || null, password: value.password || (value.id ? null : "") }; return value.id ? updateIdentity(value.id, input) : createIdentity(input); }, onSuccess: () => { invalidate(); setIdentityDraft(null); } });
   if (vaultStatus && !vaultStatus.unlocked) return <VaultGate status={vaultStatus} onReady={() => void getVaultStatus().then(setVaultStatus)} />;
   return <div className="flex h-full bg-background">
@@ -70,15 +73,53 @@ function KeyInspector({draft,setDraft,onClose,onSave,busy,error}:{draft:KeyDraft
   },[draft.id]);
   const ready = draft.label.trim() && (draft.id || draft.privateKey.trim());
   return <KeyInspectorView draft={draft} setDraft={setDraft} onClose={onClose} onSave={onSave} busy={busy} ready={Boolean(ready)} error={error} secretError={secretError} loadingSecrets={loadingSecrets} showPrivateKey={showPrivateKey} setShowPrivateKey={setShowPrivateKey} showPassphrase={showPassphrase} setShowPassphrase={setShowPassphrase}/>;
-  /* Legacy inline view retained below temporarily; this branch is unreachable. */
-  // eslint-disable-next-line no-unreachable
-  return <aside className="flex w-[360px] shrink-0 flex-col border-l border-border bg-surface"><header className="flex h-14 items-center border-b border-border px-4"><div className="flex-1"><h2 className="text-sm font-semibold">{draft.id ? "Edit key" : "New key"}</h2><p className="text-xs text-muted">Personal vault</p></div><button onClick={onClose} className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header><div className="flex-1 space-y-4 overflow-y-auto p-4"><InspectorField label="Label" value={draft.label} onChange={(label)=>setDraft({...draft,label})}/><InspectorArea label={draft.id ? "Private key (leave blank to keep current)" : "Private key"} value={draft.privateKey} onChange={(privateKey)=>setDraft({...draft,privateKey})}/><InspectorArea label="Public key" value={draft.publicKey} onChange={(publicKey)=>setDraft({...draft,publicKey})}/><InspectorField label="Passphrase" type="password" value={draft.passphrase} onChange={(passphrase)=>setDraft({...draft,passphrase})}/><InspectorArea label="Certificate" value={draft.certificate} onChange={(certificate)=>setDraft({...draft,certificate})}/>{error && <div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save key: {error}</div>}</div><footer className="flex gap-2 border-t border-border p-4"><button disabled={!ready || busy} onClick={onSave} className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/> {busy ? "Saving…" : "Save"}</button></footer></aside>;
 }
 function InspectorField({label,value,onChange,placeholder,type="text"}:{label:string;value:string;onChange:(value:string)=>void;placeholder?:string;type?:string}){return <label className="block text-xs text-muted">{label}<input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-accent"/></label>}
 function InspectorArea({label,value,onChange}:{label:string;value:string;onChange:(value:string)=>void}){return <label className="block text-xs text-muted">{label}<textarea value={value} onChange={e=>onChange(e.target.value)} rows={7} className="mt-1 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground outline-none focus:border-accent"/></label>}
 
 function KeyInspectorView({draft,setDraft,onClose,onSave,busy,ready,error,secretError,loadingSecrets,showPrivateKey,setShowPrivateKey,showPassphrase,setShowPassphrase}:{draft:KeyDraft;setDraft:(draft:KeyDraft)=>void;onClose:()=>void;onSave:()=>void;busy:boolean;ready:boolean;error:string|null;secretError:string|null;loadingSecrets:boolean;showPrivateKey:boolean;setShowPrivateKey:(value:boolean)=>void;showPassphrase:boolean;setShowPassphrase:(value:boolean)=>void}) {
-  return <aside className="flex w-[360px] shrink-0 flex-col border-l border-border bg-surface"><header className="flex h-14 items-center border-b border-border px-4"><div className="flex-1"><h2 className="text-sm font-semibold">{draft.id?"Edit key":"New key"}</h2><p className="text-xs text-muted">Personal vault</p></div><button onClick={onClose} className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header><div className="flex-1 space-y-4 overflow-y-auto p-4"><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><SecretArea label="Private key" value={draft.privateKey} onChange={privateKey=>setDraft({...draft,privateKey})} revealed={showPrivateKey} onToggle={()=>setShowPrivateKey(!showPrivateKey)} loading={loadingSecrets}/><InspectorArea label="Public key" value={draft.publicKey} onChange={publicKey=>setDraft({...draft,publicKey})}/><SecretField label="Passphrase" value={draft.passphrase} onChange={passphrase=>setDraft({...draft,passphrase})} revealed={showPassphrase} onToggle={()=>setShowPassphrase(!showPassphrase)} loading={loadingSecrets}/><InspectorArea label="Certificate" value={draft.certificate} onChange={certificate=>setDraft({...draft,certificate})}/>{secretError&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not load secrets: {secretError}</div>}{error&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save key: {error}</div>}</div><footer className="border-t border-border p-4"><button disabled={!ready||busy||loadingSecrets} onClick={onSave} className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save"}</button></footer></aside>;
+  const privateKey=draft.privateKey;
+  const passphrase=draft.passphrase;
+  const [derived,setDerived]=useState<DerivedPublicKey|null>(null);
+  const [deriving,setDeriving]=useState(false);
+  const [deriveError,setDeriveError]=useState<string|null>(null);
+  // Debounced derivation: whenever the private key (or passphrase) changes,
+  // ask the backend for the authoritative public key + fingerprint. Encrypted
+  // OpenSSH keys derive without a passphrase, so we never gate on one.
+  useEffect(()=>{
+    if(!privateKey.trim()){setDerived(null);setDeriveError(null);setDeriving(false);return;}
+    let active=true;
+    setDeriving(true);
+    setDeriveError(null);
+    const timer=window.setTimeout(()=>{
+      derivePublicKey(privateKey,passphrase||undefined)
+        .then(result=>{if(active){setDerived(result);setDeriveError(null);}})
+        .catch(e=>{if(active){setDerived(null);setDeriveError(parseLumaError(e).message);}})
+        .finally(()=>{if(active)setDeriving(false);});
+    },400);
+    return()=>{active=false;window.clearTimeout(timer);};
+  },[privateKey,passphrase]);
+  return <aside className="flex w-[360px] shrink-0 flex-col border-l border-border bg-surface"><header className="flex h-14 items-center border-b border-border px-4"><div className="flex-1"><h2 className="text-sm font-semibold">{draft.id?"Edit key":"New key"}</h2><p className="text-xs text-muted">Personal vault</p></div><button onClick={onClose} className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header><div className="flex-1 space-y-4 overflow-y-auto p-4"><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><SecretArea label="Private key" value={draft.privateKey} onChange={privateKey=>setDraft({...draft,privateKey})} revealed={showPrivateKey} onToggle={()=>setShowPrivateKey(!showPrivateKey)} loading={loadingSecrets}/><DerivedPublicKeyView derived={derived} busy={deriving||loadingSecrets} error={deriveError}/><SecretField label="Passphrase" value={draft.passphrase} onChange={passphrase=>setDraft({...draft,passphrase})} revealed={showPassphrase} onToggle={()=>setShowPassphrase(!showPassphrase)} loading={loadingSecrets}/><InspectorArea label="Certificate" value={draft.certificate} onChange={certificate=>setDraft({...draft,certificate})}/>{secretError&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not load secrets: {secretError}</div>}{error&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save key: {error}</div>}</div><footer className="border-t border-border p-4"><button disabled={!ready||busy||loadingSecrets} onClick={onSave} className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save"}</button></footer></aside>;
+}
+// Read-only display of the public key + fingerprint the backend derives from
+// the private key. This replaces the old free-text public-key field so Luma can
+// never show or export a public key that mismatches the stored private key.
+function DerivedPublicKeyView({derived,busy,error}:{derived:DerivedPublicKey|null;busy:boolean;error:string|null}){
+  const [copied,setCopied]=useState(false);
+  const copy=()=>{if(!derived)return;void navigator.clipboard.writeText(derived.publicKey).then(()=>{setCopied(true);window.setTimeout(()=>setCopied(false),1500);});};
+  const passphraseHint=error!=null&&/passphrase/i.test(error);
+  return <div className="block text-xs text-muted"><span className="flex items-center gap-2"><span>Public key</span><span className="text-[10px] font-normal text-muted/60">derived from private key</span>{busy&&derived&&<Loader2 aria-label="Deriving public key" size={12} className="animate-spin text-muted"/>}</span>
+    {busy&&!derived&&!error
+      ? <p className="mt-1 flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-3 text-muted"><Loader2 aria-label="Deriving public key" size={13} className="animate-spin"/> Deriving public key…</p>
+      : error
+      ? <div role="alert" className="mt-1 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">Couldn&apos;t read this private key: {error}{passphraseHint&&<span className="mt-1 block text-danger/80">Enter the correct passphrase below and Luma will derive the matching public key.</span>}</div>
+      : derived
+      ? <div className="mt-1 space-y-2">
+          <div className="rounded-lg border border-border bg-background px-3 py-2"><span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted"><Fingerprint size={12}/> Fingerprint</span><span className="mt-0.5 block select-all break-all font-mono text-xs text-foreground">{derived.fingerprint}</span></div>
+          <span className="relative block"><textarea readOnly aria-label="Derived public key (authorized_keys line)" value={derived.publicKey} rows={4} className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 pr-10 font-mono text-xs text-foreground outline-none"/><button type="button" aria-label="Copy public key" disabled={!derived.publicKey} onClick={copy} className="absolute right-2 top-2 rounded p-1 text-muted hover:bg-raised hover:text-foreground disabled:opacity-40">{copied?<Check size={14}/>:<Copy size={14}/>}</button></span>
+        </div>
+      : <p className="mt-1 rounded-lg border border-dashed border-border px-3 py-3 text-muted">Add a private key above to derive its public key and fingerprint.</p>}
+  </div>;
 }
 function SecretButtons({value,revealed,onToggle}:{value:string;revealed:boolean;onToggle:()=>void}){const[copied,setCopied]=useState(false);const copy=()=>void navigator.clipboard.writeText(value).then(()=>{setCopied(true);window.setTimeout(()=>setCopied(false),1500)});return <span className="absolute right-2 top-2 flex gap-1"><button type="button" aria-label={revealed?"Hide secret":"Show secret"} onClick={onToggle} className="rounded p-1 text-muted hover:bg-raised hover:text-foreground">{revealed?<EyeOff size={14}/>:<Eye size={14}/>}</button><button type="button" aria-label="Copy secret" disabled={!value} onClick={copy} className="rounded p-1 text-muted hover:bg-raised hover:text-foreground disabled:opacity-40">{copied?<Check size={14}/>:<Copy size={14}/>}</button></span>}
 function SecretArea({label,value,onChange,revealed,onToggle,loading}:{label:string;value:string;onChange:(value:string)=>void;revealed:boolean;onToggle:()=>void;loading:boolean}){return <label className="block text-xs text-muted">{label}<span className="relative mt-1 block"><textarea aria-label={label} value={value} onChange={e=>onChange(e.target.value)} rows={7} disabled={loading} placeholder={loading?"Loading…":""} style={revealed?undefined:({WebkitTextSecurity:"disc"} as React.CSSProperties)} className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 pr-16 font-mono text-xs text-foreground outline-none focus:border-accent disabled:opacity-60"/><SecretButtons value={value} revealed={revealed} onToggle={onToggle}/></span></label>}

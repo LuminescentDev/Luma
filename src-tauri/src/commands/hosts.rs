@@ -4,12 +4,13 @@ use crate::errors::Result;
 use crate::storage::host_groups::{self, HostGroup, HostGroupInput};
 use crate::storage::hosts::{self, Host, HostInput};
 use crate::storage::identities::{self, Identity, IdentityInput};
-use crate::storage::key_references::{self, KeyReference, KeyReferenceInput};
+use crate::storage::key_references::{self, DerivedPublicKey, KeyReference, KeyReferenceInput};
 use crate::vault::{self, VaultState};
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
+use zeroize::Zeroizing;
 
 #[tauri::command]
 pub async fn hosts_list(state: State<'_, AppState>) -> Result<Vec<Host>> {
@@ -74,6 +75,16 @@ pub async fn host_group_delete(state: State<'_, AppState>, id: String) -> Result
 }
 
 #[tauri::command]
+pub fn derive_public_key(
+    private_key: String,
+    passphrase: Option<String>,
+) -> Result<DerivedPublicKey> {
+    let private_key = Zeroizing::new(private_key);
+    let passphrase = passphrase.map(Zeroizing::new);
+    key_references::derive_public_key(&private_key, passphrase.as_deref().map(String::as_str))
+}
+
+#[tauri::command]
 pub async fn key_references_list(state: State<'_, AppState>) -> Result<Vec<KeyReference>> {
     key_references::list(&state.pool).await
 }
@@ -107,8 +118,20 @@ pub async fn key_reference_create(
     mut input: KeyReferenceInput,
 ) -> Result<KeyReference> {
     key_references::validate_create(&input)?;
-    let private_key = input.private_key.take();
-    let passphrase = input.passphrase.take();
+    if input.storage_mode == "encrypted-vault"
+        && input
+            .private_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && !vault::is_unlocked(&vault_state)
+    {
+        return Err(crate::errors::LumaError::InvalidInput(
+            "vault is locked; unlock it before saving secrets".into(),
+        ));
+    }
+    key_references::apply_derived_vault_metadata(&mut input)?;
+    let private_key = input.private_key.take().map(Zeroizing::new);
+    let passphrase = input.passphrase.take().map(Zeroizing::new);
     let mut created = key_references::create_metadata(&state.pool, input).await?;
     if let Some(value) = private_key.as_deref() {
         vault::store(
@@ -147,8 +170,20 @@ pub async fn key_reference_update(
     id: String,
     mut input: KeyReferenceInput,
 ) -> Result<KeyReference> {
-    let private_key = input.private_key.take();
-    let passphrase = input.passphrase.take();
+    if input.storage_mode == "encrypted-vault"
+        && input
+            .private_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        && !vault::is_unlocked(&vault_state)
+    {
+        return Err(crate::errors::LumaError::InvalidInput(
+            "vault is locked; unlock it before saving secrets".into(),
+        ));
+    }
+    key_references::apply_derived_vault_metadata(&mut input)?;
+    let private_key = input.private_key.take().map(Zeroizing::new);
+    let passphrase = input.passphrase.take().map(Zeroizing::new);
     key_references::update(&state.pool, &id, input).await?;
     if let Some(value) = private_key.as_deref().filter(|v| !v.is_empty()) {
         vault::store(&state.pool, &vault_state, "key", &id, "private-key", value).await?;
