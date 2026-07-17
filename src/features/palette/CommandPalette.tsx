@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
+  Cable,
   ClipboardPaste,
   Columns2,
+  Download,
   FolderOpen,
   KeyRound,
   Play,
@@ -21,6 +23,7 @@ import { useSnippetRunStore } from "../../stores/snippetRunStore";
 import { useShells, useProfiles } from "../../hooks/useShells";
 import { useHosts } from "../../hooks/useHosts";
 import { useSnippets } from "../../hooks/useSnippets";
+import { useUpdaterStore } from "../../stores/updaterStore";
 import { cn } from "../../lib/utils";
 
 type Command = {
@@ -123,6 +126,13 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Type a command…"
           aria-label="Search commands"
+          role="combobox"
+          aria-expanded
+          aria-controls="command-palette-list"
+          aria-autocomplete="list"
+          aria-activedescendant={
+            filtered.length > 0 ? `command-option-${active}` : undefined
+          }
           className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
         />
         <button
@@ -135,7 +145,13 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
-      <div ref={listRef} className="max-h-[50vh] overflow-y-auto p-1.5" role="listbox">
+      <div
+        ref={listRef}
+        id="command-palette-list"
+        className="max-h-[50vh] overflow-y-auto p-1.5"
+        role="listbox"
+        aria-label="Commands"
+      >
         {filtered.length === 0 ? (
           <p className="px-3 py-6 text-center text-sm text-muted">
             No matching commands.
@@ -154,6 +170,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
                 <button
                   type="button"
                   role="option"
+                  id={`command-option-${index}`}
                   aria-selected={index === active}
                   data-index={index}
                   onMouseMove={() => setActive(index)}
@@ -196,11 +213,13 @@ function useCommands(onClose: () => void): Command[] {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
 
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
+  const openSerialConnect = useUiStore((s) => s.openSerialConnect);
   const openSettings = useUiStore((s) => s.openSettings);
   const openKeychain = useUiStore((s) => s.openKeychain);
   const openSection = useUiStore((s) => s.openSection);
   const sftpConnect = useSftpStore((s) => s.connect);
   const requestSnippet = useSnippetRunStore((s) => s.request);
+  const checkForUpdates = useUpdaterStore((s) => s.check);
 
   return useMemo(() => {
     const wrap = (fn: () => void) => () => {
@@ -239,6 +258,15 @@ function useCommands(onClose: () => void): Command[] {
         ),
       });
     }
+
+    commands.push({
+      id: "terminal-serial",
+      group: "Terminal",
+      label: "Open serial terminal",
+      keywords: "serial port com tty usb uart baud",
+      icon: <Cable size={15} />,
+      run: wrap(() => openSerialConnect()),
+    });
 
     if (activeTabId) {
       commands.push(
@@ -376,6 +404,17 @@ function useCommands(onClose: () => void): Command[] {
         icon: <Settings size={15} />,
         run: wrap(() => openSettings()),
       },
+      {
+        id: "check-for-updates",
+        group: "Go to",
+        label: "Check for updates",
+        keywords: "update upgrade version release",
+        icon: <Download size={15} />,
+        run: wrap(() => {
+          openSettings();
+          void checkForUpdates({ silent: false });
+        }),
+      },
     );
 
     return commands;
@@ -394,10 +433,12 @@ function useCommands(onClose: () => void): Command[] {
     closeTab,
     moveActivePaneToNext,
     setTerminalSearchOpen,
+    openSerialConnect,
     openSettings,
     openKeychain,
     openSection,
     sftpConnect,
     requestSnippet,
+    checkForUpdates,
   ]);
 }

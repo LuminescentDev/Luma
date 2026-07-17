@@ -64,3 +64,68 @@ body {
 ::selection {
   background: var(--glow);
 }
+
+/*
+ * Consistent keyboard focus ring across both themes. :focus-visible keeps this
+ * off for mouse/touch interaction. Components that already draw their own
+ * focus-visible ring use `focus:outline-none`, which wins on specificity, so
+ * this acts as a fallback for anything that would otherwise show none.
+ */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* xterm.js owns focus/selection inside the terminal viewport; never draw the
+   app focus ring on its internal nodes. */
+.xterm,
+.xterm * {
+  outline: none !important;
+}
+
+/* The main region is a skip-link target, not an interactive control; don't ring
+   the whole content area when focus lands on it. */
+#main-content:focus,
+#main-content:focus-visible {
+  outline: none;
+}
+
+/* Skip link: visually hidden until focused, then anchored top-left. */
+.skip-link {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  transform: translateY(-150%);
+  transition: transform 120ms ease;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 0.5rem 0.875rem;
+  font-size: 0.8125rem;
+  color: var(--foreground);
+  box-shadow: var(--shadow-glow);
+}
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+/*
+ * Respect the user's reduced-motion preference. The app deliberately avoids
+ * heavy animation libraries, so neutralizing CSS transitions/animations here is
+ * enough (spinners collapse to a static state, which is acceptable).
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .skip-link {
+    transition: none;
+  }
+}

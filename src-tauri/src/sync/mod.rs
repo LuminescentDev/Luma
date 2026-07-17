@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use argon2::{Algorithm, Argon2, Params, Version};
+use base64::Engine;
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
     XChaCha20Poly1305, XNonce,
@@ -41,10 +42,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::errors::{LumaError, Result};
 use crate::storage::{host_groups, hosts, key_references, settings, snippets};
+use crate::vault::{self, VaultState};
 
 use providers::{
     GitHubGistProvider, LocalFolderProvider, SyncProvider, UploadResult, WebDavProvider,
@@ -63,6 +65,11 @@ const KEYCHAIN_PASSPHRASE: &str = "sync-passphrase";
 const KEYCHAIN_WEBDAV_PASSWORD: &str = "webdav-password";
 const KEYCHAIN_GIST_TOKEN: &str = "github-gist-token";
 const MAX_OBJECTS_PER_TYPE: usize = 10_000;
+const MAX_ENCRYPTED_KEY_SECRETS: usize = MAX_OBJECTS_PER_TYPE * 2;
+const MAX_SYNC_SECRET_BYTES: usize = 1024 * 1024;
+const VAULT_KEY_OWNER_TYPE: &str = "key";
+const PRIVATE_KEY_SECRET_TYPE: &str = "private-key";
+const PASSPHRASE_SECRET_TYPE: &str = "passphrase";
 pub(crate) const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct SyncRuntimeState {
@@ -88,6 +95,8 @@ pub struct SyncBundle {
     pub hosts: Vec<SyncHost>,
     pub host_groups: Vec<SyncHostGroup>,
     pub key_references: Vec<SyncKeyReference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encrypted_key_secrets: Vec<SyncEncryptedSecret>,
     pub terminal_profiles: Vec<SyncTerminalProfile>,
     pub snippets: Vec<SyncSnippet>,
     pub settings: BTreeMap<String, SyncSetting>,
@@ -134,6 +143,19 @@ pub struct SyncKeyReference {
     pub local_path: Option<String>,
     pub fingerprint: Option<String>,
     pub certificate: Option<String>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SyncEncryptedSecret {
+    pub key_reference_id: String,
+    pub secret_type: String,
+    pub kdf_id: u8,
+    pub cipher_id: u8,
+    pub salt: String,
+    pub nonce: String,
+    pub ciphertext: String,
     pub updated_at: i64,
 }
 
@@ -210,6 +232,8 @@ pub struct ImportSummary {
     pub applied: ObjectCounts,
     pub kept_local: ObjectCounts,
     pub conflicts: Vec<Conflict>,
+    pub private_keys_applied: usize,
+    pub private_keys_skipped_locked: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -270,6 +294,8 @@ pub struct SyncReport {
     pub pushed: bool,
     pub conflicts: Vec<Conflict>,
     pub up_to_date: bool,
+    pub private_keys_applied: usize,
+    pub private_keys_skipped_locked: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -289,6 +315,7 @@ struct PendingSync {
     provider: String,
     remote_version: String,
     remote_states: BTreeMap<String, MergeItem>,
+    remote_encrypted_key_secrets: Vec<SyncEncryptedSecret>,
     conflicts: Vec<Conflict>,
 }
 
@@ -322,6 +349,18 @@ struct MergeOutcome {
     conflicts: Vec<Conflict>,
     applied_remote: ObjectCounts,
     kept_local: ObjectCounts,
+    remote_key_references: HashSet<String>,
+}
+
+#[derive(Default)]
+struct PrivateKeyApplySummary {
+    applied: usize,
+    skipped_locked: usize,
+}
+
+struct PreparedRemoteSecrets {
+    entries: Vec<SyncEncryptedSecret>,
+    skipped_locked: usize,
 }
 
 pub async fn initialize(pool: &SqlitePool, runtime: &SyncRuntimeState) -> Result<()> {
@@ -342,12 +381,13 @@ pub async fn initialize(pool: &SqlitePool, runtime: &SyncRuntimeState) -> Result
 
 pub async fn export_encrypted(
     pool: &SqlitePool,
+    vault_state: &VaultState,
     app_data_dir: &Path,
     path: &str,
     passphrase: &str,
 ) -> Result<ExportSummary> {
     let path_buf = validate_file_path(path, app_data_dir, false)?;
-    let bundle = assemble_bundle(pool).await?;
+    let bundle = assemble_bundle(pool, vault_state, passphrase).await?;
     let counts = bundle.counts();
     let blob = encrypt_bundle(&bundle, passphrase)?;
     fs::write(&path_buf, blob).map_err(|error| {
@@ -370,7 +410,7 @@ pub async fn import_preview(
 ) -> Result<ImportPreview> {
     let bundle = read_encrypted_bundle(path, app_data_dir, passphrase)?;
     validate_bundle(&bundle)?;
-    let local = assemble_bundle(pool).await?;
+    let local = assemble_bundle_without_private_keys(pool).await?;
     let outcome = merge_bundles(&local, &bundle, None, &[])?;
     Ok(ImportPreview {
         object_counts: bundle.counts(),
@@ -380,6 +420,7 @@ pub async fn import_preview(
 
 pub async fn import_apply(
     pool: &SqlitePool,
+    vault_state: &VaultState,
     app_data_dir: &Path,
     path: &str,
     passphrase: &str,
@@ -387,14 +428,24 @@ pub async fn import_apply(
 ) -> Result<ImportSummary> {
     let bundle = read_encrypted_bundle(path, app_data_dir, passphrase)?;
     validate_bundle(&bundle)?;
-    let local = assemble_bundle(pool).await?;
+    let local = assemble_bundle(pool, vault_state, passphrase).await?;
     let outcome = merge_bundles(&local, &bundle, None, resolutions)?;
     validate_states(&outcome.states)?;
+    let prepared = prepare_remote_secrets(
+        vault_state,
+        passphrase,
+        &bundle.encrypted_key_secrets,
+        &outcome.states,
+        &outcome.remote_key_references,
+    )?;
     apply_states(pool, &outcome.states).await?;
+    let private_keys = apply_prepared_secrets(pool, vault_state, passphrase, prepared).await?;
     Ok(ImportSummary {
         applied: outcome.applied_remote,
         kept_local: outcome.kept_local,
         conflicts: outcome.conflicts,
+        private_keys_applied: private_keys.applied,
+        private_keys_skipped_locked: private_keys.skipped_locked,
     })
 }
 
@@ -503,13 +554,14 @@ pub async fn disable(pool: &SqlitePool, runtime: &SyncRuntimeState) -> Result<()
 pub async fn sync_now(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
+    vault_state: &VaultState,
     app_data_dir: &Path,
 ) -> Result<SyncReport> {
     let (provider_name, mut stored) = load_enabled_config(pool).await?;
     let passphrase = current_passphrase(runtime)?;
     let provider = create_provider(&provider_name, &stored, app_data_dir)?;
     let remote = provider.download().await?;
-    let local = assemble_bundle(pool).await?;
+    let local = assemble_bundle(pool, vault_state, &passphrase).await?;
 
     let Some(remote) = remote else {
         let blob = encrypt_bundle(&local, &passphrase)?;
@@ -521,6 +573,8 @@ pub async fn sync_now(
             pushed: true,
             conflicts: Vec::new(),
             up_to_date: false,
+            private_keys_applied: 0,
+            private_keys_skipped_locked: 0,
         });
     };
 
@@ -528,14 +582,23 @@ pub async fn sync_now(
     validate_bundle(&remote_bundle)?;
     let outcome = merge_bundles(&local, &remote_bundle, Some(&stored.baseline), &[])?;
     validate_states(&outcome.states)?;
+    let prepared = prepare_remote_secrets(
+        vault_state,
+        &passphrase,
+        &remote_bundle.encrypted_key_secrets,
+        &outcome.states,
+        &outcome.remote_key_references,
+    )?;
     apply_states(pool, &outcome.states).await?;
-    let pulled = !outcome.applied_remote.is_empty();
+    let private_keys = apply_prepared_secrets(pool, vault_state, &passphrase, prepared).await?;
+    let pulled = !outcome.applied_remote.is_empty() || private_keys.applied > 0;
 
     if !outcome.conflicts.is_empty() {
         *runtime.pending.lock().unwrap() = Some(PendingSync {
             provider: provider_name,
             remote_version: remote.version,
             remote_states: remote_bundle.states()?,
+            remote_encrypted_key_secrets: remote_bundle.encrypted_key_secrets.clone(),
             conflicts: outcome.conflicts.clone(),
         });
         return Ok(SyncReport {
@@ -543,11 +606,15 @@ pub async fn sync_now(
             pushed: false,
             conflicts: outcome.conflicts,
             up_to_date: false,
+            private_keys_applied: private_keys.applied,
+            private_keys_skipped_locked: private_keys.skipped_locked,
         });
     }
 
-    let merged = assemble_bundle(pool).await?;
-    let needs_push = !bundles_have_same_content(&merged, &remote_bundle)?;
+    let merged = assemble_bundle(pool, vault_state, &passphrase).await?;
+    let compare_private_keys = private_key_sync_active(pool, vault_state).await?;
+    let needs_push =
+        !bundles_have_same_content(&merged, &remote_bundle, &passphrase, compare_private_keys)?;
     let pushed = if needs_push {
         let blob = encrypt_bundle(&merged, &passphrase)?;
         let uploaded = provider.upload(&blob, Some(&remote.version)).await?;
@@ -565,12 +632,15 @@ pub async fn sync_now(
         pushed,
         conflicts: Vec::new(),
         up_to_date: !pulled && !pushed,
+        private_keys_applied: private_keys.applied,
+        private_keys_skipped_locked: private_keys.skipped_locked,
     })
 }
 
 pub async fn sync_resolve(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
+    vault_state: &VaultState,
     app_data_dir: &Path,
     resolutions: &[ConflictResolution],
 ) -> Result<SyncReport> {
@@ -601,18 +671,25 @@ pub async fn sync_resolve(
             pushed: false,
             conflicts: unresolved,
             up_to_date: false,
+            private_keys_applied: 0,
+            private_keys_skipped_locked: 0,
         });
     }
 
-    let local = assemble_bundle(pool).await?;
+    let passphrase = current_passphrase(runtime)?;
+    let local = assemble_bundle(pool, vault_state, &passphrase).await?;
     let mut states = local.states()?;
     let mut pulled = false;
+    let mut remote_key_references = HashSet::new();
     for conflict in &pending.conflicts {
         let key = object_key(&conflict.object_type, &conflict.object_id);
         if resolution_map[&key] == ResolutionChoice::TakeRemote {
             match pending.remote_states.get(&key) {
                 Some(remote) => {
                     states.insert(key, remote.clone());
+                    if remote.object_type == "key_reference" && remote.payload.is_some() {
+                        remote_key_references.insert(remote.object_id.clone());
+                    }
                 }
                 None => {
                     states.remove(&key);
@@ -622,11 +699,19 @@ pub async fn sync_resolve(
         }
     }
     validate_states(&states)?;
+    let prepared = prepare_remote_secrets(
+        vault_state,
+        &passphrase,
+        &pending.remote_encrypted_key_secrets,
+        &states,
+        &remote_key_references,
+    )?;
     apply_states(pool, &states).await?;
+    let private_keys = apply_prepared_secrets(pool, vault_state, &passphrase, prepared).await?;
+    pulled |= private_keys.applied > 0;
 
-    let passphrase = current_passphrase(runtime)?;
     let provider = create_provider(&provider_name, &stored, app_data_dir)?;
-    let merged = assemble_bundle(pool).await?;
+    let merged = assemble_bundle(pool, vault_state, &passphrase).await?;
     let blob = encrypt_bundle(&merged, &passphrase)?;
     let uploaded = provider
         .upload(&blob, Some(&pending.remote_version))
@@ -638,6 +723,8 @@ pub async fn sync_resolve(
         pushed: true,
         conflicts: Vec::new(),
         up_to_date: false,
+        private_keys_applied: private_keys.applied,
+        private_keys_skipped_locked: private_keys.skipped_locked,
     })
 }
 
@@ -655,7 +742,7 @@ fn encrypt_bundle(bundle: &SyncBundle, passphrase: &str) -> Result<Vec<u8>> {
     let mut nonce = [0_u8; NONCE_LEN];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
-    let key = derive_sync_key(passphrase, &salt)?;
+    let key = Zeroizing::new(derive_sync_key(passphrase, &salt)?);
 
     let mut blob = Vec::with_capacity(HEADER_LEN + plaintext.len() + 16);
     blob.extend_from_slice(MAGIC);
@@ -668,7 +755,7 @@ fn encrypt_bundle(bundle: &SyncBundle, passphrase: &str) -> Result<Vec<u8>> {
     ]);
     blob.extend_from_slice(&salt);
     blob.extend_from_slice(&nonce);
-    let ciphertext = XChaCha20Poly1305::new((&key).into())
+    let ciphertext = XChaCha20Poly1305::new((&*key).into())
         .encrypt(
             XNonce::from_slice(&nonce),
             Payload {
@@ -705,20 +792,22 @@ fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<SyncBundle> {
     }
     let salt = &blob[13..13 + SALT_LEN];
     let nonce = &blob[13 + SALT_LEN..HEADER_LEN];
-    let key = derive_sync_key(passphrase, salt)?;
-    let plaintext = XChaCha20Poly1305::new((&key).into())
-        .decrypt(
-            XNonce::from_slice(nonce),
-            Payload {
-                msg: &blob[HEADER_LEN..],
-                aad: &blob[..HEADER_LEN],
-            },
-        )
-        .map_err(|_| {
-            LumaError::SyncAuthFailed(
-                "incorrect sync passphrase or corrupted encrypted sync file".into(),
+    let key = Zeroizing::new(derive_sync_key(passphrase, salt)?);
+    let plaintext = Zeroizing::new(
+        XChaCha20Poly1305::new((&*key).into())
+            .decrypt(
+                XNonce::from_slice(nonce),
+                Payload {
+                    msg: &blob[HEADER_LEN..],
+                    aad: &blob[..HEADER_LEN],
+                },
             )
-        })?;
+            .map_err(|_| {
+                LumaError::SyncAuthFailed(
+                    "incorrect sync passphrase or corrupted encrypted sync file".into(),
+                )
+            })?,
+    );
     let bundle: SyncBundle = serde_json::from_slice(&plaintext)
         .map_err(|_| LumaError::InvalidInput("sync bundle contains invalid JSON".into()))?;
     validate_bundle(&bundle)?;
@@ -736,7 +825,166 @@ fn derive_sync_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-async fn assemble_bundle(pool: &SqlitePool) -> Result<SyncBundle> {
+fn secret_aad(
+    key_reference_id: &str,
+    secret_type: &str,
+    kdf_id: u8,
+    cipher_id: u8,
+    salt: &[u8],
+    nonce: &[u8],
+    updated_at: i64,
+) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(
+        8 + 4 + key_reference_id.len() + 4 + secret_type.len() + 2 + salt.len() + nonce.len() + 8,
+    );
+    aad.extend_from_slice(b"LUMAKEY1");
+    aad.extend_from_slice(&(key_reference_id.len() as u32).to_be_bytes());
+    aad.extend_from_slice(key_reference_id.as_bytes());
+    aad.extend_from_slice(&(secret_type.len() as u32).to_be_bytes());
+    aad.extend_from_slice(secret_type.as_bytes());
+    aad.extend_from_slice(&[kdf_id, cipher_id]);
+    aad.extend_from_slice(salt);
+    aad.extend_from_slice(nonce);
+    aad.extend_from_slice(&updated_at.to_be_bytes());
+    aad
+}
+
+fn encrypt_sync_secret(
+    key_reference_id: &str,
+    secret_type: &str,
+    plaintext: &str,
+    updated_at: i64,
+    passphrase: &str,
+) -> Result<SyncEncryptedSecret> {
+    validate_passphrase(passphrase)?;
+    if plaintext.len() > MAX_SYNC_SECRET_BYTES {
+        return Err(LumaError::InvalidInput(
+            "private key sync secret exceeds the size limit".into(),
+        ));
+    }
+    let mut salt = [0_u8; SALT_LEN];
+    let mut nonce = [0_u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut salt);
+    OsRng.fill_bytes(&mut nonce);
+    let key = Zeroizing::new(derive_sync_key(passphrase, &salt)?);
+    let aad = secret_aad(
+        key_reference_id,
+        secret_type,
+        KDF_ARGON2ID,
+        CIPHER_XCHACHA20_POLY1305,
+        &salt,
+        &nonce,
+        updated_at,
+    );
+    let ciphertext = XChaCha20Poly1305::new((&*key).into())
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: &aad,
+            },
+        )
+        .map_err(|_| {
+            LumaError::SyncUnavailable("could not encrypt private key sync data".into())
+        })?;
+    let base64 = base64::engine::general_purpose::STANDARD;
+    Ok(SyncEncryptedSecret {
+        key_reference_id: key_reference_id.to_string(),
+        secret_type: secret_type.to_string(),
+        kdf_id: KDF_ARGON2ID,
+        cipher_id: CIPHER_XCHACHA20_POLY1305,
+        salt: base64.encode(salt),
+        nonce: base64.encode(nonce),
+        ciphertext: base64.encode(ciphertext),
+        updated_at,
+    })
+}
+
+fn decode_sync_secret_parts(secret: &SyncEncryptedSecret) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    validate_encrypted_secret_metadata(secret)?;
+    let base64 = base64::engine::general_purpose::STANDARD;
+    let salt = base64
+        .decode(&secret.salt)
+        .map_err(|_| LumaError::InvalidInput("encrypted key secret salt is invalid".into()))?;
+    let nonce = base64
+        .decode(&secret.nonce)
+        .map_err(|_| LumaError::InvalidInput("encrypted key secret nonce is invalid".into()))?;
+    let ciphertext = base64.decode(&secret.ciphertext).map_err(|_| {
+        LumaError::InvalidInput("encrypted key secret ciphertext is invalid".into())
+    })?;
+    if salt.len() != SALT_LEN
+        || nonce.len() != NONCE_LEN
+        || ciphertext.len() < 16
+        || ciphertext.len() > MAX_SYNC_SECRET_BYTES + 16
+    {
+        return Err(LumaError::InvalidInput(
+            "encrypted key secret has an invalid size".into(),
+        ));
+    }
+    Ok((salt, nonce, ciphertext))
+}
+
+fn decrypt_sync_secret(
+    secret: &SyncEncryptedSecret,
+    passphrase: &str,
+) -> Result<Zeroizing<String>> {
+    validate_passphrase(passphrase)?;
+    let (salt, nonce, ciphertext) = decode_sync_secret_parts(secret)?;
+    let key = Zeroizing::new(derive_sync_key(passphrase, &salt)?);
+    let aad = secret_aad(
+        &secret.key_reference_id,
+        &secret.secret_type,
+        secret.kdf_id,
+        secret.cipher_id,
+        &salt,
+        &nonce,
+        secret.updated_at,
+    );
+    let plaintext = XChaCha20Poly1305::new((&*key).into())
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &ciphertext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| {
+            LumaError::SyncAuthFailed(
+                "encrypted private key sync data could not be authenticated".into(),
+            )
+        })?;
+    match String::from_utf8(plaintext) {
+        Ok(plaintext) => Ok(Zeroizing::new(plaintext)),
+        Err(error) => {
+            let mut plaintext = error.into_bytes();
+            plaintext.zeroize();
+            Err(LumaError::InvalidInput(
+                "encrypted key secret plaintext is not valid UTF-8".into(),
+            ))
+        }
+    }
+}
+
+async fn private_key_sync_active(pool: &SqlitePool, vault_state: &VaultState) -> Result<bool> {
+    Ok(settings::sync_include_private_keys(pool).await? && vault::is_unlocked(vault_state))
+}
+
+async fn assemble_bundle(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    passphrase: &str,
+) -> Result<SyncBundle> {
+    assemble_bundle_inner(pool, Some((vault_state, passphrase))).await
+}
+
+async fn assemble_bundle_without_private_keys(pool: &SqlitePool) -> Result<SyncBundle> {
+    assemble_bundle_inner(pool, None).await
+}
+
+async fn assemble_bundle_inner(
+    pool: &SqlitePool,
+    private_key_sync: Option<(&VaultState, &str)>,
+) -> Result<SyncBundle> {
     let device_id: String = sqlx::query_scalar("SELECT device_id FROM sync_state WHERE id = 1")
         .fetch_one(pool)
         .await?;
@@ -792,24 +1040,71 @@ async fn assemble_bundle(pool: &SqlitePool) -> Result<SyncBundle> {
             })
             .collect();
 
-    let key_references = sqlx::query(
-        "SELECT id,name,public_key,storage_mode,local_path,fingerprint,certificate,updated_at
-         FROM key_references",
+    let mut key_references = Vec::new();
+    let mut private_key_reference_timestamps = Vec::new();
+    for row in sqlx::query(
+        "SELECT id,name,public_key,storage_mode,local_path,fingerprint,certificate,
+                has_private_key,updated_at FROM key_references",
     )
     .fetch_all(pool)
     .await?
-    .into_iter()
-    .map(|row| SyncKeyReference {
-        id: row.get("id"),
-        name: row.get("name"),
-        public_key: row.get("public_key"),
-        storage_mode: row.get("storage_mode"),
-        local_path: row.get("local_path"),
-        fingerprint: row.get("fingerprint"),
-        certificate: row.get("certificate"),
-        updated_at: row.get("updated_at"),
-    })
-    .collect();
+    {
+        let id: String = row.get("id");
+        let updated_at: i64 = row.get("updated_at");
+        if row.get::<i64, _>("has_private_key") != 0 {
+            private_key_reference_timestamps.push((id.clone(), updated_at));
+        }
+        key_references.push(SyncKeyReference {
+            id,
+            name: row.get("name"),
+            public_key: row.get("public_key"),
+            storage_mode: row.get("storage_mode"),
+            local_path: row.get("local_path"),
+            fingerprint: row.get("fingerprint"),
+            certificate: row.get("certificate"),
+            updated_at,
+        });
+    }
+
+    let mut encrypted_key_secrets = Vec::new();
+    if let Some((vault_state, passphrase)) = private_key_sync {
+        if private_key_sync_active(pool, vault_state).await? {
+            for (key_reference_id, updated_at) in private_key_reference_timestamps {
+                for secret_type in [PRIVATE_KEY_SECRET_TYPE, PASSPHRASE_SECRET_TYPE] {
+                    match vault::load(
+                        pool,
+                        vault_state,
+                        VAULT_KEY_OWNER_TYPE,
+                        &key_reference_id,
+                        secret_type,
+                    )
+                    .await
+                    {
+                        Ok(Some(plaintext)) => {
+                            let plaintext = Zeroizing::new(plaintext);
+                            encrypted_key_secrets.push(encrypt_sync_secret(
+                                &key_reference_id,
+                                secret_type,
+                                &plaintext,
+                                updated_at,
+                                passphrase,
+                            )?);
+                        }
+                        Ok(None) => {}
+                        Err(_error) if !vault::is_unlocked(vault_state) => {
+                            encrypted_key_secrets.clear();
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if !vault::is_unlocked(vault_state) {
+                    encrypted_key_secrets.clear();
+                    break;
+                }
+            }
+        }
+    }
 
     let terminal_profiles = sqlx::query(
         "SELECT id,name,shell_path,args,working_directory,environment,platform,updated_at
@@ -908,6 +1203,7 @@ async fn assemble_bundle(pool: &SqlitePool) -> Result<SyncBundle> {
         hosts,
         host_groups,
         key_references,
+        encrypted_key_secrets,
         terminal_profiles,
         snippets,
         settings: settings_map,
@@ -1082,6 +1378,7 @@ fn merge_states(
     let mut conflicts = Vec::new();
     let mut applied_remote = ObjectCounts::default();
     let mut kept_local = ObjectCounts::default();
+    let mut remote_key_references = HashSet::new();
     let mut used_resolutions = HashSet::new();
 
     for key in keys {
@@ -1090,6 +1387,7 @@ fn merge_states(
         match (local_item, remote_item) {
             (Some(local_item), Some(remote_item)) if local_item.hash() == remote_item.hash() => {
                 let selected = if remote_item.updated_at > local_item.updated_at {
+                    mark_remote_key_reference(remote_item, &mut remote_key_references);
                     remote_item
                 } else {
                     local_item
@@ -1107,6 +1405,7 @@ fn merge_states(
                         ResolutionChoice::TakeRemote => {
                             states.insert(key, remote_item.clone());
                             applied_remote.increment_item(remote_item);
+                            mark_remote_key_reference(remote_item, &mut remote_key_references);
                         }
                     }
                     continue;
@@ -1132,6 +1431,7 @@ fn merge_states(
                     Some(true) => {
                         states.insert(key, remote_item.clone());
                         applied_remote.increment_item(remote_item);
+                        mark_remote_key_reference(remote_item, &mut remote_key_references);
                     }
                     Some(false) => {
                         states.insert(key, local_item.clone());
@@ -1150,6 +1450,7 @@ fn merge_states(
             (None, Some(remote_item)) => {
                 states.insert(key, remote_item.clone());
                 applied_remote.increment_item(remote_item);
+                mark_remote_key_reference(remote_item, &mut remote_key_references);
             }
             (None, None) => unreachable!(),
         }
@@ -1168,7 +1469,14 @@ fn merge_states(
         conflicts,
         applied_remote,
         kept_local,
+        remote_key_references,
     })
+}
+
+fn mark_remote_key_reference(item: &MergeItem, ids: &mut HashSet<String>) {
+    if item.object_type == "key_reference" && item.payload.is_some() {
+        ids.insert(item.object_id.clone());
+    }
 }
 
 fn conflict_from(local: &MergeItem, remote: &MergeItem) -> Conflict {
@@ -1219,8 +1527,47 @@ fn validate_bundle(bundle: &SyncBundle) -> Result<()> {
             )));
         }
     }
+    if bundle.encrypted_key_secrets.len() > MAX_ENCRYPTED_KEY_SECRETS {
+        return Err(LumaError::InvalidInput(
+            "sync bundle contains too many encryptedKeySecrets".into(),
+        ));
+    }
+    let mut secret_ids = HashSet::new();
+    let mut salt_nonces = HashSet::new();
+    for secret in &bundle.encrypted_key_secrets {
+        let (salt, nonce, _) = decode_sync_secret_parts(secret)?;
+        if !secret_ids.insert((secret.key_reference_id.clone(), secret.secret_type.clone())) {
+            return Err(LumaError::InvalidInput(
+                "sync bundle contains duplicate encrypted key secrets".into(),
+            ));
+        }
+        if !salt_nonces.insert((salt, nonce)) {
+            return Err(LumaError::InvalidInput(
+                "sync bundle reuses encrypted key secret salt and nonce values".into(),
+            ));
+        }
+    }
     let states = bundle.states()?;
     validate_states(&states)
+}
+
+fn validate_encrypted_secret_metadata(secret: &SyncEncryptedSecret) -> Result<()> {
+    if secret.key_reference_id.is_empty()
+        || secret.key_reference_id.len() > 512
+        || secret.key_reference_id.contains('\0')
+        || !matches!(
+            secret.secret_type.as_str(),
+            PRIVATE_KEY_SECRET_TYPE | PASSPHRASE_SECRET_TYPE
+        )
+        || secret.kdf_id != KDF_ARGON2ID
+        || secret.cipher_id != CIPHER_XCHACHA20_POLY1305
+        || secret.updated_at < 0
+    {
+        return Err(LumaError::InvalidInput(
+            "encrypted key secret metadata is invalid or unsupported".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
@@ -1448,6 +1795,106 @@ fn validate_sync_profile(profile: &SyncTerminalProfile) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn prepare_remote_secrets(
+    vault_state: &VaultState,
+    passphrase: &str,
+    incoming: &[SyncEncryptedSecret],
+    merged_states: &BTreeMap<String, MergeItem>,
+    remote_key_references: &HashSet<String>,
+) -> Result<PreparedRemoteSecrets> {
+    let entries: Vec<SyncEncryptedSecret> = incoming
+        .iter()
+        .filter(|secret| {
+            remote_key_references.contains(&secret.key_reference_id)
+                && merged_states
+                    .get(&object_key("key_reference", &secret.key_reference_id))
+                    .is_some_and(|item| item.payload.is_some())
+        })
+        .cloned()
+        .collect();
+    if !vault::is_unlocked(vault_state) {
+        return Ok(PreparedRemoteSecrets {
+            skipped_locked: entries
+                .iter()
+                .filter(|secret| secret.secret_type == PRIVATE_KEY_SECRET_TYPE)
+                .map(|secret| secret.key_reference_id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            entries: Vec::new(),
+        });
+    }
+
+    // Authenticate every selected secret before metadata writes begin. This prevents a
+    // corrupted nested ciphertext from producing a partial import or sync apply.
+    for secret in &entries {
+        drop(decrypt_sync_secret(secret, passphrase)?);
+    }
+    Ok(PreparedRemoteSecrets {
+        entries,
+        skipped_locked: 0,
+    })
+}
+
+async fn apply_prepared_secrets(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    passphrase: &str,
+    prepared: PreparedRemoteSecrets,
+) -> Result<PrivateKeyApplySummary> {
+    let mut summary = PrivateKeyApplySummary {
+        applied: 0,
+        skipped_locked: prepared.skipped_locked,
+    };
+    let mut applied_private_key_ids = HashSet::new();
+    for (index, secret) in prepared.entries.iter().enumerate() {
+        if !vault::is_unlocked(vault_state) {
+            summary.skipped_locked += prepared.entries[index..]
+                .iter()
+                .filter(|remaining| remaining.secret_type == PRIVATE_KEY_SECRET_TYPE)
+                .map(|remaining| remaining.key_reference_id.as_str())
+                .filter(|id| !applied_private_key_ids.contains(*id))
+                .collect::<HashSet<_>>()
+                .len();
+            break;
+        }
+        let plaintext = decrypt_sync_secret(secret, passphrase)?;
+        match vault::store(
+            pool,
+            vault_state,
+            VAULT_KEY_OWNER_TYPE,
+            &secret.key_reference_id,
+            &secret.secret_type,
+            &plaintext,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(_error) if !vault::is_unlocked(vault_state) => {
+                summary.skipped_locked += prepared.entries[index..]
+                    .iter()
+                    .filter(|remaining| remaining.secret_type == PRIVATE_KEY_SECRET_TYPE)
+                    .map(|remaining| remaining.key_reference_id.as_str())
+                    .filter(|id| !applied_private_key_ids.contains(*id))
+                    .collect::<HashSet<_>>()
+                    .len();
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+        drop(plaintext);
+        if secret.secret_type == PRIVATE_KEY_SECRET_TYPE
+            && applied_private_key_ids.insert(secret.key_reference_id.clone())
+        {
+            sqlx::query("UPDATE key_references SET has_private_key=1 WHERE id=?1")
+                .bind(&secret.key_reference_id)
+                .execute(pool)
+                .await?;
+            summary.applied += 1;
+        }
+    }
+    Ok(summary)
 }
 
 async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -> Result<()> {
@@ -1713,6 +2160,9 @@ fn read_encrypted_bundle(path: &str, app_data_dir: &Path, passphrase: &str) -> R
 }
 
 fn is_safe_setting_key(key: &str) -> bool {
+    if key == settings::SYNC_INCLUDE_PRIVATE_KEYS_KEY {
+        return false;
+    }
     let normalized = key.to_ascii_lowercase().replace('_', "-");
     ![
         "password",
@@ -1783,8 +2233,41 @@ fn baseline_for_bundle(bundle: &SyncBundle) -> Result<BTreeMap<String, String>> 
         .collect())
 }
 
-fn bundles_have_same_content(left: &SyncBundle, right: &SyncBundle) -> Result<bool> {
-    Ok(baseline_for_bundle(left)? == baseline_for_bundle(right)?)
+fn bundles_have_same_content(
+    left: &SyncBundle,
+    right: &SyncBundle,
+    passphrase: &str,
+    compare_private_keys: bool,
+) -> Result<bool> {
+    if baseline_for_bundle(left)? != baseline_for_bundle(right)? {
+        return Ok(false);
+    }
+    if !compare_private_keys {
+        return Ok(true);
+    }
+    Ok(secret_content_hashes(left, passphrase)? == secret_content_hashes(right, passphrase)?)
+}
+
+fn secret_content_hashes(
+    bundle: &SyncBundle,
+    passphrase: &str,
+) -> Result<BTreeMap<(String, String), [u8; 32]>> {
+    let mut hashes = BTreeMap::new();
+    for secret in &bundle.encrypted_key_secrets {
+        let plaintext = decrypt_sync_secret(secret, passphrase)?;
+        let mut hasher = Sha256::new();
+        hasher.update(secret.key_reference_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(secret.secret_type.as_bytes());
+        hasher.update([0]);
+        hasher.update(plaintext.as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        hashes.insert(
+            (secret.key_reference_id.clone(), secret.secret_type.clone()),
+            hash,
+        );
+    }
+    Ok(hashes)
 }
 
 fn required_trimmed(value: Option<String>, field: &str) -> Result<String> {
@@ -1992,6 +2475,7 @@ mod tests {
             hosts: Vec::new(),
             host_groups: Vec::new(),
             key_references: Vec::new(),
+            encrypted_key_secrets: Vec::new(),
             terminal_profiles: Vec::new(),
             snippets: Vec::new(),
             settings: BTreeMap::new(),
@@ -2148,6 +2632,334 @@ mod tests {
             .insert("appearance.theme".into(), setting("light", 2));
         let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
         assert_eq!(outcome.conflicts.len(), 1);
+    }
+
+    #[test]
+    fn encrypted_private_key_secret_roundtrip() {
+        let private_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
+        let encrypted = encrypt_sync_secret(
+            "key-1",
+            PRIVATE_KEY_SECRET_TYPE,
+            private_key,
+            42,
+            "correct horse battery staple",
+        )
+        .unwrap();
+        let decrypted = decrypt_sync_secret(&encrypted, "correct horse battery staple").unwrap();
+        assert_eq!(&*decrypted, private_key);
+    }
+
+    #[test]
+    fn encrypted_private_key_passes_redact_guard_and_raw_key_is_rejected() {
+        let private_key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQAAACCZmFrZ\nS2V5TWF0ZXJpYWxGb3JUZXN0aW5nT25seQAAAJhGQUtFS0VZREFUQQ==\n-----END OPENSSH PRIVATE KEY-----\n";
+        let mut bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
+        bundle.key_references.push(SyncKeyReference {
+            id: "key-1".into(),
+            name: "Synced key".into(),
+            public_key: Some("ssh-ed25519 AAAATEST synced@example".into()),
+            storage_mode: "encrypted-vault".into(),
+            local_path: None,
+            fingerprint: Some("SHA256:test".into()),
+            certificate: None,
+            updated_at: 42,
+        });
+        bundle.encrypted_key_secrets.push(
+            encrypt_sync_secret(
+                "key-1",
+                PRIVATE_KEY_SECRET_TYPE,
+                private_key,
+                42,
+                "correct horse battery staple",
+            )
+            .unwrap(),
+        );
+
+        let serialized = serde_json::to_string(&bundle).unwrap();
+        assert!(!serialized.contains("BEGIN OPENSSH PRIVATE KEY"));
+        validate_bundle(&bundle).unwrap();
+
+        let mut raw_bundle = bundle;
+        raw_bundle.encrypted_key_secrets[0].ciphertext = private_key.into();
+        let error = validate_bundle(&raw_bundle).unwrap_err();
+        assert_eq!(error.category(), "invalid-input");
+        assert!(!error.to_string().contains("b3BlbnNzaC1rZXktdjE"));
+    }
+
+    #[tokio::test]
+    async fn private_key_sync_opt_in_off_assembles_no_encrypted_secrets() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let runtime = SyncRuntimeState::default();
+        initialize(&pool, &runtime).await.unwrap();
+        sqlx::query(
+            "INSERT INTO key_references(id,name,storage_mode,has_private_key,updated_at)\n             VALUES('key-1','Local key','encrypted-vault',1,42)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let vault_state = VaultState::default();
+        vault::setup(&pool, &vault_state, "vault password", false)
+            .await
+            .unwrap();
+        vault::store(
+            &pool,
+            &vault_state,
+            VAULT_KEY_OWNER_TYPE,
+            "key-1",
+            PRIVATE_KEY_SECRET_TYPE,
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+        )
+        .await
+        .unwrap();
+        settings::set(
+            &pool,
+            settings::SYNC_INCLUDE_PRIVATE_KEYS_KEY,
+            &json!(false),
+        )
+        .await
+        .unwrap();
+
+        let bundle = assemble_bundle(&pool, &vault_state, "correct horse battery staple")
+            .await
+            .unwrap();
+        assert!(bundle.encrypted_key_secrets.is_empty());
+        assert!(!serde_json::to_string(&bundle)
+            .unwrap()
+            .contains("encryptedKeySecrets"));
+    }
+
+    #[tokio::test]
+    async fn vault_locked_apply_skips_private_keys_and_counts_them() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let vault_state = VaultState::default();
+        let passphrase = "correct horse battery staple";
+        let mut remote = empty_bundle("22222222-2222-4222-8222-222222222222");
+        remote.key_references.push(SyncKeyReference {
+            id: "key-1".into(),
+            name: "Remote key".into(),
+            public_key: Some("ssh-ed25519 AAAATEST remote@example".into()),
+            storage_mode: "encrypted-vault".into(),
+            local_path: None,
+            fingerprint: None,
+            certificate: None,
+            updated_at: 42,
+        });
+        remote.encrypted_key_secrets.push(
+            encrypt_sync_secret(
+                "key-1",
+                PRIVATE_KEY_SECRET_TYPE,
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+                42,
+                passphrase,
+            )
+            .unwrap(),
+        );
+        let local = empty_bundle("11111111-1111-4111-8111-111111111111");
+        let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
+        let prepared = prepare_remote_secrets(
+            &vault_state,
+            passphrase,
+            &remote.encrypted_key_secrets,
+            &outcome.states,
+            &outcome.remote_key_references,
+        )
+        .unwrap();
+        apply_states(&pool, &outcome.states).await.unwrap();
+        let summary = apply_prepared_secrets(&pool, &vault_state, passphrase, prepared)
+            .await
+            .unwrap();
+        assert_eq!(summary.applied, 0);
+        assert_eq!(summary.skipped_locked, 1);
+        let has_private_key: i64 =
+            sqlx::query_scalar("SELECT has_private_key FROM key_references WHERE id='key-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(has_private_key, 0);
+    }
+
+    #[tokio::test]
+    async fn unlocked_apply_reencrypts_private_key_into_local_vault() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let vault_state = VaultState::default();
+        vault::setup(&pool, &vault_state, "vault password", false)
+            .await
+            .unwrap();
+        let passphrase = "correct horse battery staple";
+        let private_key =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nREMOTEKEY\n-----END OPENSSH PRIVATE KEY-----\n";
+        let mut remote = empty_bundle("22222222-2222-4222-8222-222222222222");
+        remote.key_references.push(SyncKeyReference {
+            id: "key-1".into(),
+            name: "Remote key".into(),
+            public_key: None,
+            storage_mode: "encrypted-vault".into(),
+            local_path: None,
+            fingerprint: None,
+            certificate: None,
+            updated_at: 42,
+        });
+        remote.encrypted_key_secrets.push(
+            encrypt_sync_secret(
+                "key-1",
+                PRIVATE_KEY_SECRET_TYPE,
+                private_key,
+                42,
+                passphrase,
+            )
+            .unwrap(),
+        );
+        let local = empty_bundle("11111111-1111-4111-8111-111111111111");
+        let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
+        let prepared = prepare_remote_secrets(
+            &vault_state,
+            passphrase,
+            &remote.encrypted_key_secrets,
+            &outcome.states,
+            &outcome.remote_key_references,
+        )
+        .unwrap();
+        apply_states(&pool, &outcome.states).await.unwrap();
+        let summary = apply_prepared_secrets(&pool, &vault_state, passphrase, prepared)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.applied, 1);
+        assert_eq!(summary.skipped_locked, 0);
+        let stored = vault::load(
+            &pool,
+            &vault_state,
+            VAULT_KEY_OWNER_TYPE,
+            "key-1",
+            PRIVATE_KEY_SECRET_TYPE,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(stored, private_key);
+        let has_private_key: i64 =
+            sqlx::query_scalar("SELECT has_private_key FROM key_references WHERE id='key-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(has_private_key, 1);
+    }
+
+    #[tokio::test]
+    async fn kept_local_key_never_has_its_secret_overwritten() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let vault_state = VaultState::default();
+        vault::setup(&pool, &vault_state, "vault password", false)
+            .await
+            .unwrap();
+        let local_private_key =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nLOCALKEY\n-----END OPENSSH PRIVATE KEY-----\n";
+        vault::store(
+            &pool,
+            &vault_state,
+            VAULT_KEY_OWNER_TYPE,
+            "key-1",
+            PRIVATE_KEY_SECRET_TYPE,
+            local_private_key,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO key_references(id,name,storage_mode,has_private_key,updated_at)\n             VALUES('key-1','Local key','encrypted-vault',1,10)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut local = empty_bundle("11111111-1111-4111-8111-111111111111");
+        local.key_references.push(SyncKeyReference {
+            id: "key-1".into(),
+            name: "Local key".into(),
+            public_key: None,
+            storage_mode: "encrypted-vault".into(),
+            local_path: None,
+            fingerprint: None,
+            certificate: None,
+            updated_at: 10,
+        });
+        let mut remote = empty_bundle("22222222-2222-4222-8222-222222222222");
+        remote.key_references.push(SyncKeyReference {
+            id: "key-1".into(),
+            name: "Remote key".into(),
+            public_key: None,
+            storage_mode: "encrypted-vault".into(),
+            local_path: None,
+            fingerprint: None,
+            certificate: None,
+            updated_at: 20,
+        });
+        remote.encrypted_key_secrets.push(
+            encrypt_sync_secret(
+                "key-1",
+                PRIVATE_KEY_SECRET_TYPE,
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nREMOTEKEY\n-----END OPENSSH PRIVATE KEY-----\n",
+                20,
+                "correct horse battery staple",
+            )
+            .unwrap(),
+        );
+        let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
+        assert_eq!(outcome.conflicts.len(), 1);
+        assert!(outcome.remote_key_references.is_empty());
+        let prepared = prepare_remote_secrets(
+            &vault_state,
+            "correct horse battery staple",
+            &remote.encrypted_key_secrets,
+            &outcome.states,
+            &outcome.remote_key_references,
+        )
+        .unwrap();
+        apply_states(&pool, &outcome.states).await.unwrap();
+        let summary = apply_prepared_secrets(
+            &pool,
+            &vault_state,
+            "correct horse battery staple",
+            prepared,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.applied, 0);
+        let stored = vault::load(
+            &pool,
+            &vault_state,
+            VAULT_KEY_OWNER_TYPE,
+            "key-1",
+            PRIVATE_KEY_SECRET_TYPE,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(stored, local_private_key);
+    }
+
+    #[test]
+    fn older_bundle_without_encrypted_key_secrets_still_deserializes() {
+        let value = json!({
+            "formatVersion": 1,
+            "deviceId": "11111111-1111-4111-8111-111111111111",
+            "updatedAt": "2026-07-16T00:00:00Z",
+            "hosts": [],
+            "hostGroups": [],
+            "keyReferences": [],
+            "terminalProfiles": [],
+            "snippets": [],
+            "settings": {},
+            "tombstones": []
+        });
+        let bundle: SyncBundle = serde_json::from_value(value).unwrap();
+        assert!(bundle.encrypted_key_secrets.is_empty());
+    }
+
+    #[test]
+    fn private_key_sync_preference_is_device_local() {
+        assert!(!is_safe_setting_key(
+            settings::SYNC_INCLUDE_PRIVATE_KEYS_KEY
+        ));
     }
 
     #[test]

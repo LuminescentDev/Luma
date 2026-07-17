@@ -45,13 +45,14 @@ export function TextField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : undefined}
         className={cn(
           "w-full rounded-md border bg-background px-2.5 py-1.5 text-sm outline-none placeholder:text-muted/60 focus:border-accent",
           error ? "border-danger" : "border-border",
           mono && "font-mono",
         )}
       />
-      {error && <p className="mt-1 text-xs text-danger">{error}</p>}
+      {error && <p id={`${id}-error`} className="mt-1 text-xs text-danger">{error}</p>}
     </div>
   );
 }
@@ -94,13 +95,14 @@ export function TextAreaField({
         placeholder={placeholder}
         rows={rows}
         aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : undefined}
         className={cn(
           "w-full resize-y rounded-md border bg-background px-2.5 py-1.5 text-sm outline-none placeholder:text-muted/60 focus:border-accent",
           error ? "border-danger" : "border-border",
           mono && "font-mono",
         )}
       />
-      {error && <p className="mt-1 text-xs text-danger">{error}</p>}
+      {error && <p id={`${id}-error`} className="mt-1 text-xs text-danger">{error}</p>}
     </div>
   );
 }
@@ -132,6 +134,7 @@ export function SelectField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-error` : undefined}
         className={cn(
           "w-full rounded-md border bg-background px-2.5 py-1.5 text-sm outline-none focus:border-accent",
           error ? "border-danger" : "border-border",
@@ -139,7 +142,7 @@ export function SelectField({
       >
         {children}
       </select>
-      {error && <p className="mt-1 text-xs text-danger">{error}</p>}
+      {error && <p id={`${id}-error`} className="mt-1 text-xs text-danger">{error}</p>}
     </div>
   );
 }

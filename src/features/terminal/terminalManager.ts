@@ -12,13 +12,44 @@ import {
   writePty,
   type ShellRef,
 } from "../../lib/terminal";
-import { spawnSsh, type SshExitPayload } from "../../lib/ssh";
+import { spawnSsh, type SshExitPayload, type SshRemoteOsId } from "../../lib/ssh";
+import {
+  killSerial,
+  spawnSerial,
+  writeSerial,
+  type SerialConfig,
+} from "../../lib/serial";
 
 /** What a managed session should launch. Local shells resolve a ShellRef;
- * SSH sessions send only a hostId (the backend owns the connection details). */
+ * SSH sessions send only a hostId (the backend owns the connection details);
+ * serial sessions carry their full port config (the backend has no host record).
+ */
 export type SpawnDescriptor =
   | { kind: "local"; ref: ShellRef | undefined }
-  | { kind: "ssh"; hostId: string };
+  | { kind: "ssh"; hostId: string }
+  | { kind: "serial"; config: SerialConfig };
+
+/** Write keyboard input to a backend session, routing serial sessions to the
+ * serial command and everything else (local + ssh) to the shared PTY command. */
+function writeBackend(
+  descriptor: SpawnDescriptor,
+  backendId: string,
+  data: string,
+): Promise<void> {
+  return descriptor.kind === "serial"
+    ? writeSerial(backendId, data)
+    : writePty(backendId, data);
+}
+
+/** Kill a backend session, routing serial sessions to the serial command. */
+function killBackend(
+  descriptor: SpawnDescriptor,
+  backendId: string,
+): Promise<void> {
+  return descriptor.kind === "serial"
+    ? killSerial(backendId)
+    : killPty(backendId);
+}
 
 /** Normalized exit info delivered to the session store. `errorCategory` is only
  * populated for SSH failures; local shells report a plain exit code. */
@@ -93,9 +124,17 @@ type SessionCallbacks = {
   onExit: (exit: SessionExit) => void;
   onSearchRequested: () => void;
   onSshAuthenticated: () => void;
-  onSshPrompt: (prompt: { type: "host-key"; host: string; fingerprint: string } | { type: "credential"; label: string }) => void;
+  /* Only the interactive credential prompt (password / private-key passphrase)
+   * is scraped from the PTY. Host-key trust is handled by an explicit backend
+   * preflight in the session store BEFORE spawn (StrictHostKeyChecking=yes means
+   * OpenSSH never prints an interactive host-key prompt), so there is no
+   * "host-key" variant here. */
+  onSshPrompt: (prompt: { type: "credential"; label: string }) => void;
   onSshProgress: (stage: "starting" | "network" | "host-key" | "authentication" | "ready") => void;
   onSshIssue: (message: string) => void;
+  /** Detected remote OS for an authenticated SSH session (drives the tab distro
+   * logo). Metadata only — never terminal bytes. */
+  onRemoteOs: (osId: SshRemoteOsId, prettyName: string | null) => void;
 };
 
 type ManagedSession = {
@@ -188,6 +227,13 @@ function installKeyHandlers(session: ManagedSession): void {
     ) {
       return false;
     }
+    // Workspace tab switching, handled by the global window handler in Layout.
+    if (event.ctrlKey && event.code === "Tab") {
+      return false;
+    }
+    if (mod && (event.code === "PageUp" || event.code === "PageDown")) {
+      return false;
+    }
     return true;
   });
 }
@@ -241,15 +287,9 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
       }, 750);
       return;
     }
-    const hostMatch = readableTranscript.match(/authenticity of host '([^']+)' can't be established[\s\S]*?key fingerprint is ([^\r\n.]+)/i);
-    if (/Are you sure you want to continue connecting/.test(readableTranscript) && hostMatch) {
-      const signature = `host:${hostMatch[1]}:${hostMatch[2]}`;
-      if (signature !== session.lastPromptSignature) {
-        session.lastPromptSignature = signature;
-        session.callbacks.onSshPrompt({ type: "host-key", host: hostMatch[1], fingerprint: hostMatch[2].trim() });
-      }
-      return;
-    }
+    // Host-key trust is resolved by the store's backend preflight before spawn;
+    // OpenSSH (StrictHostKeyChecking=yes) never prints an interactive host-key
+    // prompt here, so we only scrape interactive credential prompts.
     const credentialMatches = [...readableTranscript.matchAll(/(?:Enter passphrase for key '[^']+'|password):\s*/gi)];
     const credentialMatch = credentialMatches[credentialMatches.length - 1];
     if (credentialMatch) {
@@ -263,7 +303,21 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
   };
 
   let result: ManagedSpawnResult;
-  if (descriptor.kind === "ssh") {
+  if (descriptor.kind === "serial") {
+    const spawned = await spawnSerial(
+      descriptor.config,
+      // Serial bytes flow straight into xterm.js, never through React state.
+      handleData,
+      (code) => {
+        session.exited = true;
+        session.backendId = null;
+        // Serial reports null on a clean disconnect; the store maps null/0 to
+        // the "disconnected" state (no error category).
+        session.callbacks.onExit({ code });
+      },
+    );
+    result = { sessionId: spawned.sessionId, title: spawned.portName };
+  } else if (descriptor.kind === "ssh") {
     const spawned = await spawnSsh(
       { hostId: descriptor.hostId, cols: term.cols, rows: term.rows },
       handleData,
@@ -276,6 +330,7 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
           errorMessage: payload.errorMessage,
         });
       },
+      (osId, prettyName) => session.callbacks.onRemoteOs(osId, prettyName),
     );
     result = { sessionId: spawned.sessionId, title: spawned.title };
   } else {
@@ -293,13 +348,13 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
 
   if (session.disposed) {
     // Session was closed while the backend was spawning.
-    void killPty(result.sessionId);
+    void killBackend(descriptor, result.sessionId);
     throw new Error("session closed");
   }
   session.backendId = result.sessionId;
   session.exited = false;
   for (const chunk of session.pendingInput.splice(0)) {
-    void writePty(result.sessionId, chunk);
+    void writeBackend(descriptor, result.sessionId, chunk);
   }
   return result;
 }
@@ -378,11 +433,15 @@ export const terminalManager = {
       if (title.trim()) callbacks.onTitle(title);
     });
     term.onData((data) => {
-      if (session.backendId) void writePty(session.backendId, data);
+      if (session.backendId) void writeBackend(session.descriptor, session.backendId, data);
       else if (!session.exited) session.pendingInput.push(data);
     });
     term.onResize(({ cols, rows }) => {
-      if (session.backendId) void resizePty(session.backendId, cols, rows);
+      // Serial has no cols/rows: fit the local xterm but never resize the
+      // backend (there is deliberately no serial resize command).
+      if (session.backendId && session.descriptor.kind !== "serial") {
+        void resizePty(session.backendId, cols, rows);
+      }
     });
 
     try {
@@ -397,15 +456,27 @@ export const terminalManager = {
   attach(sessionId: string, host: HTMLElement): void {
     const session = sessions.get(sessionId);
     if (!session) return;
-    if (!session.term.element) {
+    // A freshly created terminal renders on open(); an already-opened one is
+    // being re-attached after a tab switch and needs an explicit repaint below.
+    const existing = session.term.element;
+    const reattaching = existing !== undefined;
+    if (!existing) {
       session.term.open(host);
       void loadWebgl(session.term);
     } else {
-      host.appendChild(session.term.element);
+      host.appendChild(existing);
     }
     requestAnimationFrame(() => {
       this.fitSession(sessionId);
       session.term.focus();
+      // Re-appending a terminal element detaches and reconnects its canvases;
+      // under the WebGL renderer the drawing buffer is cleared on detach, so an
+      // idle session (no new output) would stay blank until it next writes.
+      // fit() only refreshes when dimensions change, so force a full-viewport
+      // repaint of the preserved buffer whenever we re-attach.
+      if (reattaching) {
+        session.term.refresh(0, session.term.rows - 1);
+      }
     });
   },
 
@@ -429,6 +500,49 @@ export const terminalManager = {
     sessions.get(sessionId)?.term.focus();
   },
 
+  /** Whether the terminal currently has a text selection (drives the enabled
+   * state of the right-click "Copy" action). */
+  hasSelection(sessionId: string): boolean {
+    return sessions.get(sessionId)?.term.hasSelection() ?? false;
+  },
+
+  /** Copy the current selection to the clipboard, mirroring the Ctrl+Shift+C
+   * key handler. Terminal bytes never pass through React. */
+  copySelection(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    const selection = session.term.getSelection();
+    if (selection) void navigator.clipboard.writeText(selection);
+    session.term.focus();
+  },
+
+  /** Paste clipboard text into the terminal, mirroring the Ctrl+Shift+V key
+   * handler (bracketed-paste aware via xterm's paste path). */
+  paste(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    void navigator.clipboard.readText().then((text) => {
+      if (text) session.term.paste(text);
+    });
+    session.term.focus();
+  },
+
+  /** Select the entire terminal buffer. */
+  selectAll(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    session.term.selectAll();
+    session.term.focus();
+  },
+
+  /** Clear the terminal viewport (keeps the current prompt line). */
+  clear(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    session.term.clear();
+    session.term.focus();
+  },
+
   /** Insert text at the prompt (snippet "Insert"). Uses xterm's paste path so
    * bracketed-paste-aware shells receive it as a single edit, not execution. */
   insertText(sessionId: string, text: string): void {
@@ -443,11 +557,14 @@ export const terminalManager = {
   sendInput(sessionId: string, data: string): void {
     const session = sessions.get(sessionId);
     if (!session) return;
-    if (session.backendId) void writePty(session.backendId, data);
+    if (session.backendId) void writeBackend(session.descriptor, session.backendId, data);
     else if (!session.exited) session.pendingInput.push(data);
     session.term.focus();
   },
 
+  /** Reply to an interactive SSH CREDENTIAL prompt (password / private-key
+   * passphrase) by writing it to the PTY. Host-key trust is NOT handled here —
+   * it goes through the store's backend preflight before spawn. */
   answerSshPrompt(sessionId: string, value: string): void {
     const session = sessions.get(sessionId);
     if (!session || session.descriptor.kind !== "ssh") return;
@@ -463,7 +580,7 @@ export const terminalManager = {
     if (session.backendId) {
       const old = session.backendId;
       session.backendId = null;
-      await killPty(old).catch(() => {});
+      await killBackend(session.descriptor, old).catch(() => {});
     }
     session.term.reset();
     return spawnBackend(sessionId);
@@ -486,7 +603,7 @@ export const terminalManager = {
     if (!session) return;
     session.disposed = true;
     if (session.backendId) {
-      void killPty(session.backendId).catch(() => {});
+      void killBackend(session.descriptor, session.backendId).catch(() => {});
       session.backendId = null;
     }
     session.term.dispose();

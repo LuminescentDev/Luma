@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            os: windows-latest
+          - platform: macos
+            os: macos-latest
+          - platform: linux
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev pkg-config
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Inject release updater configuration
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_UPDATER_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'src-tauri/tauri.conf.json';
+          const publicKey = process.env.TAURI_UPDATER_PUBLIC_KEY;
+          const endpoint = process.env.TAURI_UPDATER_ENDPOINT;
+          if (!publicKey) {
+            throw new Error('TAURI_UPDATER_PUBLIC_KEY repository variable is required');
+          }
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.plugins.updater.pubkey = publicKey;
+          config.plugins.updater.endpoints = [endpoint];
+          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+          NODE
+
+      - name: Build and upload signed release artifacts
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Luma ${{ github.ref_name }}
+          releaseBody: See the assets below to install Luma or update an existing installation.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+  checksums:
+    name: Generate release checksums
+    needs: build
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release assets
+        run: |
+          mkdir release-assets
+          gh release download "${GITHUB_REF_NAME}" --dir release-assets
+
+      - name: Verify updater metadata and signatures
+        shell: bash
+        run: |
+          test -f release-assets/latest.json
+          compgen -G 'release-assets/*.sig' > /dev/null
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          (
+            cd release-assets
+            for artifact in *; do
+              if [ -f "${artifact}" ]; then
+                sha256sum "${artifact}"
+              fi
+            done
+          ) > SHA256SUMS
+          test -s SHA256SUMS
+
+      - name: Upload checksums and publish release
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS --clobber
+          gh release edit "${GITHUB_REF_NAME}" --draft=false --latest

@@ -13,7 +13,9 @@ use crate::terminal::{PtyManager, ResolvedShell};
 use crate::AppState;
 
 mod hosts;
+mod import;
 mod port_forwards;
+mod serial;
 mod sftp;
 mod snippets;
 mod ssh;
@@ -21,7 +23,9 @@ mod sync;
 mod vault;
 
 pub use hosts::*;
+pub use import::*;
 pub use port_forwards::*;
+pub use serial::*;
 pub use sftp::*;
 pub use snippets::*;
 pub use ssh::*;

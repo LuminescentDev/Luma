@@ -5,15 +5,24 @@ use crate::sync::{
     self, ConflictResolution, ExportSummary, ImportPreview, ImportSummary, SyncConfig,
     SyncConfigureInput, SyncReport, SyncRuntimeState,
 };
+use crate::vault::VaultState;
 use crate::AppState;
 
 #[tauri::command]
 pub async fn export_encrypted(
     state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
     path: String,
     passphrase: String,
 ) -> Result<ExportSummary> {
-    sync::export_encrypted(&state.pool, &state.app_data_dir, &path, &passphrase).await
+    sync::export_encrypted(
+        &state.pool,
+        &vault_state,
+        &state.app_data_dir,
+        &path,
+        &passphrase,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -28,12 +37,14 @@ pub async fn import_preview(
 #[tauri::command]
 pub async fn import_apply(
     state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
     path: String,
     passphrase: String,
     resolutions: Vec<ConflictResolution>,
 ) -> Result<ImportSummary> {
     sync::import_apply(
         &state.pool,
+        &vault_state,
         &state.app_data_dir,
         &path,
         &passphrase,
@@ -77,15 +88,24 @@ pub async fn sync_disable(
 pub async fn sync_now(
     state: State<'_, AppState>,
     runtime: State<'_, SyncRuntimeState>,
+    vault_state: State<'_, VaultState>,
 ) -> Result<SyncReport> {
-    sync::sync_now(&state.pool, &runtime, &state.app_data_dir).await
+    sync::sync_now(&state.pool, &runtime, &vault_state, &state.app_data_dir).await
 }
 
 #[tauri::command]
 pub async fn sync_resolve(
     state: State<'_, AppState>,
     runtime: State<'_, SyncRuntimeState>,
+    vault_state: State<'_, VaultState>,
     resolutions: Vec<ConflictResolution>,
 ) -> Result<SyncReport> {
-    sync::sync_resolve(&state.pool, &runtime, &state.app_data_dir, &resolutions).await
+    sync::sync_resolve(
+        &state.pool,
+        &runtime,
+        &vault_state,
+        &state.app_data_dir,
+        &resolutions,
+    )
+    .await
 }

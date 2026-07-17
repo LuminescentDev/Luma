@@ -22,6 +22,9 @@ pub enum LumaError {
     #[error("terminal error: {0}")]
     Pty(String),
 
+    #[error("serial error: {0}")]
+    Serial(String),
+
     #[error("SSH executable unavailable: {0}")]
     SshUnavailable(String),
 
@@ -58,6 +61,7 @@ impl LumaError {
             LumaError::Io(_) => "io",
             LumaError::InvalidInput(_) => "invalid-input",
             LumaError::Pty(_) => "pty",
+            LumaError::Serial(_) => "serial",
             LumaError::SshUnavailable(_) => "ssh-unavailable",
             LumaError::SshConnection { category, .. } => category,
             LumaError::SftpFailed(_) => "sftp-failed",

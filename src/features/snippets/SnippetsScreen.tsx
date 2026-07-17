@@ -16,6 +16,7 @@ import { useSessionStore } from "../../stores/sessionStore";
 import { useSnippetRunStore } from "../../stores/snippetRunStore";
 import type { Snippet, SnippetInput } from "../../lib/snippets";
 import { cn } from "../../lib/utils";
+import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { SnippetDialog } from "./SnippetDialog";
 
@@ -172,7 +173,15 @@ function SnippetCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const snippetActions: MenuAction[] = [
+    { label: "Insert", icon: <ClipboardPaste size={14} />, disabled: !canRun, onSelect: onInsert },
+    { label: "Run", icon: <Play size={14} />, disabled: !canRun, onSelect: onRun },
+    { label: "Edit", icon: <Pencil size={14} />, onSelect: onEdit },
+    { separator: true },
+    { label: "Delete", icon: <Trash2 size={14} />, destructive: true, onSelect: onDelete },
+  ];
   return (
+    <ContextMenu actions={snippetActions} minWidth="min-w-36">
     <div className="group/card flex flex-col gap-2 rounded-xl bg-raised p-3.5 text-sm transition-all hover:ring-1 hover:ring-accent">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
@@ -257,6 +266,7 @@ function SnippetCard({
         </button>
       </div>
     </div>
+    </ContextMenu>
   );
 }
 

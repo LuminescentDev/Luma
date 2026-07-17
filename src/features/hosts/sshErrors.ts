@@ -22,6 +22,12 @@ const MESSAGES: Record<string, string> = {
     "The OpenSSH client was not found on this system. Install OpenSSH, then try again.",
   "key-unavailable":
     "The private key file is missing. Update the key reference to point to a valid key file.",
+  "host-key-scan-failed":
+    "Luma could not scan the server's host key. The host may be unreachable, or OpenSSH could not read the key. Check the address and port, then try again.",
+  "host-key-file-invalid":
+    "Luma's managed known_hosts file could not be read. It may be corrupted or contain an invalid entry. Fix or remove it, then try again.",
+  "host-key-scan-required":
+    "The scanned host key expired before it was accepted (or the host or port changed). Luma re-scanned the server — verify the newly shown fingerprints before trusting them.",
 };
 
 /** A short human label for a category (used in tabs / compact spots). */
@@ -43,6 +49,12 @@ export function sshCategoryLabel(category: string): string {
       return "SSH unavailable";
     case "key-unavailable":
       return "Key unavailable";
+    case "host-key-scan-failed":
+      return "Host key scan failed";
+    case "host-key-file-invalid":
+      return "Host key file invalid";
+    case "host-key-scan-required":
+      return "Host key rescan required";
     default:
       return "Connection failed";
   }

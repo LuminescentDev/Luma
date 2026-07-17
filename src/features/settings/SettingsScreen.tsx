@@ -8,6 +8,7 @@ import { cn } from "../../lib/utils";
 import { ProfilesSection } from "./ProfilesSection";
 import { SyncSection } from "../sync/SyncSection";
 import { BackupSection } from "../sync/BackupSection";
+import { UpdatesSection } from "../updater/UpdatesSection";
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: "dark", label: "Dark", icon: Moon },
@@ -24,6 +25,7 @@ export function SettingsScreen() {
 
   const fontSize = Number(settings?.[SETTING_KEYS.fontSize] ?? 14);
   const scrollback = Number(settings?.[SETTING_KEYS.scrollback] ?? 5000);
+  const restoreSessions = settings?.[SETTING_KEYS.restoreSessions] !== false;
   const defaultShell = parseShellRef(settings?.[SETTING_KEYS.defaultShell]);
   const defaultShellValue = defaultShell ? serializeShellRef(defaultShell) : "";
 
@@ -106,6 +108,21 @@ export function SettingsScreen() {
               }
             />
           </Field>
+          <Field
+            label="Restore previous sessions on launch"
+            hint="Reopens tabs and split panes; terminal output is not restored."
+          >
+            <Toggle
+              checked={restoreSessions}
+              label="Restore previous sessions on launch"
+              onClick={() =>
+                setSetting.mutate({
+                  key: SETTING_KEYS.restoreSessions,
+                  value: !restoreSessions,
+                })
+              }
+            />
+          </Field>
         </Section>
 
         <Section title="Shell profiles">
@@ -118,6 +135,10 @@ export function SettingsScreen() {
 
         <Section title="Encrypted backup">
           <BackupSection />
+        </Section>
+
+        <Section title="Updates">
+          <UpdatesSection />
         </Section>
 
         <Section title="About">
@@ -160,6 +181,37 @@ function Field({
       </div>
       {children}
     </div>
+  );
+}
+
+function Toggle({
+  checked,
+  onClick,
+  label,
+}: {
+  checked: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onClick}
+      className={cn(
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent",
+        checked ? "bg-accent" : "bg-surface",
+      )}
+    >
+      <span
+        className={cn(
+          "inline-block h-3.5 w-3.5 rounded-full bg-foreground shadow transition-transform",
+          checked ? "translate-x-4" : "translate-x-0.5",
+        )}
+      />
+    </button>
   );
 }
 

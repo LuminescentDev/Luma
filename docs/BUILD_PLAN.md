@@ -838,6 +838,47 @@ The first stable release is complete when:
 * Sequencing is **breadth-first**: complete each phase fully before starting the next.
 * Visual identity: **dark-first** with luminous cyan accent (#4cc9f0); light and follow-system themes supported. Resolved theme is applied via `data-theme` on `<html>`.
 * License: MIT.
+* 2026-07-16 — **Serial terminal shipped in v0.1** even though serial is listed
+  under "Explicit Non-Goals for Early Versions", because it was explicitly
+  requested. It reuses the exact local-PTY streaming architecture: Rust reader
+  thread → Tauri `Channel` `InvokeResponseBody::Raw` → xterm.js, with bytes never
+  passing through React. The backend uses the `serialport` crate; there is
+  deliberately no serial resize because serial connections have no cols/rows.
+  Splitting a serial pane opens a default local shell rather than a second
+  connection to the same port. The "Explicit Non-Goals" list is therefore out of
+  date regarding serial, but remains unchanged.
+* 2026-07-16 — **Encrypted private-key sync (v0.3) is opt-in and off by default**
+  via the device-local `sync.includePrivateKeys` setting, which is not itself
+  synced. Private-key/passphrase material is read from the local vault only while
+  it is unlocked, re-encrypted per secret under a key derived from the sync
+  passphrase (Argon2id → XChaCha20-Poly1305, with a fresh per-secret salt and
+  nonce), and carried in the optional `encryptedKeySecrets` bundle section as
+  opaque base64 so it passes the redaction guard. Secrets are thus double-
+  encrypted: once per secret and again by the whole-bundle envelope. On import,
+  they are decrypted with the sync passphrase and re-encrypted under the local
+  vault key. If the vault is locked at apply time, secrets are skipped without
+  failing the whole sync and counted in `privateKeysSkippedLocked`. `formatVersion`
+  remains 1 because `encryptedKeySecrets` is an additive `#[serde(default)]`
+  field.
+* 2026-07-16 — **Third-party host import (v0.3)** supports Tabby `config.yaml`
+  files parsed with `serde_yml` and Electerm JSON exports in both object-with-
+  `bookmarks` and bare-array shapes. Only host metadata is imported — never
+  passwords, passphrases, or private-key contents. Password and keyboard-
+  interactive auth map to `interactive`, consistent with the interactive-only
+  decision; key and agent auth map to `agent`, except that a local-path key
+  reference is used when a concrete identity-file path exists. Groups are
+  created or matched by name.
+* 2026-07-16 — **Auto-update** uses `tauri-plugin-updater` with a placeholder
+  public key and endpoint checked into `tauri.conf.json`. The real public key
+  (repo variable `TAURI_UPDATER_PUBLIC_KEY`) and endpoint are injected by
+  `release.yml`, which signs with `TAURI_SIGNING_PRIVATE_KEY` and optional
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. `tauri-plugin-process` is registered
+  backend-side, and the main window is granted only the minimal
+  `process:allow-restart` capability. After an update installs successfully, the
+  frontend calls `relaunch()` automatically following a brief (~2s) grace period,
+  with a "Restart now" action to relaunch immediately; if `relaunch()` fails, it
+  falls back gracefully to a manual-restart prompt with a retry button. The updater
+  never calls process `exit`. Non-release CI builds disable updater artifacts.
 
 ## Progress
 
@@ -898,3 +939,38 @@ The first stable release is complete when:
   SFTP" plus a "Go to SFTP" entry. All 14 backend commands are consumed
   verbatim; the frontend never touches the filesystem directly and handles no
   secrets.
+* Serial terminal (v0.1 addition) — **complete** (not yet committed) — backend
+  `serialport`-based `SerialManager` mirroring `PtyManager` (reader thread with a
+  stop flag and read timeout, `try_clone` reader/writer split, and `kill_all`
+  wired into `RunEvent::Exit`); commands `serial_ports_list`, `serial_spawn`,
+  `serial_write`, and `serial_kill`; and a frontend connect dialog with port
+  selection, preset/custom baud, data bits, parity, stop bits, and flow control.
+  The command palette includes serial connect, `terminalManager` has a serial
+  descriptor, and restart reopens the port. Backend tests pass; the frontend
+  builds.
+* Phase 7: Release Hardening — **complete** (not yet committed) — auto-update
+  plumbing (plugin, config, and `updater:default` capability); `release.yml`
+  (tag-triggered, cross-platform, signed updater artifacts, `latest.json`, SHA-256
+  `SHA256SUMS`, and GitHub Release upload); `audit.yml` (weekly and pull-request
+  `cargo audit` plus `pnpm audit`); `libudev-dev` in Linux CI for `serialport`;
+  dependency-free `scripts/benchmark.mjs` cold-start and RSS sampling, with
+  documented manual procedures for app-interactive metrics; `docs/RELEASING.md`;
+  and an accessibility/keyboard-navigation pass covering landmarks, a skip link,
+  a roving-tabindex sidebar, `tab`/`tablist` roles, Ctrl+Tab and
+  mod+PageUp/PageDown tab switching, aria-live status, a focus-visible ring,
+  reduced motion, and form-error association. The frontend update-check UI adds
+  an automatic launch check gated by `updates.checkOnLaunch`, a Settings
+  "Updates" section, a palette command, install progress and restart prompt, and
+  graceful handling of development placeholder-key errors.
+* v0.2 "improved session restoration" and Phase 7 "crash recovery" — **complete**
+  (not yet committed) — device-local, versioned `workspace.snapshot` stores tabs,
+  split-pane layout and sizes, and per-pane restore descriptors, but no terminal
+  bytes or scrollback. Writes are debounced and flushed on window close. Restore
+  on launch is gated by `workspace.restoreSessions` (on by default), and failures
+  are isolated per pane.
+* v0.3 items — **complete** (not yet committed) — SFTP, encrypted private-key
+  sync, conflict resolution, and competing-terminal host import from Tabby and
+  Electerm.
+* CI workflow YAML and the release/signing pipeline were validated by inspection
+  and local build only; GitHub Actions were not executed in this environment.
+  Real signing requires the documented repository secrets and variables.

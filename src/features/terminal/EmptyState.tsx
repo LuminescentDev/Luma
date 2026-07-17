@@ -1,4 +1,4 @@
-import { ChevronDown, Command, Server, SquareTerminal } from "lucide-react";
+import { Cable, ChevronDown, Command, Server, SquareTerminal } from "lucide-react";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { NewTerminalMenu } from "./TabBar";
@@ -6,6 +6,7 @@ import { NewTerminalMenu } from "./TabBar";
 export function EmptyState() {
   const openLocalSession = useSessionStore((s) => s.openLocalSession);
   const openSection = useUiStore((s) => s.openSection);
+  const openSerialConnect = useUiStore((s) => s.openSerialConnect);
 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-8 bg-[radial-gradient(circle_at_50%_45%,var(--glow),transparent_32%)]">
@@ -41,6 +42,14 @@ export function EmptyState() {
             </button>
           </NewTerminalMenu>
         </div>
+        <button
+          type="button"
+          onClick={() => openSerialConnect()}
+          className="flex items-center gap-2 rounded-xl border border-border bg-surface px-5 py-3 text-sm transition-all hover:border-accent hover:text-accent hover:shadow-glow"
+        >
+          <Cable size={16} />
+          Serial terminal
+        </button>
         <button
           type="button"
           onClick={() => openSection("hosts")}

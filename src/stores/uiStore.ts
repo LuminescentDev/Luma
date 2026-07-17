@@ -1,32 +1,38 @@
 import { create } from "zustand";
 import type { SidebarSection } from "../types";
 
-/** The main-area content: the terminal workspace or the full-screen settings. */
-type MainView = "workspace" | "settings" | "keychain";
+/**
+ * What the main area shows. Decoupled from the sidebar rail: the terminal
+ * workspace is driven by the top TabBar (`"terminal"`), the rail selects a
+ * section screen, and settings/keychain are full-screen views. This is a single
+ * source of truth so a terminal tab can be the active main view independently of
+ * any sidebar section.
+ */
+export type MainView = SidebarSection | "terminal" | "settings" | "keychain";
 
 type UiState = {
-  /** Which sidebar panel section is selected. */
-  section: SidebarSection;
-  /** Whether the sidebar content panel is expanded (icon rail is always shown). */
-  panelOpen: boolean;
   /** What the main area shows to the right of the sidebar. */
-  view: MainView;
+  mainView: MainView;
   navOpen: boolean;
   toggleNav: () => void;
-  /** Rail-icon behavior: open the section's panel, or collapse it if already active. */
+  /** Rail-icon behavior: show the section's screen in the main area. */
   selectSection: (section: SidebarSection) => void;
-  /** Force a section's panel open (e.g. deep links / empty-state shortcuts). */
+  /** Force a section's screen into the main area (deep links / shortcuts). */
   openSection: (section: SidebarSection) => void;
+  /** Show the terminal workspace in the main area (top-tab driven). */
+  showTerminal: () => void;
   /** Show the full-screen settings view. */
   openSettings: () => void;
   openKeychain: () => void;
-  /** Return the main area to the terminal workspace. */
-  showWorkspace: () => void;
   terminalSearchOpen: boolean;
   setTerminalSearchOpen: (open: boolean) => void;
   newTabOpen: boolean;
   openNewTab: () => void;
   closeNewTab: () => void;
+  /** Serial-terminal connect dialog visibility. */
+  serialConnectOpen: boolean;
+  openSerialConnect: () => void;
+  closeSerialConnect: () => void;
   /** Command palette overlay visibility. */
   paletteOpen: boolean;
   openPalette: () => void;
@@ -35,22 +41,23 @@ type UiState = {
 };
 
 export const useUiStore = create<UiState>((set) => ({
-  section: "terminal",
-  panelOpen: true,
-  view: "workspace",
+  // With no terminal tabs open on launch, the main area defaults to Hosts.
+  mainView: "hosts",
   navOpen: false,
   toggleNav: () => set((state) => ({ navOpen: !state.navOpen })),
-  selectSection: (section) =>
-    set({ view: "workspace", section, panelOpen: true }),
-  openSection: (section) => set({ view: "workspace", section, panelOpen: true }),
-  openSettings: () => set({ view: "settings" }),
-  openKeychain: () => set({ view: "keychain" }),
-  showWorkspace: () => set({ view: "workspace" }),
+  selectSection: (section) => set({ mainView: section }),
+  openSection: (section) => set({ mainView: section }),
+  showTerminal: () => set({ mainView: "terminal" }),
+  openSettings: () => set({ mainView: "settings" }),
+  openKeychain: () => set({ mainView: "keychain" }),
   terminalSearchOpen: false,
   setTerminalSearchOpen: (open) => set({ terminalSearchOpen: open }),
   newTabOpen: false,
-  openNewTab: () => set({ view: "workspace", section: "terminal", newTabOpen: true }),
+  openNewTab: () => set({ mainView: "terminal", newTabOpen: true }),
   closeNewTab: () => set({ newTabOpen: false }),
+  serialConnectOpen: false,
+  openSerialConnect: () => set({ serialConnectOpen: true }),
+  closeSerialConnect: () => set({ serialConnectOpen: false }),
   paletteOpen: false,
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),

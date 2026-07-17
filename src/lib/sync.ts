@@ -9,6 +9,13 @@ import { invoke } from "@tauri-apps/api/core";
  * from transient form state. Nothing here returns or caches a secret.
  */
 
+/**
+ * Device-local settings key for the opt-in "include private keys in sync"
+ * preference. Stored as a JSON boolean via settings_set; defaults to false when
+ * unset. Enabling it only takes effect while the vault is unlocked at sync time.
+ */
+export const SYNC_INCLUDE_PRIVATE_KEYS_KEY = "sync.includePrivateKeys";
+
 /** Object-count breakdown returned by export/import/preview. */
 export type ObjectCounts = {
   hosts: number;
@@ -71,6 +78,10 @@ export type SyncReport = {
   pushed: boolean;
   conflicts: Conflict[];
   upToDate: boolean;
+  /** Private keys decrypted+imported during this sync (0 unless key sync is on). */
+  privateKeysApplied: number;
+  /** Private keys that could not be included because the vault was locked. */
+  privateKeysSkippedLocked: number;
 };
 
 export type ExportResult = {
@@ -87,6 +98,10 @@ export type ImportApplyResult = {
   applied: ObjectCounts;
   keptLocal: ObjectCounts;
   conflicts: Conflict[];
+  /** Private keys decrypted+imported during this import (0 unless included). */
+  privateKeysApplied: number;
+  /** Private keys that could not be imported because the vault was locked. */
+  privateKeysSkippedLocked: number;
 };
 
 // Export / import -----------------------------------------------------------

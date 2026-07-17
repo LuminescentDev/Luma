@@ -1,7 +1,9 @@
 mod commands;
 mod errors;
+mod import;
 mod logging;
 mod platform;
+mod serial;
 mod sftp;
 mod ssh;
 mod storage;
@@ -14,6 +16,7 @@ use std::path::PathBuf;
 use sqlx::SqlitePool;
 use tauri::Manager;
 
+use serial::SerialManager;
 use sftp::SftpManager;
 use ssh::TunnelManager;
 use terminal::PtyManager;
@@ -28,6 +31,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let log_dir = app.path().app_log_dir()?;
             logging::init(&log_dir);
@@ -50,6 +55,7 @@ pub fn run() {
             ))?;
             app.manage(sync_state);
             app.manage(PtyManager::default());
+            app.manage(SerialManager::default());
             app.manage(TunnelManager::default());
             app.manage(SftpManager::default());
 
@@ -86,9 +92,13 @@ pub fn run() {
             commands::identity_update,
             commands::identity_delete,
             commands::ssh_detect,
+            commands::ssh_host_key_status,
+            commands::ssh_host_key_trust,
             commands::ssh_spawn,
             commands::ssh_config_preview,
             commands::ssh_config_import,
+            commands::import_hosts_preview,
+            commands::import_hosts_apply,
             commands::snippets_list,
             commands::snippet_create,
             commands::snippet_update,
@@ -118,6 +128,10 @@ pub fn run() {
             commands::pty_write,
             commands::pty_resize,
             commands::pty_kill,
+            commands::serial_ports_list,
+            commands::serial_spawn,
+            commands::serial_write,
+            commands::serial_kill,
             commands::vault_status,
             commands::vault_setup,
             commands::vault_unlock,
@@ -138,7 +152,8 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
-            // No tunnel, SFTP, transfer, or shell process may outlive the application.
+            // No serial device, tunnel, SFTP, transfer, or shell may outlive the application.
+            app_handle.state::<SerialManager>().kill_all();
             app_handle.state::<SftpManager>().kill_all();
             let pty = app_handle.state::<PtyManager>();
             app_handle.state::<TunnelManager>().kill_all(&pty);

@@ -221,6 +221,60 @@ export function importSshConfig(selectedNames: string[]): Promise<SshImportResul
   });
 }
 
+// Third-party host import (Tabby / Electerm) --------------------------------
+
+/** External clients whose SSH host lists Luma can import. */
+export type ImportSource = "tabby" | "electerm";
+
+/** Best-effort authentication method detected for an imported candidate. */
+export type ImportedHostAuthHint =
+  | "password"
+  | "public-key"
+  | "agent"
+  | "keyboard-interactive"
+  | "unknown";
+
+export type ImportedHostCandidate = {
+  name: string;
+  hostname: string;
+  port: number;
+  username: string | null;
+  group: string | null;
+  authHint: ImportedHostAuthHint;
+  alreadyExists: boolean;
+};
+
+export type ImportedHostsResult = {
+  importedHosts: Host[];
+  createdGroups: string[];
+  skippedExisting: string[];
+};
+
+/** Preview the SSH hosts contained in a Tabby (.yaml) or Electerm (.json)
+ * export at `path`. The frontend passes only the absolute path; the backend
+ * reads the file — file contents never enter frontend state. */
+export function previewImportHosts(
+  source: ImportSource,
+  path: string,
+): Promise<ImportedHostCandidate[]> {
+  return invoke<ImportedHostCandidate[]>("import_hosts_preview", { source, path });
+}
+
+/** Import the selected hosts from a Tabby/Electerm export. `selectedNames`
+ * must reference candidates still present in the file (max 500, no dupes);
+ * an empty selection imports nothing. */
+export function applyImportHosts(
+  source: ImportSource,
+  path: string,
+  selectedNames: string[],
+): Promise<ImportedHostsResult> {
+  return invoke<ImportedHostsResult>("import_hosts_apply", {
+    source,
+    path,
+    request: { selectedNames },
+  });
+}
+
 /** Normalize a rejected command error ({ category, message }) into a usable
  * shape. Backend command errors reject with this structure; unexpected errors
  * are surfaced with a generic category. */

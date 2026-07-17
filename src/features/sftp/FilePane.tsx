@@ -36,6 +36,7 @@ import {
 import { parseLumaError } from "../../lib/hosts";
 import { localListKey, sftpListKey } from "../../hooks/useSftp";
 import { cn } from "../../lib/utils";
+import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { NameDialog } from "./NameDialog";
 import {
@@ -274,6 +275,23 @@ export function FilePane({
 
   const segments = breadcrumbSegments(path, separator);
 
+  // Right-click on empty pane space mirrors the header IconButton actions.
+  const backgroundActions: MenuAction[] = [
+    {
+      label: "New folder",
+      icon: <FolderPlus size={14} />,
+      onSelect: () => {
+        setMkdirError(null);
+        setMkdirOpen(true);
+      },
+    },
+    {
+      label: "Refresh",
+      icon: <RefreshCw size={14} />,
+      onSelect: () => void listing.refetch(),
+    },
+  ];
+
   return (
     <div
       className={cn(
@@ -422,6 +440,7 @@ export function FilePane({
       </div>
 
       {/* Body -------------------------------------------------------------- */}
+      <ContextMenu actions={backgroundActions} minWidth="min-w-36">
       <div className="min-h-0 flex-1 overflow-y-auto">
         {listing.isLoading ? (
           <PaneMessage>Loading…</PaneMessage>
@@ -443,13 +462,62 @@ export function FilePane({
           <ul role="list">
             {capped.map((entry, index) => {
               const isSelected = selected.has(entry.path);
+              const canRowTransfer = entry.kind !== "dir" && canTransfer;
+              const rowActions: MenuAction[] = [];
+              if (canRowTransfer) {
+                rowActions.push({
+                  label: transferLabel,
+                  onSelect: () => onRequestTransfer(scope, [entry], "__counterpart__"),
+                });
+              }
+              if (entry.kind === "dir" || entry.kind === "symlink") {
+                rowActions.push({
+                  label: "Open",
+                  icon: <Folder size={14} />,
+                  onSelect: () => openEntry(entry),
+                });
+              }
+              rowActions.push({
+                label: "Rename",
+                icon: <Pencil size={14} />,
+                onSelect: () => {
+                  setRenameError(null);
+                  setRenaming(entry);
+                },
+              });
+              rowActions.push({ separator: true });
+              rowActions.push({
+                label: "Delete",
+                icon: <Trash2 size={14} />,
+                destructive: true,
+                onSelect: () => {
+                  setDeleteError(null);
+                  setDeleteRecursive(false);
+                  setDeleting(entry);
+                },
+              });
               return (
-                <li
+                <ContextMenu
                   key={entry.path}
+                  actions={rowActions}
+                  minWidth="min-w-36"
+                  // Right-clicking an unselected row targets just that row,
+                  // mirroring onRowDragStart's selection behavior.
+                  onOpenChange={(open) => {
+                    if (open && !isSelected) {
+                      setSelected(new Set([entry.path]));
+                      anchorIndex.current = index;
+                    }
+                  }}
+                >
+                <li
                   role="row"
                   aria-selected={isSelected}
                   tabIndex={0}
                   draggable
+                  // Stop the native contextmenu from also reaching the pane
+                  // background menu wrapping the body.
+                  onContextMenu={(e) => e.stopPropagation()}
                   onDragStart={(e) => onRowDragStart(e, entry)}
                   onDragEnd={endDrag}
                   onDragOver={(e) => {
@@ -498,27 +566,10 @@ export function FilePane({
                     </span>
                   )}
                   <span className="w-6 shrink-0">
-                    <RowMenu
-                      entry={entry}
-                      onOpen={() => openEntry(entry)}
-                      onRename={() => {
-                        setRenameError(null);
-                        setRenaming(entry);
-                      }}
-                      onDelete={() => {
-                        setDeleteError(null);
-                        setDeleteRecursive(false);
-                        setDeleting(entry);
-                      }}
-                      onTransfer={
-                        entry.kind === "dir" || !canTransfer
-                          ? undefined
-                          : () => onRequestTransfer(scope, [entry], "__counterpart__")
-                      }
-                      transferLabel={transferLabel}
-                    />
+                    <RowMenu entry={entry} actions={rowActions} />
                   </span>
                 </li>
+                </ContextMenu>
               );
             })}
           </ul>
@@ -530,6 +581,7 @@ export function FilePane({
           </p>
         )}
       </div>
+      </ContextMenu>
 
       {/* Footer summary ---------------------------------------------------- */}
       <div className="flex items-center justify-between border-t border-border px-3 py-1.5 text-[10px] text-muted">
@@ -640,18 +692,10 @@ function PaneMessage({
 
 function RowMenu({
   entry,
-  onOpen,
-  onRename,
-  onDelete,
-  onTransfer,
-  transferLabel,
+  actions,
 }: {
   entry: SftpEntry;
-  onOpen: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-  onTransfer?: () => void;
-  transferLabel: string;
+  actions: MenuAction[];
 }) {
   return (
     <DropdownMenu.Root>
@@ -671,21 +715,23 @@ function RowMenu({
           sideOffset={4}
           className="z-50 min-w-36 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"
         >
-          {onTransfer && (
-            <MenuItem onSelect={onTransfer}>{transferLabel}</MenuItem>
+          {actions.map((action, index) =>
+            "separator" in action && action.separator ? (
+              <DropdownMenu.Separator
+                key={`sep-${index}`}
+                className="my-1 h-px bg-border"
+              />
+            ) : (
+              <MenuItem
+                key={action.label}
+                icon={action.icon}
+                destructive={action.destructive}
+                onSelect={action.onSelect}
+              >
+                {action.label}
+              </MenuItem>
+            ),
           )}
-          {(entry.kind === "dir" || entry.kind === "symlink") && (
-            <MenuItem icon={<Folder size={14} />} onSelect={onOpen}>
-              Open
-            </MenuItem>
-          )}
-          <MenuItem icon={<Pencil size={14} />} onSelect={onRename}>
-            Rename
-          </MenuItem>
-          <DropdownMenu.Separator className="my-1 h-px bg-border" />
-          <MenuItem icon={<Trash2 size={14} />} destructive onSelect={onDelete}>
-            Delete
-          </MenuItem>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

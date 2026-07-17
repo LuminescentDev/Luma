@@ -37,6 +37,7 @@ import {
   useSshDetect,
 } from "../../hooks/useHosts";
 import { cn } from "../../lib/utils";
+import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { HostEditorDialog } from "./HostEditorDialog";
 import { KeyReferencesDialog } from "./KeyReferencesDialog";
@@ -61,7 +62,7 @@ export function HostsPanel() {
   const openSshSession = useSessionStore((s) => s.openSshSession);
   const invalidate = useInvalidateHosts();
   const queryClient = useQueryClient();
-  const openSection = useUiStore((s) => s.openSection);
+  const showTerminal = useUiStore((s) => s.showTerminal);
 
   const { data: hosts } = useHosts();
   const { data: groups } = useHostGroups();
@@ -142,7 +143,7 @@ export function HostsPanel() {
     // The backend records the recent connection on a successful spawn; refresh
     // the Recent list once the connection attempt settles.
     void openSshSession(host.id, host.name, host.hostname).then(() => {
-      openSection("terminal");
+      showTerminal();
       return queryClient.invalidateQueries({ queryKey: RECENT_HOSTS_KEY });
     });
   };
@@ -256,7 +257,7 @@ export function HostsPanel() {
                 icon={<DownloadCloud size={14} />}
                 onSelect={() => setImportOpen(true)}
               >
-                Import from SSH config
+                Import hosts…
               </MenuItem>
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
@@ -369,7 +370,7 @@ function EmptyHosts({
       <Server size={22} className="mx-auto text-muted" />
       <p className="mt-2 text-sm font-medium">No saved hosts</p>
       <p className="mt-1 text-xs text-muted">
-        Add an SSH host or import your existing SSH config.
+        Add an SSH host or import from your SSH config, Tabby, or Electerm.
       </p>
       <div className="mt-3 flex flex-col gap-1.5">
         <button
@@ -384,7 +385,7 @@ function EmptyHosts({
           onClick={onImport}
           className="flex items-center justify-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:text-foreground"
         >
-          <DownloadCloud size={14} /> Import from SSH config
+          <DownloadCloud size={14} /> Import hosts…
         </button>
       </div>
     </div>
@@ -452,7 +453,14 @@ function FolderCard({ group, groups, hosts, active, onOpen, onRename, onDelete, 
   const containedGroupIds = descendantGroupIds(group.id, groups);
   const containedHosts = hosts.filter((host) => host.groupId !== null && containedGroupIds.has(host.groupId)).length;
   const subgroups = groups.filter((candidate) => candidate.parentId === group.id).length;
+  const folderActions: MenuAction[] = [
+    { label: "Open", icon: <Folder size={14} />, onSelect: onOpen },
+    { label: "Rename", icon: <Pencil size={14} />, onSelect: onRename },
+    { separator: true },
+    { label: "Delete", icon: <Trash2 size={14} />, destructive: true, onSelect: onDelete },
+  ];
   return (
+    <ContextMenu actions={folderActions}>
     <div {...dropProps} className={cn("group/folder flex items-center gap-3 rounded-xl bg-raised px-4 py-3 transition-all hover:ring-1 hover:ring-accent", active && "ring-2 ring-accent bg-accent/10")}>
       <button type="button" onClick={onOpen} onDoubleClick={onOpen} className="flex min-w-0 flex-1 items-center gap-3 text-left">
         <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/20 text-accent"><Folder size={19} fill="currentColor" /></span>
@@ -471,6 +479,7 @@ function FolderCard({ group, groups, hosts, active, onOpen, onRename, onDelete, 
         <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-36 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"><MenuItem icon={<Pencil size={14} />} onSelect={onRename}>Rename</MenuItem><MenuItem icon={<Trash2 size={14} />} destructive onSelect={onDelete}>Delete</MenuItem></DropdownMenu.Content></DropdownMenu.Portal>
       </DropdownMenu.Root>
     </div>
+    </ContextMenu>
   );
 }
 
@@ -503,7 +512,21 @@ function HostRow({
 }) {
   const runningTunnels = runningByHost.get(host.id) ?? 0;
   const selected = selectedHostIds.has(host.id);
+  const hostActions: MenuAction[] = [
+    { label: "Connect", icon: <Server size={14} />, onSelect: () => onConnect(host) },
+    { label: "Edit", icon: <Pencil size={14} />, onSelect: () => onEdit(host) },
+    { label: "Duplicate", icon: <Copy size={14} />, onSelect: () => onDuplicate(host) },
+    { label: "Port forwarding", icon: <Cable size={14} />, onSelect: () => onPortForwards(host) },
+    {
+      label: host.favorite ? "Remove favorite" : "Add favorite",
+      icon: <Star size={14} />,
+      onSelect: () => onToggleFavorite(host),
+    },
+    { separator: true },
+    { label: "Delete", icon: <Trash2 size={14} />, destructive: true, onSelect: () => onDelete(host) },
+  ];
   return (
+    <ContextMenu actions={hostActions}>
     <div draggable onDragStart={(event) => onDragStart(event, host)} onDragEnd={onDragEnd} onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onSelect(host, event.ctrlKey || event.metaKey); }} aria-selected={selected} className={cn("group/row flex min-h-[62px] cursor-grab items-center gap-2 rounded-xl bg-raised px-3 py-2 text-sm text-muted transition-all hover:ring-1 hover:ring-accent hover:text-foreground active:cursor-grabbing", selected && "ring-2 ring-accent bg-accent/10")}>
       <button
         type="button"
@@ -565,36 +588,12 @@ function HostRow({
             sideOffset={4}
             className="z-50 min-w-40 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"
           >
-            <MenuItem icon={<Server size={14} />} onSelect={() => onConnect(host)}>
-              Connect
-            </MenuItem>
-            <MenuItem icon={<Pencil size={14} />} onSelect={() => onEdit(host)}>
-              Edit
-            </MenuItem>
-            <MenuItem icon={<Copy size={14} />} onSelect={() => onDuplicate(host)}>
-              Duplicate
-            </MenuItem>
-            <MenuItem icon={<Cable size={14} />} onSelect={() => onPortForwards(host)}>
-              Port forwarding
-            </MenuItem>
-            <MenuItem
-              icon={<Star size={14} />}
-              onSelect={() => onToggleFavorite(host)}
-            >
-              {host.favorite ? "Remove favorite" : "Add favorite"}
-            </MenuItem>
-            <DropdownMenu.Separator className="my-1 h-px bg-border" />
-            <MenuItem
-              icon={<Trash2 size={14} />}
-              destructive
-              onSelect={() => onDelete(host)}
-            >
-              Delete
-            </MenuItem>
+            <DropdownActionItems actions={hostActions} />
           </DropdownMenu.Content>
         </DropdownMenu.Portal>
       </DropdownMenu.Root>
     </div>
+    </ContextMenu>
   );
 }
 
@@ -622,5 +621,31 @@ function MenuItem({
       {icon}
       {children}
     </DropdownMenu.Item>
+  );
+}
+
+/** Render a shared MenuAction[] as dropdown items so a 3-dot menu and its
+ * right-click counterpart stay identical. */
+function DropdownActionItems({ actions }: { actions: MenuAction[] }) {
+  return (
+    <>
+      {actions.map((action, index) =>
+        "separator" in action && action.separator ? (
+          <DropdownMenu.Separator
+            key={`sep-${index}`}
+            className="my-1 h-px bg-border"
+          />
+        ) : (
+          <MenuItem
+            key={action.label}
+            icon={action.icon}
+            destructive={action.destructive}
+            onSelect={action.onSelect}
+          >
+            {action.label}
+          </MenuItem>
+        ),
+      )}
+    </>
   );
 }

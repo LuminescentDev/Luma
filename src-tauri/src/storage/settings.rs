@@ -7,6 +7,7 @@ use crate::errors::{LumaError, Result};
 
 const MAX_KEY_LENGTH: usize = 128;
 const MAX_VALUE_BYTES: usize = 64 * 1024;
+pub(crate) const SYNC_INCLUDE_PRIVATE_KEYS_KEY: &str = "sync.includePrivateKeys";
 
 pub(crate) fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.len() > MAX_KEY_LENGTH {
@@ -37,11 +38,32 @@ pub async fn all(pool: &SqlitePool) -> Result<HashMap<String, Value>> {
         let value = serde_json::from_str(&raw).unwrap_or(Value::Null);
         settings.insert(key, value);
     }
+    settings
+        .entry(SYNC_INCLUDE_PRIVATE_KEYS_KEY.to_string())
+        .or_insert(Value::Bool(false));
     Ok(settings)
+}
+
+pub async fn sync_include_private_keys(pool: &SqlitePool) -> Result<bool> {
+    let raw: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
+        .bind(SYNC_INCLUDE_PRIVATE_KEYS_KEY)
+        .fetch_optional(pool)
+        .await?;
+    match raw {
+        None => Ok(false),
+        Some(raw) => serde_json::from_str::<bool>(&raw).map_err(|_| {
+            LumaError::InvalidInput(format!("{SYNC_INCLUDE_PRIVATE_KEYS_KEY} must be a boolean"))
+        }),
+    }
 }
 
 pub async fn set(pool: &SqlitePool, key: &str, value: &Value) -> Result<()> {
     validate_key(key)?;
+    if key == SYNC_INCLUDE_PRIVATE_KEYS_KEY && !value.is_boolean() {
+        return Err(LumaError::InvalidInput(format!(
+            "{SYNC_INCLUDE_PRIVATE_KEYS_KEY} must be a boolean"
+        )));
+    }
     let serialized = serde_json::to_string(value)
         .map_err(|e| LumaError::InvalidInput(format!("value is not serializable: {e}")))?;
     if serialized.len() > MAX_VALUE_BYTES {
@@ -103,6 +125,7 @@ mod tests {
         let settings = all(&pool).await.unwrap();
         assert_eq!(settings["appearance.theme"], json!("light"));
         assert_eq!(settings["terminal.scrollback"], json!(5000));
+        assert_eq!(settings[SYNC_INCLUDE_PRIVATE_KEYS_KEY], json!(false));
 
         delete(&pool, "terminal.scrollback").await.unwrap();
         let settings = all(&pool).await.unwrap();
@@ -123,5 +146,18 @@ mod tests {
         assert!(set(&pool, "bad key with spaces", &json!(1)).await.is_err());
         assert!(set(&pool, "drop table; --", &json!(1)).await.is_err());
         assert!(set(&pool, &"x".repeat(200), &json!(1)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn private_key_sync_preference_is_boolean_and_defaults_off() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        assert!(!sync_include_private_keys(&pool).await.unwrap());
+        assert!(set(&pool, SYNC_INCLUDE_PRIVATE_KEYS_KEY, &json!("yes"))
+            .await
+            .is_err());
+        set(&pool, SYNC_INCLUDE_PRIVATE_KEYS_KEY, &json!(true))
+            .await
+            .unwrap();
+        assert!(sync_include_private_keys(&pool).await.unwrap());
     }
 }

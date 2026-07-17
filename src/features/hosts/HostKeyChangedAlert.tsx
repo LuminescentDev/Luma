@@ -1,4 +1,5 @@
 import { ShieldAlert, X } from "lucide-react";
+import type { HostKeyFingerprint } from "../../lib/ssh";
 
 /*
  * Blocking, full-pane warning shown when SSH reports host-key-changed. This is
@@ -10,12 +11,20 @@ import { ShieldAlert, X } from "lucide-react";
 export function HostKeyChangedAlert({
   hostTitle,
   message,
+  scannedKeys,
+  knownKeys,
   onClose,
 }: {
   hostTitle: string;
   message: string;
+  /** Keys observed on the network now (what the server is presenting). */
+  scannedKeys?: HostKeyFingerprint[];
+  /** Previously trusted keys, shown alongside for out-of-band comparison. */
+  knownKeys?: HostKeyFingerprint[];
   onClose: () => void;
 }) {
+  const hasComparison =
+    (scannedKeys?.length ?? 0) > 0 || (knownKeys?.length ?? 0) > 0;
   return (
     <div
       role="alertdialog"
@@ -31,6 +40,20 @@ export function HostKeyChangedAlert({
           </h2>
         </div>
         <p className="mt-3 text-sm text-muted">{message}</p>
+        {hasComparison && (
+          <div className="mt-3 space-y-3 rounded-lg border border-border bg-background p-3">
+            <FingerprintList
+              label="Previously trusted"
+              keys={knownKeys}
+              tone="muted"
+            />
+            <FingerprintList
+              label="Presented now"
+              keys={scannedKeys}
+              tone="danger"
+            />
+          </div>
+        )}
         <ul className="mt-3 list-disc space-y-1 pl-5 text-xs text-muted">
           <li>
             If you expected this (the server was rebuilt or its key rotated),
@@ -55,6 +78,36 @@ export function HostKeyChangedAlert({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function FingerprintList({
+  label,
+  keys,
+  tone,
+}: {
+  label: string;
+  keys?: HostKeyFingerprint[];
+  tone: "muted" | "danger";
+}) {
+  return (
+    <div>
+      <div className="text-xs uppercase tracking-wide text-muted">{label}</div>
+      {keys && keys.length > 0 ? (
+        <ul className="mt-1 space-y-1">
+          {keys.map((key) => (
+            <li key={`${key.keyType}:${key.fingerprint}`} className="break-all font-mono text-xs">
+              <span className="text-muted">{key.keyType} </span>
+              <span className={tone === "danger" ? "text-danger" : "text-foreground"}>
+                {key.fingerprint}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-1 text-xs text-muted">Not available.</div>
+      )}
     </div>
   );
 }

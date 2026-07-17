@@ -17,8 +17,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yml = "0.0.12"
 thiserror = "2"
 tokio = { version = "1", features = [
   "rt-multi-thread",
@@ -43,6 +46,8 @@ sqlx = { version = "0.8", default-features = false, features = [
   "json",
 ] }
 portable-pty = "0.9"
+# CI: requires libudev-dev on Linux
+serialport = "4"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

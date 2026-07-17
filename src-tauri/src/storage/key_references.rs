@@ -141,6 +141,7 @@ pub(crate) fn validate_create(input: &KeyReferenceInput) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub async fn create(pool: &SqlitePool, input: KeyReferenceInput) -> Result<KeyReference> {
     validate_create(&input)?;
     create_validated(pool, input, true).await

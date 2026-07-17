@@ -8,6 +8,7 @@ import {
   KeyRound,
   Loader2,
   RefreshCw,
+  ShieldAlert,
 } from "lucide-react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { PassphrasePrompt } from "./PassphrasePrompt";
@@ -15,6 +16,7 @@ import { parseLumaError } from "../../lib/hosts";
 import {
   formatRelativeTime,
   truncateVersion,
+  SYNC_INCLUDE_PRIVATE_KEYS_KEY,
   type SyncConfig,
   type SyncConfigureInput,
   type SyncProvider,
@@ -25,6 +27,7 @@ import {
   useSetSyncPassphrase,
   useSyncConfig,
 } from "../../hooks/useSync";
+import { useSettings, useSetSetting } from "../../hooks/useSettings";
 import { useSyncStore } from "../../stores/syncStore";
 import { cn } from "../../lib/utils";
 
@@ -57,6 +60,10 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const disable = useDisableSync();
   const setPassphrase = useSetSyncPassphrase();
 
+  const { data: settings } = useSettings();
+  const setSetting = useSetSetting();
+  const includePrivateKeys = Boolean(settings?.[SYNC_INCLUDE_PRIVATE_KEYS_KEY]);
+
   const status = useSyncStore((s) => s.status);
   const lastReport = useSyncStore((s) => s.lastReport);
   const errorCategory = useSyncStore((s) => s.errorCategory);
@@ -77,6 +84,25 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const [confirmChange, setConfirmChange] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
   const [passphraseOpen, setPassphraseOpen] = useState(false);
+  const [confirmIncludeKeys, setConfirmIncludeKeys] = useState(false);
+
+  // Turning the private-key toggle ON requires an explicit confirmation of the
+  // risk; turning it OFF persists immediately.
+  const onToggleIncludeKeys = () => {
+    if (setSetting.isPending) return;
+    if (includePrivateKeys) {
+      setSetting.mutate({ key: SYNC_INCLUDE_PRIVATE_KEYS_KEY, value: false });
+    } else {
+      setConfirmIncludeKeys(true);
+    }
+  };
+
+  const confirmEnableIncludeKeys = () => {
+    setSetting.mutate(
+      { key: SYNC_INCLUDE_PRIVATE_KEYS_KEY, value: true },
+      { onSuccess: () => setConfirmIncludeKeys(false) },
+    );
+  };
 
   const configureError = configure.isError ? parseLumaError(configure.error).message : null;
 
@@ -149,6 +175,14 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
             lastReport && status !== "syncing"
               ? summarizeReport(lastReport)
               : null
+          }
+          privateKeysApplied={
+            lastReport && status !== "syncing" ? lastReport.privateKeysApplied : 0
+          }
+          privateKeysSkippedLocked={
+            lastReport && status !== "syncing"
+              ? lastReport.privateKeysSkippedLocked
+              : 0
           }
           runtimeError={
             status === "error" && errorCategory !== "vault-locked" ? errorMessage : null
@@ -304,6 +338,28 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
         </div>
       </div>
 
+      {/* Private key sync (opt-in) ---------------------------------------- */}
+      <div className="space-y-2 rounded-lg border border-border bg-background p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Include private keys in sync</p>
+            <p className="text-xs text-muted">
+              Off by default. Keys are encrypted before leaving this device.
+            </p>
+          </div>
+          <Toggle
+            checked={includePrivateKeys}
+            disabled={setSetting.isPending}
+            onClick={onToggleIncludeKeys}
+            label="Include private keys in sync"
+          />
+        </div>
+        <p className="text-xs text-muted">
+          Keys are only included when the vault is unlocked at sync time. On other
+          devices the vault must be unlocked to import them.
+        </p>
+      </div>
+
       {/* Dialogs ----------------------------------------------------------- */}
       <PassphrasePrompt
         open={passphraseOpen}
@@ -338,6 +394,34 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
       />
 
       <ConfirmDialog
+        open={confirmIncludeKeys}
+        onOpenChange={(o) => {
+          if (!o) setConfirmIncludeKeys(false);
+        }}
+        title="Include private keys in sync?"
+        confirmLabel="I understand, include keys"
+        busy={setSetting.isPending}
+        onConfirm={confirmEnableIncludeKeys}
+        message={
+          <div className="space-y-2.5">
+            <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-400">
+              <ShieldAlert size={15} className="mt-0.5 shrink-0" />
+              <span className="text-xs">
+                Your private keys will be encrypted before they leave this device,
+                but the encrypted key material will be uploaded to your sync
+                provider.
+              </span>
+            </div>
+            <p>
+              Keys are only included when the vault is unlocked at sync time, and
+              other devices must unlock the vault to import them.
+            </p>
+            <p>Only enable this if you understand and accept the risk.</p>
+          </div>
+        }
+      />
+
+      <ConfirmDialog
         open={confirmDisable}
         onOpenChange={setConfirmDisable}
         title="Disable sync?"
@@ -355,12 +439,16 @@ function StatusPanel({
   config,
   status,
   lastReportSummary,
+  privateKeysApplied,
+  privateKeysSkippedLocked,
   runtimeError,
   onSyncNow,
 }: {
   config: SyncConfig;
   status: string;
   lastReportSummary: string | null;
+  privateKeysApplied: number;
+  privateKeysSkippedLocked: number;
   runtimeError: string | null;
   onSyncNow: () => void;
 }) {
@@ -411,6 +499,20 @@ function StatusPanel({
           <Check size={13} className="text-accent" /> {lastReportSummary}
         </div>
       )}
+      {!syncing && privateKeysApplied > 0 && (
+        <div className="mt-2.5 flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
+          <KeyRound size={13} className="text-accent" />{" "}
+          {privateKeysApplied} private key{privateKeysApplied === 1 ? "" : "s"} imported
+        </div>
+      )}
+      {!syncing && privateKeysSkippedLocked > 0 && (
+        <div className="mt-2.5 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+          <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Vault locked —{" "}
+          {privateKeysSkippedLocked} private key
+          {privateKeysSkippedLocked === 1 ? " was" : "s were"} not synced. Unlock the
+          vault and sync again.
+        </div>
+      )}
       {syncing && (
         <div className="mt-2.5 flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-xs text-muted">
           <Loader2 size={13} className="animate-spin" /> Contacting {provider}…
@@ -431,6 +533,40 @@ function summarizeReport(report: {
   if (report.pushed) parts.push("pushed local changes");
   if (parts.length === 0) return "Sync complete.";
   return `Sync complete — ${parts.join(" and ")}.`;
+}
+
+function Toggle({
+  checked,
+  disabled,
+  onClick,
+  label,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border transition-colors disabled:opacity-50 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent",
+        checked ? "bg-accent" : "bg-surface",
+      )}
+    >
+      <span
+        className={cn(
+          "inline-block h-3.5 w-3.5 rounded-full bg-foreground shadow transition-transform",
+          checked ? "translate-x-4" : "translate-x-0.5",
+        )}
+      />
+    </button>
+  );
 }
 
 function Field({

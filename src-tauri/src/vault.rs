@@ -146,6 +146,11 @@ pub async fn set_policy(
 pub fn lock(state: &VaultState) {
     *state.0.lock().unwrap() = None
 }
+
+pub fn is_unlocked(state: &VaultState) -> bool {
+    state.0.lock().unwrap().is_some()
+}
+
 pub async fn store(
     pool: &SqlitePool,
     state: &VaultState,

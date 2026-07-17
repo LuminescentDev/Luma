@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Download, Upload } from "lucide-react";
+import { AlertTriangle, Download, KeyRound, Upload } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { PassphrasePrompt } from "./PassphrasePrompt";
 import { ConflictDialog } from "./ConflictDialog";
@@ -320,6 +320,23 @@ export function BackupSection() {
               <div>
                 <p className="mb-1 text-xs font-medium text-muted">Kept local</p>
                 <CountsList counts={importPhase.result.keptLocal} />
+              </div>
+            )}
+            {importPhase.result.privateKeysApplied > 0 && (
+              <div className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted">
+                <KeyRound size={13} className="text-accent" />{" "}
+                {importPhase.result.privateKeysApplied} private key
+                {importPhase.result.privateKeysApplied === 1 ? "" : "s"} imported
+              </div>
+            )}
+            {importPhase.result.privateKeysSkippedLocked > 0 && (
+              <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+                <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Vault locked —{" "}
+                {importPhase.result.privateKeysSkippedLocked} private key
+                {importPhase.result.privateKeysSkippedLocked === 1
+                  ? " was"
+                  : "s were"}{" "}
+                not imported. Unlock the vault and import again.
               </div>
             )}
           </div>

@@ -25,9 +25,8 @@ export function TitleBar() {
   const navOpen = useUiStore((s) => s.navOpen);
   const toggleNav = useUiStore((s) => s.toggleNav);
   const selectSection = useUiStore((s) => s.selectSection);
-  const view = useUiStore((s) => s.view);
-  const section = useUiStore((s) => s.section);
-  const sftpActive = view === 'workspace' && section === 'sftp';
+  const mainView = useUiStore((s) => s.mainView);
+  const sftpActive = mainView === 'sftp';
   const runningTunnels = useTunnelStore(selectRunningCount);
   const activeTransfers = useSftpStore(selectActiveTransferCount);
   const { data: syncConfig } = useSyncConfig();
@@ -54,6 +53,7 @@ export function TitleBar() {
       <button
         type='button'
         onClick={() => selectSection('sftp')}
+        onDoubleClick={(event) => event.stopPropagation()}
         title='SFTP'
         aria-pressed={sftpActive}
         aria-expanded={navOpen}
@@ -66,7 +66,26 @@ export function TitleBar() {
       >
         <FolderOpen size={15} className='text-accent' /> SFTP
       </button>
-      <div className='flex min-w-0 flex-1 items-center px-2'><TabBar /></div>
+      <div
+        data-tauri-drag-region
+        className='flex min-w-0 flex-1 items-center px-2'
+      >
+        <TabBar />
+      </div>
+      {/* Polite announcements for background status so state changes reach
+          assistive tech without stealing focus. */}
+      <span className='sr-only' role='status' aria-live='polite'>
+        {[
+          runningTunnels > 0
+            ? `${runningTunnels} active tunnel${runningTunnels === 1 ? '' : 's'}`
+            : null,
+          activeTransfers > 0
+            ? `${activeTransfers} active transfer${activeTransfers === 1 ? '' : 's'}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(', ')}
+      </span>
       {runningTunnels > 0 && (
         <div
           title={`${runningTunnels} active tunnel${runningTunnels === 1 ? '' : 's'}`}
@@ -80,6 +99,7 @@ export function TitleBar() {
         <button
           type='button'
           onClick={() => selectSection('sftp')}
+          onDoubleClick={(event) => event.stopPropagation()}
           title={`${activeTransfers} active transfer${activeTransfers === 1 ? '' : 's'} — open SFTP`}
           aria-label={`${activeTransfers} active transfer${activeTransfers === 1 ? '' : 's'}, open SFTP`}
           className='mr-2 flex shrink-0 items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] text-accent hover:brightness-110'
@@ -147,15 +167,21 @@ function SyncIndicator() {
   const { Icon, className, label, spin } = config[status] ?? config.idle;
 
   return (
-    <button
-      type='button'
-      title={label}
-      aria-label={label}
-      onClick={() => activate()}
-      className={`mr-2 flex shrink-0 items-center rounded-md p-1.5 transition-colors hover:bg-raised ${className}`}
-    >
-      <Icon size={15} className={spin ? 'animate-spin' : undefined} />
-    </button>
+    <>
+      <span className='sr-only' role='status' aria-live='polite'>
+        {status === 'idle' ? '' : `Sync: ${label}`}
+      </span>
+      <button
+        type='button'
+        title={label}
+        aria-label={label}
+        onClick={() => activate()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        className={`mr-2 flex shrink-0 items-center rounded-md p-1.5 transition-colors hover:bg-raised ${className}`}
+      >
+        <Icon size={15} className={spin ? 'animate-spin' : undefined} />
+      </button>
+    </>
   );
 }
 
@@ -176,6 +202,7 @@ function WindowButton({
       aria-label={label}
       title={label}
       onClick={onClick}
+      onDoubleClick={(event) => event.stopPropagation()}
       className={
         destructive
           ? 'flex w-12 items-center justify-center text-muted transition-colors hover:bg-danger hover:text-white'
