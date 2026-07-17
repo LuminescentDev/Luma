@@ -1,54 +1,155 @@
 # Luma
 
-A lightweight, cross-platform terminal and SSH client for Windows, macOS, and Linux.
+A lightweight, cross-platform terminal and SSH client for Windows, macOS, and
+Linux, built with Tauri instead of Electron.
 
-Luma aims to sit between Tabby and Electerm: a modern, minimal interface with
-materially lower memory usage than Electron-based terminals, saved SSH hosts
-and groups, local terminals, and optional end-to-end-encrypted sync — no
-account, no paid cloud service.
+Luma combines local and serial terminals, saved SSH connections, SFTP, and
+encrypted configuration sync in a modern desktop interface. It requires no
+Luma account or paid cloud service.
 
-> **Status: early development.** The application shell, settings storage,
-> theming, and CI foundation are in place. Terminal rendering, SSH, SFTP, and
-> sync are being built in milestones — see [Roadmap](#roadmap).
+> **Status: early development.** Most core workflows are implemented, but the
+> project has not reached a stable release. Expect rough edges and breaking
+> changes.
+
+## Features
+
+### Terminals
+
+- Local terminals backed by native PTYs and rendered with xterm.js
+- Automatic shell discovery plus configurable shell profiles, working
+  directories, and environment variables
+- Tabs and horizontal or vertical split panes
+- Terminal search, clickable links, configurable scrollback, and WebGL
+  rendering where available
+- Serial terminals with selectable port and baud rate
+- Optional workspace persistence and restoration
+
+### SSH and host management
+
+- Saved hosts, groups, favorites, tags, search, and recent connections
+- System OpenSSH integration with agent, password, interactive, and private-key
+  authentication
+- Encrypted and passphrase-protected private keys, public-key derivation, and
+  SSH certificates
+- ProxyJump, agent forwarding, keepalive, startup commands, working
+  directories, and per-host environment variables
+- Explicit unknown-host confirmation and changed-host-key warnings
+- Import from OpenSSH config and Termius vault exports
+- Parsed connection errors with reconnect support
+
+### SFTP and productivity
+
+- Dual-pane local/remote SFTP browser
+- Create, rename, and delete files and directories
+- Multi-file upload and download with progress, cancellation, and retry
+- Saved snippets with a parameterized snippet runner
+- Local and remote port forwarding
+- Searchable command palette
+
+Directory transfers are not implemented yet; transfer selections currently
+operate on files.
+
+### Security, backup, and updates
+
+- SQLite-backed settings and metadata with versioned migrations
+- Private keys and passphrases encrypted with Argon2id and
+  XChaCha20-Poly1305
+- Optional OS keychain storage through Windows Credential Manager, macOS
+  Keychain, or Linux Secret Service
+- End-to-end-encrypted sync through a local folder, WebDAV, or GitHub Gist
+- Sync conflict detection and resolution, plus encrypted backup import/export
+- Redacting application logs and narrowly scoped Tauri capabilities
+- Signed in-app updates and cross-platform release automation
 
 ## Stack
 
-- **Shell:** Tauri 2 (Rust backend, WebView frontend)
-- **Frontend:** React + TypeScript + Vite, Zustand, TanStack Query, Tailwind CSS, Radix UI, xterm.js (upcoming)
-- **Backend:** Tokio, SQLite via SQLx (versioned migrations), portable-pty (upcoming), system OpenSSH (upcoming)
-- **Security:** OS keychain integration, Argon2id + XChaCha20-Poly1305 encrypted vault for sync (upcoming)
+- **Desktop:** Tauri 2, Rust, Tokio
+- **Frontend:** React 19, TypeScript, Vite, Zustand, TanStack Query, Tailwind
+  CSS, Radix UI, xterm.js
+- **Backend:** portable-pty, system OpenSSH, SQLite via SQLx, russh-sftp,
+  serialport
+- **Security:** keyring, Argon2id, XChaCha20-Poly1305
+
+Terminal byte streams flow directly between the Rust backend and xterm.js
+through Tauri channels. React stores session metadata, not terminal output.
 
 ## Development
 
-Prerequisites: [Rust](https://rustup.rs), [Node.js](https://nodejs.org) 22+, [pnpm](https://pnpm.io), and the
-[Tauri platform prerequisites](https://tauri.app/start/prerequisites/) for your OS.
+### Prerequisites
+
+- [Rust](https://rustup.rs)
+- [Node.js](https://nodejs.org) 22 or newer
+- [pnpm](https://pnpm.io)
+- The [Tauri platform prerequisites](https://tauri.app/start/prerequisites/)
+  for your operating system
+- A system OpenSSH client for SSH connections
+
+On Linux, serial support also requires the libudev development package (for
+example, `libudev-dev` on Ubuntu).
+
+### Run locally
 
 ```sh
 pnpm install
-pnpm tauri dev      # run the app
-pnpm build          # typecheck + build frontend
-cargo test --manifest-path src-tauri/Cargo.toml    # backend tests
+pnpm tauri dev
 ```
 
-## Design principles
+Run only the browser frontend with:
 
-- Terminal byte streams flow directly between Rust and xterm.js over Tauri
-  channels — never through React state.
-- Secrets never land in plain SQLite columns, logs, or sync payloads; sync
-  providers only ever receive encrypted blobs.
-- SSH host keys are never accepted automatically.
-- Strict Tauri capability permissions; no unrestricted filesystem or process
-  APIs exposed to the frontend.
+```sh
+pnpm dev
+```
 
-## Roadmap
+Backend-dependent features are unavailable in that mode.
 
-1. ✅ Foundation — app shell, sidebar, tabs, settings storage, SQLite migrations, theming, redacting logger, CI
-2. Local terminals — PTY backend, xterm.js, shell profiles, search, scrollback
-3. SSH — hosts, groups, OpenSSH adapter, known-host verification, `~/.ssh/config` import, ProxyJump
-4. Productivity — split panes, command palette, snippets, port forwarding
-5. Encryption & sync — vault, OS keychain, local folder / WebDAV / GitHub Gist providers
-6. SFTP — dual-pane browser, transfer queue
-7. Release hardening — auto-update, signing, benchmarks, accessibility
+### Checks and builds
+
+```sh
+pnpm typecheck
+pnpm build
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
+pnpm tauri build
+```
+
+CI runs the frontend build, formatting, Clippy, Rust tests, and native bundle
+builds on Windows, macOS, and Linux.
+
+## Project layout
+
+```text
+src/                    React application
+  features/             Terminal, SSH, SFTP, sync, settings, and other UI
+  lib/                  Typed frontend/backend command adapters
+  stores/               Zustand application state
+src-tauri/
+  src/commands/         Tauri command boundary
+  src/storage/          SQLite repositories
+  src/terminal/         PTY lifecycle and streaming
+  src/ssh/              OpenSSH, known-host, and tunnel support
+  src/sftp/             File operations and transfers
+  src/sync/             Encryption, merge logic, and sync providers
+  migrations/           Versioned SQLite schema
+docs/                   Build and release documentation
+scripts/                Benchmark and Termius export helpers
+```
+
+See [the build plan](docs/BUILD_PLAN.md) for the product architecture and
+[the release guide](docs/RELEASING.md) for signing and automated release
+details. The Termius export helper is documented in
+[scripts/README.md](scripts/README.md).
+
+## Releases
+
+Release Please manages versions, changelogs, tags, and draft GitHub releases
+from Conventional Commits. Release workflows build installers for Windows,
+macOS, and Linux, sign updater artifacts, generate checksums, and publish the
+release after verification.
+
+The updater values in the checked-in Tauri configuration are CI placeholders.
+A local production bundle must provide its own valid updater endpoint and
+public key; see [the release guide](docs/RELEASING.md).
 
 ## License
 
