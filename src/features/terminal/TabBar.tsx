@@ -242,7 +242,11 @@ export function TabBar() {
       dragging: false,
       targetId: null,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // NB: pointer capture is deliberately NOT set here. Capturing on the outer
+    // wrapper makes Chromium/WebView2 retarget the subsequent compatibility
+    // `click` event to the capturing element, so the inner role="tab" button's
+    // onClick never fires and a plain click can no longer activate the tab.
+    // Capture is instead taken once a real drag begins (see moveTabDrag).
   };
 
   const moveTabDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -257,6 +261,12 @@ export function TabBar() {
       if (distance < 5) return;
       drag.dragging = true;
       suppressTabClick.current = true;
+      // Take pointer capture only now that the gesture is a genuine drag, so
+      // pointermove keeps tracking outside the wrapper. Plain clicks never reach
+      // this branch and therefore never suffer click retargeting.
+      if (!event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }
       beginVisualDrag(drag.sourceId, drag.title, event.clientX, event.clientY);
     }
 

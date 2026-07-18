@@ -1,10 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { PaneNode, TerminalSession, WorkspaceTab } from "../../types";
 import {
   parseSnapshot,
   serializeWorkspace,
+  startSnapshotPersistence,
   type WorkspaceSnapshot,
 } from "./sessionSnapshot";
+import {
+  fireCloseRequested,
+  getCurrentWindow,
+  setInvoke,
+  wasCloseListenerActiveAtClose,
+} from "../../test/tauriMock";
+import { SETTING_KEYS } from "../../types";
 
 function localSession(id: string): TerminalSession {
   return {
@@ -180,5 +188,43 @@ describe("parseSnapshot fails closed", () => {
     expect(parsed).not.toBeNull();
     expect(parsed.activeTabIndex).toBe(0);
     expect(parsed.tabs).toHaveLength(1);
+  });
+});
+
+describe("startSnapshotPersistence close handling", () => {
+  it("flushes the snapshot and lets the window close on a close request", async () => {
+    vi.useFakeTimers();
+    const writes: unknown[] = [];
+    setInvoke((cmd, args) => {
+      if (cmd === "settings_set") {
+        if (args.key === SETTING_KEYS.workspaceSnapshot) writes.push(args.value);
+        return undefined;
+      }
+      return undefined;
+    });
+
+    const stop = startSnapshotPersistence();
+    // Let onCloseRequested's promise resolve so the listener is registered.
+    await vi.runOnlyPendingTimersAsync();
+
+    const win = getCurrentWindow();
+    // The user clicks close -> the OS emits close-requested.
+    await fireCloseRequested();
+    // The handler prevents the first close, flushes, then schedules the real one.
+    expect(win.destroy).not.toHaveBeenCalled();
+
+    // Drain the deferred close (setTimeout(0)) and the async close() it issues.
+    await vi.runOnlyPendingTimersAsync();
+
+    // The snapshot was persisted before closing.
+    expect(writes.length).toBeGreaterThan(0);
+    // The listener was detached before re-issuing the close, so Windows won't
+    // swallow it — the regression guard.
+    expect(wasCloseListenerActiveAtClose()).toBe(false);
+    // The window actually closed.
+    expect(win.destroy).toHaveBeenCalled();
+
+    stop();
+    vi.useRealTimers();
   });
 });

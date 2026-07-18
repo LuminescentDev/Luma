@@ -244,9 +244,16 @@ export function startSnapshotPersistence(): () => void {
   // there are zero tabs, so closing everything then quitting clears stale tabs.
   schedule();
 
-  // Flush the latest snapshot before the window closes. The final close must
-  // be scheduled after this prevented close-request returns; Windows ignores
-  // a recursive close issued from inside the active native callback.
+  // Flush the latest snapshot before the window closes, then let the close go
+  // through. Two Windows constraints shape this sequence, and satisfying only
+  // one of them leaves the close button inert:
+  //   1. The real close must be *deferred* (setTimeout) so it runs after this
+  //      prevented close-request returns — a recursive close issued from inside
+  //      the active native callback is dropped.
+  //   2. The close-requested listener must be *removed* before that real close.
+  //      Re-issuing the close while the listener is still registered means the
+  //      request is intercepted again and silently ignored on Windows, so the
+  //      window never actually closes.
   let closing = false;
   let unlistenClose: (() => void) | undefined;
   const win = getCurrentWindow();
@@ -258,6 +265,10 @@ export function startSnapshotPersistence(): () => void {
       try {
         await writeSnapshot();
         window.setTimeout(() => {
+          // Detach before the final close so the re-issued request isn't
+          // swallowed by this still-active listener (see note 2 above).
+          unlistenClose?.();
+          unlistenClose = undefined;
           void win.close().catch(() => {
             closing = false;
           });
