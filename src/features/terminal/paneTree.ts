@@ -55,6 +55,7 @@ export function splitLeaf(
   targetId: string,
   direction: SplitDirection,
   newLeaf: PaneNode,
+  placement: "before" | "after" = "after",
 ): PaneNode {
   if (node.kind === "leaf") {
     if (node.id !== targetId) return node;
@@ -62,7 +63,7 @@ export function splitLeaf(
       kind: "split",
       id: uid(),
       direction,
-      children: [node, newLeaf],
+      children: placement === "before" ? [newLeaf, node] : [node, newLeaf],
       sizes: [50, 50],
     };
   }
@@ -75,7 +76,8 @@ export function splitLeaf(
     const half = node.sizes[idx] / 2;
     const children = [...node.children];
     const sizes = [...node.sizes];
-    children.splice(idx + 1, 0, newLeaf);
+    const insertionIndex = placement === "before" ? idx : idx + 1;
+    children.splice(insertionIndex, 0, newLeaf);
     sizes.splice(idx, 1, half, half);
     return { ...node, children, sizes };
   }
@@ -86,7 +88,10 @@ export function splitLeaf(
       kind: "split",
       id: uid(),
       direction,
-      children: [node.children[idx], newLeaf],
+      children:
+        placement === "before"
+          ? [newLeaf, node.children[idx]]
+          : [node.children[idx], newLeaf],
       sizes: [50, 50],
     };
     return { ...node, children };
@@ -95,7 +100,7 @@ export function splitLeaf(
   return {
     ...node,
     children: node.children.map((child) =>
-      splitLeaf(child, targetId, direction, newLeaf),
+      splitLeaf(child, targetId, direction, newLeaf, placement),
     ),
   };
 }

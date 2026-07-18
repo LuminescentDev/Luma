@@ -24,4 +24,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-~/.tauri/*
+# Never allow a shell-style home directory accidentally created in the repo.
+~/

@@ -38,6 +38,7 @@ pub use tunnels::{
 };
 
 pub(crate) const CAPTURE_LIMIT_BYTES: usize = 16 * 1024;
+pub(crate) const SSH_AUTHENTICATED_MARKER: &[u8] = b"__LUMA_SSH_AUTHENTICATED__";
 const MAX_PROXY_JUMP_DEPTH: usize = 8;
 
 type DataCallback = Box<dyn FnMut(&[u8]) + Send + 'static>;
@@ -142,15 +143,13 @@ struct AuthenticationObserver {
 
 impl AuthenticationObserver {
     fn observe(&mut self, bytes: &[u8]) -> bool {
-        const MARKERS: [&[u8]; 1] = [b"__LUMA_SSH_AUTHENTICATED__"];
         const MAX_TAIL_BYTES: usize = 128;
 
         self.tail.extend_from_slice(bytes);
-        let authenticated = MARKERS.iter().any(|marker| {
-            self.tail
-                .windows(marker.len())
-                .any(|window| window == *marker)
-        });
+        let authenticated = self
+            .tail
+            .windows(SSH_AUTHENTICATED_MARKER.len())
+            .any(|window| window == SSH_AUTHENTICATED_MARKER);
         if self.tail.len() > MAX_TAIL_BYTES {
             self.tail.drain(..self.tail.len() - MAX_TAIL_BYTES);
         }
@@ -196,11 +195,14 @@ impl SshEngine for OpenSshEngine<'_> {
     ) -> Result<String> {
         let multiplex_control = prepare_multiplex_control();
         let arguments = build_interactive_arguments(&config, multiplex_control.as_deref());
+        let remote_os_probe_arguments = build_remote_os_probe_arguments(&config);
         let remote_os_target = RemoteOsTarget::new(
             config.executable.clone(),
             config.hostname.clone(),
             config.port,
             config.username.clone(),
+            remote_os_probe_arguments,
+            askpass_environment(&config)?,
         );
         let ephemeral_identity_file = config.ephemeral_identity_file.clone();
         let captured = Arc::new(Mutex::new(Vec::with_capacity(CAPTURE_LIMIT_BYTES)));
@@ -501,6 +503,28 @@ fn build_interactive_arguments(
     arguments.push(config.hostname.clone());
     if let Some(command) = &config.startup_command {
         arguments.push(command.clone());
+    }
+    arguments
+}
+
+/// Build a bounded second-connection probe for platforms whose OpenSSH client
+/// does not support ControlMaster (notably Windows). It may reuse public-key or
+/// agent authentication, including Luma's askpass key-passphrase helper, but
+/// can never fall back to password or keyboard-interactive authentication.
+fn build_remote_os_probe_arguments(config: &SshConnectionConfig) -> Vec<String> {
+    let mut arguments = build_connection_options(config, true);
+    arguments.insert(0, "-T".into());
+    for option in [
+        "ClearAllForwardings=yes",
+        "PasswordAuthentication=no",
+        "KbdInteractiveAuthentication=no",
+        "HostbasedAuthentication=no",
+        "GSSAPIAuthentication=no",
+        "ConnectionAttempts=1",
+        "ConnectTimeout=5",
+    ] {
+        arguments.push("-o".into());
+        arguments.push(option.into());
     }
     arguments
 }
@@ -1085,6 +1109,28 @@ mod tests {
         let mut observer = AuthenticationObserver::default();
         assert!(!observer.observe(b"__LUMA_SSH_AUTH"));
         assert!(observer.observe(b"ENTICATED__\r\n"));
+    }
+
+    #[test]
+    fn remote_os_probe_reuses_keys_but_disables_interactive_authentication() {
+        let mut config = base_config();
+        config.identity_file = Some("C:/keys/id_ed25519".into());
+        config.fallback_password_identity_id = Some("password-entry".into());
+
+        let arguments = build_remote_os_probe_arguments(&config);
+        for required in [
+            "-T",
+            "IdentitiesOnly=yes",
+            "NumberOfPasswordPrompts=0",
+            "PasswordAuthentication=no",
+            "KbdInteractiveAuthentication=no",
+            "ConnectTimeout=5",
+        ] {
+            assert!(
+                arguments.iter().any(|argument| argument == required),
+                "missing {required}: {arguments:?}"
+            );
+        }
     }
 
     #[test]

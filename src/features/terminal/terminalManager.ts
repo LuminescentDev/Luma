@@ -62,6 +62,17 @@ export type SessionExit = {
 /** Normalized spawn result across local and SSH backends. */
 export type ManagedSpawnResult = { sessionId: string; title: string };
 
+/** Message of the sentinel error thrown by spawnBackend when a spawn attempt is
+ * abandoned: the session was disposed mid-spawn, or a newer restart superseded
+ * this attempt. Callers (the session store) treat it as a non-error — the
+ * winning attempt (or disposal) owns the session's final state. */
+export const SPAWN_ABANDONED = "luma:spawn-abandoned";
+
+/** Whether a rejection is the abandoned-spawn sentinel (see SPAWN_ABANDONED). */
+export function isSpawnAbandoned(error: unknown): boolean {
+  return error instanceof Error && error.message === SPAWN_ABANDONED;
+}
+
 /*
  * Owns every xterm.js instance and its backend PTY session, entirely outside
  * React. React components only mount/unmount host elements and read session
@@ -146,6 +157,12 @@ type ManagedSession = {
   callbacks: SessionCallbacks;
   pendingInput: string[];
   exited: boolean;
+  /** Monotonic token identifying the current spawn attempt. Bumped on every
+   * spawnBackend() call (initial open + each restart). Exit events and spawn
+   * completions are matched against the generation that produced them so a
+   * stale attempt's exit can never reset a newer attempt, and a late-resolving
+   * invoke from a superseded attempt is discarded. */
+  spawnGeneration: number;
   disposed: boolean;
   sshTranscript: string;
   lastPromptSignature: string;
@@ -253,6 +270,27 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error("unknown session");
   const { term, descriptor } = session;
+  // Claim this attempt. Any exit/completion tagged with an older generation
+  // belongs to a superseded spawn (restart race) and is ignored below.
+  const generation = ++session.spawnGeneration;
+  session.exited = false;
+  session.backendId = null;
+
+  /* A backend exit can arrive BEFORE its spawn invoke resolves (a command that
+   * exits instantly, or an SSH connection that closes during auth). Route every
+   * exit through here so the ordering rules hold for local, SSH, and serial:
+   *  - Exits from a superseded attempt (generation moved on) are dropped.
+   *  - Exits after disposal are dropped (nothing to report to).
+   *  - Otherwise mark the session exited exactly once. When the invoke later
+   *    resolves it checks session.exited and refuses to resurrect the session. */
+  const handleExit = (exit: SessionExit) => {
+    if (session.spawnGeneration !== generation || session.disposed) return;
+    if (session.exited) return;
+    session.exited = true;
+    session.backendId = null;
+    session.callbacks.onExit(exit);
+  };
+
   if (descriptor.kind === "ssh") {
     session.sshTranscript = "";
     session.lastPromptSignature = "";
@@ -267,8 +305,12 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
     const text = typeof data === "string" ? data : new TextDecoder().decode(data);
     session.sshTranscript = (session.sshTranscript + text).slice(-16_384);
     const readableTranscript = session.sshTranscript
+      // Matching terminal control characters (ESC/BEL) is intentional here: this
+      // strips OSC and CSI escape sequences from the transcript before scanning it.
+      // oxlint-disable-next-line no-control-regex
       .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-      .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "");
+      // oxlint-disable-next-line no-control-regex
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
     const reportStage = (stage: ManagedSession["sshStage"]) => {
       if (session.sshStage === stage) return;
       session.sshStage = stage;
@@ -315,28 +357,21 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
       descriptor.config,
       // Serial bytes flow straight into xterm.js, never through React state.
       handleData,
-      (code) => {
-        session.exited = true;
-        session.backendId = null;
-        // Serial reports null on a clean disconnect; the store maps null/0 to
-        // the "disconnected" state (no error category).
-        session.callbacks.onExit({ code });
-      },
+      // Serial reports null on a clean disconnect; the store maps null/0 to
+      // the "disconnected" state (no error category).
+      (code) => handleExit({ code }),
     );
     result = { sessionId: spawned.sessionId, title: spawned.portName };
   } else if (descriptor.kind === "ssh") {
     const spawned = await spawnSsh(
       { hostId: descriptor.hostId, cols: term.cols, rows: term.rows },
       handleData,
-      (payload: SshExitPayload) => {
-        session.exited = true;
-        session.backendId = null;
-        session.callbacks.onExit({
+      (payload: SshExitPayload) =>
+        handleExit({
           code: payload.code,
           errorCategory: payload.errorCategory,
           errorMessage: payload.errorMessage,
-        });
-      },
+        }),
       (osId, prettyName) => session.callbacks.onRemoteOs(osId, prettyName),
     );
     result = { sessionId: spawned.sessionId, title: spawned.title };
@@ -344,22 +379,29 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
     const spawned = await spawnPty(
       { cols: term.cols, rows: term.rows, ref: descriptor.ref },
       handleData,
-      (code) => {
-        session.exited = true;
-        session.backendId = null;
-        session.callbacks.onExit({ code });
-      },
+      (code) => handleExit({ code }),
     );
     result = { sessionId: spawned.sessionId, title: spawned.shellName };
   }
 
   if (session.disposed) {
     // Session was closed while the backend was spawning.
-    void killBackend(descriptor, result.sessionId);
-    throw new Error("session closed");
+    void killBackend(descriptor, result.sessionId).catch(() => {});
+    throw new Error(SPAWN_ABANDONED);
+  }
+  if (session.spawnGeneration !== generation) {
+    // A newer spawn (restart) superseded this attempt while it was in flight.
+    // The newer attempt owns the session; kill the backend we just orphaned.
+    void killBackend(descriptor, result.sessionId).catch(() => {});
+    throw new Error(SPAWN_ABANDONED);
+  }
+  if (session.exited) {
+    // The backend already exited before this invoke resolved. Its exit was
+    // reported by handleExit; do NOT install the (now-dead) backend id, reset
+    // the exited flag, or flush pendingInput into a session that is gone.
+    return result;
   }
   session.backendId = result.sessionId;
-  session.exited = false;
   for (const chunk of session.pendingInput.splice(0)) {
     void writeBackend(descriptor, result.sessionId, chunk);
   }
@@ -426,6 +468,7 @@ export const terminalManager = {
       callbacks,
       pendingInput: [],
       exited: false,
+      spawnGeneration: 0,
       disposed: false,
       sshTranscript: "",
       lastPromptSignature: "",
@@ -466,7 +509,9 @@ export const terminalManager = {
     try {
       return await spawnBackend(sessionId);
     } catch (error) {
-      if (!session.disposed) session.exited = true;
+      // An abandoned attempt (disposal / superseding restart) must not touch the
+      // shared `exited` flag: it now belongs to the disposal or the newer spawn.
+      if (!isSpawnAbandoned(error) && !session.disposed) session.exited = true;
       throw error;
     }
   },
@@ -489,6 +534,11 @@ export const terminalManager = {
     } else {
       host.appendChild(existing);
     }
+    // fit() must run before spawnBackend reads term.cols/rows. Without this
+    // synchronous fit a shell can print its first prompt into xterm's default
+    // 80-column grid, leaving right-aligned prompt segments stranded near the
+    // middle even after a later resize.
+    this.fitSession(sessionId);
     requestAnimationFrame(() => {
       this.fitSession(sessionId);
       session.term.focus();
@@ -500,6 +550,10 @@ export const terminalManager = {
       if (reattaching) {
         session.term.refresh(0, session.term.rows - 1);
       }
+      // Creating a tab and dropping one into a split both rebuild flex
+      // geometry. The first frame can still reflect the old allocation, so
+      // fit again once the new tree has completed a full layout cycle.
+      requestAnimationFrame(() => this.fitSession(sessionId));
     });
   },
 

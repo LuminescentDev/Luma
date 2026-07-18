@@ -7,6 +7,8 @@ import type {
 } from "../../types";
 import { useSessionStore } from "../../stores/sessionStore";
 import { PaneView } from "./PaneView";
+import { useTabDragStore } from "../../stores/tabDragStore";
+import { cn } from "../../lib/utils";
 
 /*
  * Renders a tab's split tree. Splits become flex containers whose children are
@@ -21,13 +23,17 @@ export function PaneTreeView({
   sessions: TerminalSession[];
 }) {
   const leafCount = countLeaves(tab.root);
+  const sourceTabId = useTabDragStore((s) => s.sourceTabId);
+  const targetTabId = useTabDragStore((s) => s.targetTabId);
+  const showDropPreview = Boolean(sourceTabId && targetTabId === tab.id);
   return (
-    <div className="h-full w-full p-1">
+    <div className="relative h-full w-full p-1">
       <PaneNodeView
         node={tab.root}
         tab={tab}
         sessions={sessions}
         multiPane={leafCount > 1}
+        showDropPreview={showDropPreview}
       />
     </div>
   );
@@ -44,24 +50,51 @@ function PaneNodeView({
   tab,
   sessions,
   multiPane,
+  showDropPreview,
 }: {
   node: PaneNode;
   tab: WorkspaceTab;
   sessions: TerminalSession[];
   multiPane: boolean;
+  showDropPreview: boolean;
 }) {
   const focusPane = useSessionStore((s) => s.focusPane);
+  const targetPaneId = useTabDragStore((s) => s.targetPaneId);
+  const zone = useTabDragStore((s) => s.zone);
 
   if (node.kind === "leaf") {
     const session = sessions.find((s) => s.id === node.sessionId);
     if (!session) return null;
+    const selected = targetPaneId === node.id;
     return (
-      <PaneView
-        session={session}
-        focused={tab.activePaneId === node.id}
-        showFocusRing={multiPane}
-        onFocus={() => focusPane(tab.id, node.id)}
-      />
+      <div className="relative h-full min-h-0 w-full min-w-0">
+        <PaneView
+          session={session}
+          focused={tab.activePaneId === node.id}
+          showFocusRing={multiPane}
+          onFocus={() => focusPane(tab.id, node.id)}
+        />
+        {showDropPreview && (
+          <div
+            data-tab-drop-pane={node.id}
+            className="absolute inset-0 z-40 rounded-lg border border-dashed border-accent/35 bg-background/10"
+          >
+            {selected && zone && (
+              <div
+                className={cn(
+                  "absolute flex items-center justify-center border-2 border-accent bg-accent/30 text-sm font-semibold text-white shadow-glow backdrop-blur-[1px]",
+                  zone === "left" && "inset-y-0 left-0 w-1/2 rounded-l-lg",
+                  zone === "right" && "inset-y-0 right-0 w-1/2 rounded-r-lg",
+                  zone === "top" && "inset-x-0 top-0 h-1/2 rounded-t-lg",
+                  zone === "bottom" && "inset-x-0 bottom-0 h-1/2 rounded-b-lg",
+                )}
+              >
+                Drop here
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -81,6 +114,7 @@ function PaneNodeView({
               tab={tab}
               sessions={sessions}
               multiPane={multiPane}
+              showDropPreview={showDropPreview}
             />
           </div>
           {index < node.children.length - 1 && (

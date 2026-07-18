@@ -115,6 +115,9 @@ export const SETTING_KEYS = {
   /** Device-local serialized workspace snapshot (tabs + layout + restore
    * descriptors). Never synced. */
   workspaceSnapshot: "workspace.snapshot",
+  /** Device-local saved workspace templates (named grouped-tab layouts, stored
+   * as SnapshotPaneNode roots — metadata only, never terminal bytes). */
+  workspaceTemplates: "workspace.templates",
   /** Device-local toggle: restore the previous workspace on launch. Never
    * synced. */
   restoreSessions: "workspace.restoreSessions",

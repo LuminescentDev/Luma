@@ -1,10 +1,10 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect, type ComponentType } from "react";
 import { Sidebar } from "../components/Sidebar";
 import { Workspace } from "../features/terminal/Workspace";
-import { SettingsScreen } from "../features/settings/SettingsScreen";
 import { terminalManager } from "../features/terminal/terminalManager";
 import { useUiStore } from "../stores/uiStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { useTemplateStore } from "../stores/templateStore";
 import { useTunnelStore } from "../stores/tunnelStore";
 import { useSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
@@ -16,18 +16,54 @@ import {
 } from "../features/terminal/sessionSnapshot";
 import { SETTING_KEYS } from "../types";
 import { TitleBar } from "../components/TitleBar";
-import { KeychainScreen } from "../features/keychain/KeychainScreen";
 import { HostsScreen } from "../features/hosts/HostsScreen";
 import { SectionScreen } from "../features/workspace/SectionScreen";
 import { SnippetsScreen } from "../features/snippets/SnippetsScreen";
 import { SnippetRunner } from "../features/snippets/SnippetRunner";
 import { CommandPalette } from "../features/palette/CommandPalette";
 import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
-import { SyncDialogs } from "../features/sync/SyncDialogs";
-import { SftpScreen } from "../features/sftp/SftpScreen";
-import { UpdateBanner } from "../features/updater/UpdateBanner";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { hasPlatformModifier } from "../lib/platform";
+
+/*
+ * Code-split the heavier, rarely-first-viewed surfaces (settings, SFTP,
+ * keychain) and the always-mounted-but-usually-idle sync/updater dialogs into
+ * their own chunks. This keeps them (and their dependency subtrees) out of the
+ * initial main bundle; each loads on demand behind a Suspense boundary. The
+ * terminal workspace and hosts screen stay eager since one of them is always the
+ * first thing shown.
+ */
+const named = <T extends string>(
+  loader: () => Promise<Record<T, ComponentType>>,
+  name: T,
+) => lazy(() => loader().then((m) => ({ default: m[name] })));
+
+const SettingsScreen = named(
+  () => import("../features/settings/SettingsScreen"),
+  "SettingsScreen",
+);
+const KeychainScreen = named(
+  () => import("../features/keychain/KeychainScreen"),
+  "KeychainScreen",
+);
+const SftpScreen = named(() => import("../features/sftp/SftpScreen"), "SftpScreen");
+const SyncDialogs = named(
+  () => import("../features/sync/SyncDialogs"),
+  "SyncDialogs",
+);
+const UpdateBanner = named(
+  () => import("../features/updater/UpdateBanner"),
+  "UpdateBanner",
+);
+
+/** Minimal centered fallback shown while a lazy screen chunk loads. */
+function ScreenFallback() {
+  return (
+    <div className="flex h-full items-center justify-center bg-background text-sm text-muted">
+      Loading…
+    </div>
+  );
+}
 
 export function Layout() {
   // Applies the persisted theme to <html> and tracks system changes.
@@ -49,6 +85,11 @@ export function Layout() {
   // Reflect any tunnels the backend already has running (e.g. after a reload).
   useEffect(() => {
     void useTunnelStore.getState().hydrate();
+  }, []);
+
+  // Load saved workspace templates once so the New tab launcher can list them.
+  useEffect(() => {
+    void useTemplateStore.getState().load();
   }, []);
 
   // Automatic, opt-out update check on launch. Runs one silent check after a
@@ -188,18 +229,34 @@ export function Layout() {
           </div>
           {mainView === "hosts" && <HostsScreen />}
           {mainView === "logs" && <SectionScreen section="logs" />}
-          {mainView === "sftp" && <SftpScreen />}
+          {mainView === "sftp" && (
+            <Suspense fallback={<ScreenFallback />}>
+              <SftpScreen />
+            </Suspense>
+          )}
           {mainView === "snippets" && <SnippetsScreen />}
-          {mainView === "settings" && <SettingsScreen />}
-          {mainView === "keychain" && <KeychainScreen />}
+          {mainView === "settings" && (
+            <Suspense fallback={<ScreenFallback />}>
+              <SettingsScreen />
+            </Suspense>
+          )}
+          {mainView === "keychain" && (
+            <Suspense fallback={<ScreenFallback />}>
+              <KeychainScreen />
+            </Suspense>
+          )}
         </div>
         </main>
       </div>
       <CommandPalette />
       <SerialConnectDialog />
       <SnippetRunner />
-      <SyncDialogs />
-      <UpdateBanner />
+      {/* Always mounted but idle until triggered; a null fallback keeps them
+          invisible while their chunks load. */}
+      <Suspense fallback={null}>
+        <SyncDialogs />
+        <UpdateBanner />
+      </Suspense>
     </div>
   );
 }

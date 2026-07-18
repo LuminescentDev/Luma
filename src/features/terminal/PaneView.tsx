@@ -40,11 +40,22 @@ export function PaneView({
     if (!host) return;
 
     terminalManager.attach(session.id, host);
-    const observer = new ResizeObserver(() =>
-      terminalManager.fitSession(session.id),
-    );
+    let fitFrame: number | null = null;
+    const scheduleFit = () => {
+      if (fitFrame !== null) cancelAnimationFrame(fitFrame);
+      fitFrame = requestAnimationFrame(() => {
+        fitFrame = null;
+        terminalManager.fitSession(session.id);
+      });
+    };
+    const observer = new ResizeObserver(scheduleFit);
     observer.observe(host);
+    // ResizeObserver can deliver its initial notification while a newly
+    // created tab or a reparented split is still using the previous flex
+    // geometry. Fit once explicitly after the committed layout as well.
+    scheduleFit();
     return () => {
+      if (fitFrame !== null) cancelAnimationFrame(fitFrame);
       observer.disconnect();
       terminalManager.detach(session.id);
     };

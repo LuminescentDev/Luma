@@ -16,6 +16,7 @@ import {
 import { parseLumaError } from "../lib/hosts";
 import {
   terminalManager,
+  isSpawnAbandoned,
   type SessionExit,
   type SpawnDescriptor,
 } from "../features/terminal/terminalManager";
@@ -68,6 +69,27 @@ type SessionState = {
   /** Focus the pane hosting this session (used by the command palette). */
   focusSession: (id: string) => void;
   splitActivePane: (direction: SplitDirection) => Promise<void>;
+  /** Split the active pane and spawn the given descriptor (an ad-hoc different
+   * connection) instead of duplicating the source pane. SSH descriptors still
+   * run the host-key preflight and surface per-pane errors identically. */
+  splitActivePaneWith: (
+    direction: SplitDirection,
+    restore: RestoreDescriptor,
+  ) => Promise<void>;
+  /** Graft the source tab's entire pane tree into the target tab as a new split,
+   * producing one grouped tab. Session and leaf pane ids are preserved so xterm
+   * instances re-attach; the source tab is removed. No-op on unknown/identical
+   * ids. */
+  mergeTabs: (
+    sourceTabId: string,
+    targetTabId: string,
+    direction?: SplitDirection,
+    placement?: "before" | "after",
+    targetPaneId?: string,
+  ) => void;
+  /** Open ONE new grouped tab reproducing a saved template layout, spawning
+   * every leaf via the restore path with fresh session/pane ids. */
+  openTemplate: (root: SnapshotPaneNode) => void;
   /** Rebuild the workspace from a persisted snapshot: recreate every tab's
    * pane-tree layout with fresh ids and re-spawn each pane's descriptor. */
   restoreFromSnapshot: (snapshot: WorkspaceSnapshot) => void;
@@ -323,15 +345,27 @@ async function launch(
       descriptor,
       makeCallbacks(set, id),
     );
-    set((state) => ({
-      sessions: patchSession(state.sessions, id, {
-        // Local and serial sessions are connected the moment the backend spawns;
-        // SSH flips to connected later, after authentication completes.
-        ...(descriptor.kind !== "ssh" ? { status: "connected" as const } : {}),
-        title: title ?? result.title,
-      }),
-    }));
+    set((state) => {
+      const current = state.sessions.find((s) => s.id === id);
+      // A fast backend exit can fire onExit BEFORE createSession resolves, which
+      // already moved the session to disconnected/error. Never overwrite that
+      // with "connected" — that is exactly the ghost-session race.
+      const spawnExited = !!current && current.status !== "connecting";
+      return {
+        sessions: patchSession(state.sessions, id, {
+          // Local and serial sessions are connected the moment the backend spawns;
+          // SSH flips to connected later, after authentication completes.
+          ...(descriptor.kind !== "ssh" && !spawnExited
+            ? { status: "connected" as const }
+            : {}),
+          title: title ?? result.title,
+        }),
+      };
+    });
   } catch (error) {
+    // A superseding restart (or disposal) abandoned this attempt; the winner
+    // owns the session's state, so leave it untouched.
+    if (isSpawnAbandoned(error)) return;
     const { category, message } = parseLumaError(error);
     set((state) => ({
       sessions: patchSession(state.sessions, id, {
@@ -357,6 +391,13 @@ function newTab(sessionId: string): WorkspaceTab {
   return { id: crypto.randomUUID(), root: leaf, activePaneId: leaf.id };
 }
 
+/** Let React commit the new pane host before creating its xterm/backend. This
+ * allows terminalManager.attach() to fit the grid before spawn uses its
+ * initial cols/rows and the shell draws the first prompt. */
+function waitForPaneLayout(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
 /** Open a new session (local or SSH) in a fresh tab and connect it. */
 async function openInNewTab(
   set: SetFn,
@@ -374,6 +415,7 @@ async function openInNewTab(
     activeTabId: tab.id,
     activeSessionId: session.id,
   }));
+  await waitForPaneLayout();
   await launch(set, get, session.id, descriptor, title);
 }
 
@@ -546,14 +588,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
     try {
       const result = await terminalManager.restart(id);
-      const isSsh = get().sessions.find((session) => session.id === id)?.type === "ssh";
-      set((state) => ({
-        sessions: patchSession(state.sessions, id, {
-          ...(!isSsh ? { status: "connected" as const } : {}),
-          title: result.title,
-        }),
-      }));
+      set((state) => {
+        const current = state.sessions.find((session) => session.id === id);
+        const isSsh = current?.type === "ssh";
+        // As in launch(): if the freshly spawned backend already exited, onExit
+        // moved the session to disconnected/error — do not resurrect it.
+        const spawnExited = !!current && current.status !== "connecting";
+        return {
+          sessions: patchSession(state.sessions, id, {
+            ...(!isSsh && !spawnExited ? { status: "connected" as const } : {}),
+            title: result.title,
+          }),
+        };
+      });
     } catch (error) {
+      if (isSpawnAbandoned(error)) return;
       const { category, message } = parseLumaError(error);
       set((state) => ({
         sessions: patchSession(state.sessions, id, {
@@ -725,7 +774,128 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       ),
       activeSessionId: id,
     }));
+    await waitForPaneLayout();
     await launch(set, get, id, descriptor, title);
+  },
+
+  splitActivePaneWith: async (direction, restore) => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.id === state.activeTabId);
+    if (!tab) return;
+    const targetLeaf = findLeaf(tab.root, tab.activePaneId);
+    if (!targetLeaf) return;
+
+    const id = crypto.randomUUID();
+    // Reuse the restore path so an SSH descriptor gets the same preflight and
+    // error states as a normal open — the split just hosts a different host.
+    const { session, descriptor, title } = sessionFromRestore(id, restore);
+
+    const newLeaf = makeLeaf(id);
+    const newRoot = splitLeaf(tab.root, tab.activePaneId, direction, newLeaf);
+    set((s) => ({
+      sessions: [...s.sessions, session],
+      tabs: s.tabs.map((t) =>
+        t.id === tab.id ? { ...t, root: newRoot, activePaneId: newLeaf.id } : t,
+      ),
+      activeSessionId: id,
+    }));
+    await waitForPaneLayout();
+    await launch(set, get, id, descriptor, title);
+  },
+
+  mergeTabs: (sourceTabId, targetTabId, direction = "row", placement = "after", targetPaneId) => {
+    if (sourceTabId === targetTabId) return;
+    set((state) => {
+      const source = state.tabs.find((t) => t.id === sourceTabId);
+      const target = state.tabs.find((t) => t.id === targetTabId);
+      if (!source || !target) return {};
+
+      // Focus follows the dragged content: the source tab's previously active
+      // leaf id is preserved by the graft (leaf ids are stable), so it stays a
+      // valid pane id inside the merged tree.
+      const draggedActivePaneId = source.activePaneId;
+
+      let newRoot: PaneNode;
+      if (targetPaneId) {
+        newRoot = splitLeaf(
+          target.root,
+          targetPaneId,
+          direction,
+          source.root,
+          placement,
+        );
+      } else if (target.root.kind === "split" && target.root.direction === direction) {
+        // Append the source tree as a sibling of the same-direction split and
+        // give every child an equal share (simple + deterministic).
+        const children =
+          placement === "before"
+            ? [source.root, ...target.root.children]
+            : [...target.root.children, source.root];
+        newRoot = {
+          ...target.root,
+          children,
+          sizes: children.map(() => 100 / children.length),
+        };
+      } else {
+        newRoot = {
+          kind: "split",
+          id: crypto.randomUUID(),
+          direction,
+          children:
+            placement === "before"
+              ? [source.root, target.root]
+              : [target.root, source.root],
+          sizes: [50, 50],
+        };
+      }
+
+      const tabs = state.tabs
+        .filter((t) => t.id !== sourceTabId)
+        .map((t) =>
+          t.id === targetTabId
+            ? { ...t, root: newRoot, activePaneId: draggedActivePaneId }
+            : t,
+        );
+      return {
+        tabs,
+        activeTabId: targetTabId,
+        activeSessionId: computeActiveSession(tabs, targetTabId),
+      };
+    });
+    useUiStore.getState().showTerminal();
+    const sessionId = get().activeSessionId;
+    if (sessionId) requestAnimationFrame(() => terminalManager.focus(sessionId));
+  },
+
+  openTemplate: (root) => {
+    const newSessions: TerminalSession[] = [];
+    const launches: PendingLaunch[] = [];
+    const builtRoot = buildRestoredNode(root, newSessions, launches);
+    const firstLeaf = collectLeaves(builtRoot)[0];
+    if (!firstLeaf) return;
+
+    const tab: WorkspaceTab = {
+      id: crypto.randomUUID(),
+      root: builtRoot,
+      activePaneId: firstLeaf.id,
+    };
+    useUiStore.getState().closeNewTab();
+    useUiStore.getState().showTerminal();
+    set((state) => {
+      const tabs = [...state.tabs, tab];
+      return {
+        sessions: [...state.sessions, ...newSessions],
+        tabs,
+        activeTabId: tab.id,
+        activeSessionId: computeActiveSession(tabs, tab.id),
+      };
+    });
+
+    // Spawn each pane independently: a failed pane is marked errored (existing
+    // per-pane error UI) without blocking the rest of the template.
+    for (const pending of launches) {
+      void launch(set, get, pending.id, pending.descriptor, pending.title);
+    }
   },
 
   restoreFromSnapshot: (snapshot) => {

@@ -4,10 +4,12 @@
   "version": "0.4.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
+    "dev": "vp dev",
+    "build": "tsc && vp build",
+    "preview": "vp preview",
     "typecheck": "tsc --noEmit",
+    "test": "vp test run",
+    "lint": "vp lint --deny-warnings",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -36,6 +38,7 @@
     "lucide-react": "^1.24.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "simple-icons": "^16.26.0",
     "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.14"
   },
@@ -44,9 +47,12 @@
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
+    "@vitejs/plugin-react": "^6.0.3",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.2",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^8.0.0",
+    "vite-plus": "0.2.5",
+    "vitest": "4.1.10"
   }
 }

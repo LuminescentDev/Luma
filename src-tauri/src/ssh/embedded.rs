@@ -7,7 +7,10 @@ use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
 use russh::{ChannelMsg, Pty};
 use tokio::sync::mpsc;
 
-use super::{DataCallback, ExitCallback, RemoteOsCallback, SshConnectionConfig, SshExit};
+use super::{
+    DataCallback, ExitCallback, RemoteOsCallback, SshConnectionConfig, SshExit,
+    SSH_AUTHENTICATED_MARKER,
+};
 use crate::errors::{LumaError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,16 +20,18 @@ pub(crate) enum SshBackend {
 }
 
 pub(crate) fn select_backend(config: &SshConnectionConfig) -> SshBackend {
-    if config.proxy_jumps.is_empty()
-        && config.username.is_some()
-        && config.identity_file.is_none()
-        && config.askpass_identity_id.is_some()
-        && config.askpass_prompt.as_deref() == Some("password")
-    {
-        SshBackend::Embedded
-    } else {
-        SshBackend::OpenSsh
+    if !config.proxy_jumps.is_empty() || config.username.is_none() {
+        return SshBackend::OpenSsh;
     }
+    if config.identity_file.is_some()
+        || (config.askpass_identity_id.is_some()
+            && config.askpass_prompt.as_deref() == Some("password"))
+    {
+        return SshBackend::Embedded;
+    }
+    // Agent, hardware-token, and fully interactive authentication still need
+    // the system client because russh cannot access the user's SSH agent here.
+    SshBackend::OpenSsh
 }
 
 enum Control {
@@ -54,6 +59,10 @@ impl client::Handler for Client {
     ) -> std::result::Result<bool, Self::Error> {
         Ok(self.trusted_keys.iter().any(|trusted| trusted == key))
     }
+}
+
+fn notify_frontend_authenticated(on_data: &mut DataCallback) {
+    on_data(SSH_AUTHENTICATED_MARKER);
 }
 
 impl EmbeddedSshManager {
@@ -98,6 +107,13 @@ impl EmbeddedSshManager {
         let task_id = id.clone();
         let _identity = config.ephemeral_identity_file.clone();
         let _credential = config.ephemeral_credential.clone();
+        // System OpenSSH reports this marker through LocalCommand once auth is
+        // complete. Embedded SSH has already authenticated by this point, so
+        // emit the same internal signal before terminal output starts. The
+        // frontend consumes it behind the connection overlay, marks the
+        // session connected, and can then replace the host icon with the
+        // distro metadata emitted immediately below.
+        notify_frontend_authenticated(&mut on_data);
         on_remote_os(remote_os);
 
         tauri::async_runtime::spawn(async move {
@@ -200,6 +216,18 @@ fn credential_secret(config: &SshConnectionConfig, prompt: &str) -> Result<Optio
         })
 }
 
+fn fallback_password_secret(config: &SshConnectionConfig) -> Result<Option<String>> {
+    let Some(account) = &config.fallback_password_identity_id else {
+        return Ok(None);
+    };
+    keyring::Entry::new("luma.ssh.identity", account)
+        .and_then(|entry| entry.get_password())
+        .map(Some)
+        .map_err(|error| {
+            LumaError::KeyUnavailable(format!("credential store unavailable: {error}"))
+        })
+}
+
 pub(crate) async fn authenticated_handle(
     config: &SshConnectionConfig,
 ) -> Result<client::Handle<Client>> {
@@ -249,10 +277,12 @@ pub(crate) async fn authenticated_handle(
             })?
             .map_err(connect_error)?
             .flatten();
-        tokio::time::timeout(
+        let key_authenticated = tokio::time::timeout(
             Duration::from_secs(15),
-            handle
-                .authenticate_publickey(username, PrivateKeyWithHashAlg::new(Arc::new(key), hash)),
+            handle.authenticate_publickey(
+                username.clone(),
+                PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+            ),
         )
         .await
         .map_err(|_| LumaError::SshConnection {
@@ -260,7 +290,25 @@ pub(crate) async fn authenticated_handle(
             message: "SSH key authentication timed out".into(),
         })?
         .map_err(connect_error)?
-        .success()
+        .success();
+        if key_authenticated {
+            true
+        } else if let Some(password) = fallback_password_secret(config)? {
+            tracing::debug!(host = %config.hostname, "embedded SSH: public key rejected, trying saved fallback password");
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                handle.authenticate_password(username, password),
+            )
+            .await
+            .map_err(|_| LumaError::SshConnection {
+                category: "timeout",
+                message: "SSH fallback password authentication timed out".into(),
+            })?
+            .map_err(connect_error)?
+            .success()
+        } else {
+            false
+        }
     } else {
         let password =
             credential_secret(config, "password")?.ok_or_else(|| LumaError::SshConnection {
@@ -331,21 +379,22 @@ fn connect_error(error: russh::Error) -> LumaError {
 
 async fn detect_remote_os(handle: &client::Handle<Client>) -> super::SshRemoteOs {
     let operation = async {
-        let mut channel = handle.channel_open_session().await.ok()?;
-        channel.exec(true, b"cat /etc/os-release").await.ok()?;
-        let mut output = Vec::new();
-        while let Some(message) = channel.wait().await {
-            match message {
-                ChannelMsg::Data { data } if output.len() + data.len() <= 64 * 1024 => {
-                    output.extend_from_slice(&data);
-                }
-                ChannelMsg::Eof | ChannelMsg::Close => break,
-                _ => {}
-            }
+        let release = capture_remote_command(handle, b"cat /etc/os-release").await?;
+        let detected = super::remote_os::parse_os_release(&String::from_utf8_lossy(&release));
+        if detected.os_id != "unknown" {
+            return Some(detected);
         }
-        Some(super::remote_os::parse_os_release(
-            &String::from_utf8_lossy(&output),
-        ))
+
+        let uname = capture_remote_command(handle, b"uname -s").await?;
+        let detected = super::remote_os::normalize_uname(&String::from_utf8_lossy(&uname));
+        if detected.os_id != "unknown" {
+            return Some(detected);
+        }
+
+        let version = capture_remote_command(handle, b"cmd /c ver").await?;
+        Some(super::remote_os::normalize_uname(&String::from_utf8_lossy(
+            &version,
+        )))
     };
     tokio::time::timeout(Duration::from_secs(3), operation)
         .await
@@ -354,10 +403,49 @@ async fn detect_remote_os(handle: &client::Handle<Client>) -> super::SshRemoteOs
         .unwrap_or_else(super::SshRemoteOs::unknown)
 }
 
+async fn capture_remote_command(
+    handle: &client::Handle<Client>,
+    command: &[u8],
+) -> Option<Vec<u8>> {
+    const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+    let mut channel = handle.channel_open_session().await.ok()?;
+    channel.exec(true, command).await.ok()?;
+    let mut output = Vec::new();
+    while let Some(message) = channel.wait().await {
+        match message {
+            ChannelMsg::Data { data } => {
+                if output.len() + data.len() > MAX_OUTPUT_BYTES {
+                    return None;
+                }
+                output.extend_from_slice(&data);
+            }
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    Some(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn reports_authentication_with_the_shared_frontend_marker() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let received_by_callback = Arc::clone(&received);
+        let mut callback: DataCallback = Box::new(move |bytes| {
+            received_by_callback
+                .lock()
+                .unwrap()
+                .extend_from_slice(bytes);
+        });
+
+        notify_frontend_authenticated(&mut callback);
+
+        assert_eq!(*received.lock().unwrap(), SSH_AUTHENTICATED_MARKER);
+    }
 
     fn config() -> SshConnectionConfig {
         SshConnectionConfig {
@@ -379,8 +467,8 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_for_private_key_hosts_until_key_auth_is_compatible() {
-        assert_eq!(select_backend(&config()), SshBackend::OpenSsh);
+    fn uses_embedded_backend_for_direct_private_key_hosts() {
+        assert_eq!(select_backend(&config()), SshBackend::Embedded);
     }
 
     #[test]

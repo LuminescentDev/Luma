@@ -1,5 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { queryClient } from "./queryClient";
+import type { Host } from "./hosts";
 
 /*
  * SSH session spawn wrapper. Mirrors spawnPty in src/lib/terminal.ts: the
@@ -21,9 +23,22 @@ export type SshRemoteOsId =
  * frontend/React session id. */
 export type SshRemoteOsEvent = {
   sessionId: string;
+  hostId: string;
   osId: SshRemoteOsId;
   prettyName: string | null;
 };
+
+function updateCachedHostOs(payload: SshRemoteOsEvent): void {
+  for (const key of [["hosts"], ["recent-hosts"]] as const) {
+    queryClient.setQueryData<Host[]>(key, (hosts) =>
+      hosts?.map((host) =>
+        host.id === payload.hostId
+          ? { ...host, osId: payload.osId, osPrettyName: payload.prettyName }
+          : host,
+      ),
+    );
+  }
+}
 
 /** Connection failure categories reported on the SSH exit channel. */
 export type SshExitCategory =
@@ -152,6 +167,7 @@ export async function spawnSsh(
     if (delivered || backendId === null) return;
     if (payload.sessionId !== backendId) return;
     delivered = true;
+    updateCachedHostOs(payload);
     onRemoteOs?.(payload.osId, payload.prettyName);
     // At most one event per session; release the listener once delivered.
     cleanup();

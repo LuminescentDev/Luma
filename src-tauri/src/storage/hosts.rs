@@ -13,6 +13,7 @@ const MAX_STARTUP_COMMAND_LENGTH: usize = 16 * 1024;
 const MAX_PATH_LENGTH: usize = 4096;
 const MAX_ENVIRONMENT_ENTRIES: usize = 128;
 const MAX_TAGS: usize = 128;
+const MAX_OS_PRETTY_NAME_LENGTH: usize = 256;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,6 +33,8 @@ pub struct Host {
     pub environment: Option<HashMap<String, String>>,
     pub tags: Vec<String>,
     pub favorite: bool,
+    pub os_id: Option<String>,
+    pub os_pretty_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -234,12 +237,14 @@ fn row_to_host(row: &sqlx::sqlite::SqliteRow) -> Host {
         environment: environment.and_then(|value| serde_json::from_str(&value).ok()),
         tags: serde_json::from_str(&tags).unwrap_or_default(),
         favorite: row.get::<i64, _>("favorite") != 0,
+        os_id: row.get("os_id"),
+        os_pretty_name: row.get("os_pretty_name"),
     }
 }
 
 const HOST_COLUMNS: &str =
     "id, name, hostname, port, username, group_id, auth_type, key_id, identity_id, proxy_jump_host_id, \
-     startup_command, working_directory, environment, tags, favorite";
+     startup_command, working_directory, environment, tags, favorite, os_id, os_pretty_name";
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Host>> {
     let query =
@@ -409,7 +414,10 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result
              name = ?2, hostname = ?3, port = ?4, username = ?5, group_id = ?6,
              auth_type = ?7, key_id = ?8, identity_id = ?9, proxy_jump_host_id = ?10,
              startup_command = ?11, working_directory = ?12, environment = ?13,
-             tags = ?14, favorite = ?15, updated_at = unixepoch()
+             tags = ?14, favorite = ?15,
+             os_id = CASE WHEN hostname <> ?3 OR port <> ?4 THEN NULL ELSE os_id END,
+             os_pretty_name = CASE WHEN hostname <> ?3 OR port <> ?4 THEN NULL ELSE os_pretty_name END,
+             updated_at = unixepoch()
          WHERE id = ?1",
     )
     .bind(id)
@@ -505,6 +513,60 @@ pub async fn record_recent_connection(pool: &SqlitePool, host_id: &str) -> Resul
     Ok(())
 }
 
+/// Retain best-effort remote OS metadata for host-list presentation. This is
+/// learned state, not user-authored host configuration, so it intentionally
+/// does not advance `updated_at` or participate in sync conflict resolution.
+pub async fn record_remote_os(
+    pool: &SqlitePool,
+    host_id: &str,
+    os_id: &str,
+    pretty_name: Option<&str>,
+) -> Result<()> {
+    const IDS: [&str; 25] = [
+        "ubuntu",
+        "debian",
+        "fedora",
+        "rhel",
+        "centos",
+        "rocky",
+        "almalinux",
+        "arch",
+        "manjaro",
+        "alpine",
+        "opensuse",
+        "suse",
+        "mint",
+        "kali",
+        "gentoo",
+        "void",
+        "nixos",
+        "amazon",
+        "oracle",
+        "raspbian",
+        "freebsd",
+        "macos",
+        "windows",
+        "linux",
+        "unknown",
+    ];
+    if !IDS.contains(&os_id) || os_id.is_empty() {
+        return Err(LumaError::InvalidInput("unsupported remote OS id".into()));
+    }
+    let pretty_name = pretty_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && name.len() <= MAX_OS_PRETTY_NAME_LENGTH);
+    let result = sqlx::query("UPDATE hosts SET os_id = ?2, os_pretty_name = ?3 WHERE id = ?1")
+        .bind(host_id)
+        .bind(os_id)
+        .bind(pretty_name)
+        .execute(pool)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(LumaError::InvalidInput("unknown host".into()));
+    }
+    Ok(())
+}
+
 pub async fn recent(pool: &SqlitePool, limit: u8) -> Result<Vec<Host>> {
     let limit = i64::from(limit.clamp(1, 50));
     let query = format!(
@@ -595,6 +657,27 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tombstone, 1);
+    }
+
+    #[tokio::test]
+    async fn retains_remote_os_until_the_connection_target_changes() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let created = create(&pool, sample_input("Server", "server.example.com"))
+            .await
+            .unwrap();
+
+        record_remote_os(&pool, &created.id, "ubuntu", Some("Ubuntu 24.04 LTS"))
+            .await
+            .unwrap();
+        let detected = get(&pool, &created.id).await.unwrap().unwrap();
+        assert_eq!(detected.os_id.as_deref(), Some("ubuntu"));
+        assert_eq!(detected.os_pretty_name.as_deref(), Some("Ubuntu 24.04 LTS"));
+
+        let mut moved = sample_input("Server", "replacement.example.com");
+        moved.port = 2222;
+        let moved = update(&pool, &created.id, moved).await.unwrap();
+        assert_eq!(moved.os_id, None);
+        assert_eq!(moved.os_pretty_name, None);
     }
 
     #[tokio::test]

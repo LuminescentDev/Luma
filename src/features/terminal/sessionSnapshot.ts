@@ -54,7 +54,7 @@ function restoreFor(
  * so the remaining layout stays valid). Returns null when the whole subtree has
  * nothing restorable.
  */
-function serializeNode(
+export function serializeNode(
   node: PaneNode,
   sessions: TerminalSession[],
 ): SnapshotPaneNode | null {
@@ -132,7 +132,7 @@ function isRestoreDescriptor(value: unknown): value is RestoreDescriptor {
   return false;
 }
 
-function isSnapshotNode(value: unknown): value is SnapshotPaneNode {
+export function isSnapshotNode(value: unknown): value is SnapshotPaneNode {
   if (!value || typeof value !== "object") return false;
   const kind = (value as { kind?: unknown }).kind;
   if (kind === "leaf") {
@@ -244,9 +244,9 @@ export function startSnapshotPersistence(): () => void {
   // there are zero tabs, so closing everything then quitting clears stale tabs.
   schedule();
 
-  // Flush the latest snapshot before the window closes. Remove the listener
-  // before issuing the final close: on some platforms a recursive close from
-  // inside a prevented close-request is ignored while the listener is active.
+  // Flush the latest snapshot before the window closes. The final close must
+  // be scheduled after this prevented close-request returns; Windows ignores
+  // a recursive close issued from inside the active native callback.
   let closing = false;
   let unlistenClose: (() => void) | undefined;
   const win = getCurrentWindow();
@@ -257,9 +257,11 @@ export function startSnapshotPersistence(): () => void {
       event.preventDefault();
       try {
         await writeSnapshot();
-        unlistenClose?.();
-        unlistenClose = undefined;
-        await win.close();
+        window.setTimeout(() => {
+          void win.close().catch(() => {
+            closing = false;
+          });
+        }, 0);
       } catch {
         // Keep shutdown retryable if either persistence or the window API
         // fails instead of leaving the close button permanently inert.

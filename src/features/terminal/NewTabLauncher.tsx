@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Cable, Clock3, FolderKanban, Search, Server, SquareTerminal, Star, X } from "lucide-react";
+import { Cable, Clock3, FolderKanban, Layers, Search, Server, SquareTerminal, Star, X } from "lucide-react";
 import { useHostGroups, useHosts, useRecentHosts } from "../../hooks/useHosts";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
+import {
+  buildHostGroupLayout,
+  countTemplatePanes,
+  useTemplateStore,
+} from "../../stores/templateStore";
 import { cn } from "../../lib/utils";
 
 export function NewTabLauncher() {
@@ -11,8 +16,11 @@ export function NewTabLauncher() {
   const { data: hosts = [] } = useHosts();
   const { data: recent = [] } = useRecentHosts();
   const { data: groups = [] } = useHostGroups();
+  const templates = useTemplateStore((s) => s.templates);
+  const removeTemplate = useTemplateStore((s) => s.removeTemplate);
   const openSshSession = useSessionStore((s) => s.openSshSession);
   const openLocalSession = useSessionStore((s) => s.openLocalSession);
+  const openTemplate = useSessionStore((s) => s.openTemplate);
   const hasOpenTab = useSessionStore((s) => s.tabs.length > 0);
   const closeNewTab = useUiStore((s) => s.closeNewTab);
   const openSerialConnect = useUiStore((s) => s.openSerialConnect);
@@ -45,14 +53,20 @@ export function NewTabLauncher() {
   const matchingGroups = groups.filter((group) =>
     group.name.toLowerCase().includes(needle),
   );
+  const matchingTemplates = templates.filter((template) =>
+    template.name.toLowerCase().includes(needle),
+  );
 
   const connect = (host: (typeof hosts)[number]) =>
     void openSshSession(host.id, host.name, host.hostname);
+  // A host group now opens as ONE grouped (split) tab reproducing an even
+  // layout of all its hosts, rather than a separate tab per host.
   const openGroup = (groupId: string) => {
     const groupHosts = hosts.filter((host) => host.groupId === groupId);
-    if (groupHosts.length) {
+    const root = buildHostGroupLayout(groupHosts);
+    if (root) {
       closeNewTab();
-      for (const host of groupHosts) void openSshSession(host.id, host.name, host.hostname);
+      openTemplate(root);
     }
   };
 
@@ -112,13 +126,28 @@ export function NewTabLauncher() {
           </div>
         )}
 
-        {matchingGroups.length > 0 && (
+        {(matchingTemplates.length > 0 || matchingGroups.length > 0) && (
           <section className="mt-7 rounded-2xl border border-border bg-surface p-3">
             <h2 className="flex items-center gap-2 px-2 pb-2 text-xs font-semibold uppercase tracking-wider text-muted"><FolderKanban size={14} /> Workspace templates</h2>
             <div className="space-y-1">
+              {matchingTemplates.map((template) => {
+                const panes = countTemplatePanes(template.root);
+                return (
+                  <div key={template.id} className="group flex items-center rounded-xl hover:bg-raised">
+                    <button type="button" onClick={() => { closeNewTab(); openTemplate(template.root); }} className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left text-sm">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent"><Layers size={15} /></span>
+                      <span className="min-w-0 truncate font-medium">{template.name}</span>
+                      <span className="ml-auto shrink-0 text-xs text-muted">{panes} pane{panes === 1 ? "" : "s"}</span>
+                    </button>
+                    <button type="button" aria-label={`Delete template ${template.name}`} title="Delete template" onClick={() => void removeTemplate(template.id)} className="mr-2 shrink-0 rounded p-1 text-muted opacity-0 hover:bg-surface hover:text-danger group-hover:opacity-100 focus-visible:opacity-100">
+                      <X size={14} />
+                    </button>
+                  </div>
+                );
+              })}
               {matchingGroups.map((group) => {
                 const count = hosts.filter((host) => host.groupId === group.id).length;
-                return <button key={group.id} type="button" disabled={!count} onClick={() => openGroup(group.id)} className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-sm hover:bg-raised disabled:opacity-45"><span className="font-medium">{group.name}</span><span className="ml-auto text-xs text-muted">{count} connection{count === 1 ? "" : "s"}</span></button>;
+                return <button key={group.id} type="button" disabled={!count} onClick={() => openGroup(group.id)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm hover:bg-raised disabled:opacity-45"><span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-raised text-muted"><FolderKanban size={15} /></span><span className="min-w-0"><span className="block truncate font-medium">{group.name}</span><span className="block text-xs text-muted">Opens as one grouped tab</span></span><span className="ml-auto shrink-0 text-xs text-muted">{count} connection{count === 1 ? "" : "s"}</span></button>;
               })}
             </div>
           </section>

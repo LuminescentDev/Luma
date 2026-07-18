@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -49,6 +50,8 @@ pub(super) struct RemoteOsTarget {
     hostname: String,
     port: u16,
     username: Option<String>,
+    direct_probe_arguments: Vec<String>,
+    environment: HashMap<String, String>,
 }
 
 impl RemoteOsTarget {
@@ -57,12 +60,16 @@ impl RemoteOsTarget {
         hostname: String,
         port: u16,
         username: Option<String>,
+        direct_probe_arguments: Vec<String>,
+        environment: HashMap<String, String>,
     ) -> Self {
         Self {
             executable,
             hostname,
             port,
             username,
+            direct_probe_arguments,
+            environment,
         }
     }
 }
@@ -127,7 +134,7 @@ pub(super) async fn detect_remote_os(
     control: Option<Arc<MultiplexControl>>,
 ) -> SshRemoteOs {
     let Some(control) = control else {
-        return SshRemoteOs::unknown();
+        return detect_without_multiplexing(&target).await;
     };
 
     if !multiplex_master_is_available(&target, &control).await {
@@ -139,6 +146,31 @@ pub(super) async fn detect_remote_os(
         Some((false, _)) => detect_from_uname(&target, &control).await,
         None => SshRemoteOs::unknown(),
     }
+}
+
+async fn detect_without_multiplexing(target: &RemoteOsTarget) -> SshRemoteOs {
+    match run_direct_remote_command(target, &["cat", "/etc/os-release"]).await {
+        Some((true, output)) => parse_os_release(&String::from_utf8_lossy(&output)),
+        Some((false, _)) => match run_direct_remote_command(target, &["uname", "-s"]).await {
+            Some((true, output)) => normalize_uname(&String::from_utf8_lossy(&output)),
+            _ => SshRemoteOs::unknown(),
+        },
+        None => SshRemoteOs::unknown(),
+    }
+}
+
+async fn run_direct_remote_command(
+    target: &RemoteOsTarget,
+    remote_command: &[&str],
+) -> Option<(bool, Vec<u8>)> {
+    let mut arguments = target.direct_probe_arguments.clone();
+    arguments.push(target.hostname.clone());
+    arguments.extend(
+        remote_command
+            .iter()
+            .map(|argument| (*argument).to_string()),
+    );
+    run_ssh(&target.executable, arguments, &target.environment).await
 }
 
 async fn detect_from_uname(target: &RemoteOsTarget, control: &MultiplexControl) -> SshRemoteOs {
@@ -156,7 +188,7 @@ async fn multiplex_master_is_available(
     arguments.push("-O".into());
     arguments.push("check".into());
     arguments.push(target.hostname.clone());
-    run_ssh(&target.executable, arguments)
+    run_ssh(&target.executable, arguments, &target.environment)
         .await
         .is_some_and(|(success, _)| success)
 }
@@ -169,6 +201,7 @@ async fn run_remote_command(
     run_ssh(
         &target.executable,
         remote_command_arguments(target, control, remote_command),
+        &target.environment,
     )
     .await
 }
@@ -210,11 +243,16 @@ fn control_arguments(target: &RemoteOsTarget, control: &MultiplexControl) -> Vec
     arguments
 }
 
-async fn run_ssh(executable: &str, arguments: Vec<String>) -> Option<(bool, Vec<u8>)> {
+async fn run_ssh(
+    executable: &str,
+    arguments: Vec<String>,
+    environment: &HashMap<String, String>,
+) -> Option<(bool, Vec<u8>)> {
     let mut command = Command::new(executable);
     crate::platform::hide_background_tokio_command(&mut command);
     let mut child = command
         .args(arguments)
+        .envs(environment)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -362,7 +400,7 @@ fn normalize_os_token(value: &str) -> Option<&'static str> {
     }
 }
 
-fn normalize_uname(value: &str) -> SshRemoteOs {
+pub(super) fn normalize_uname(value: &str) -> SshRemoteOs {
     let normalized = value.trim().to_ascii_lowercase();
     let os_id = if normalized == "linux" {
         "linux"
@@ -370,7 +408,8 @@ fn normalize_uname(value: &str) -> SshRemoteOs {
         "freebsd"
     } else if normalized == "darwin" {
         "macos"
-    } else if normalized.starts_with("mingw")
+    } else if normalized.contains("windows")
+        || normalized.starts_with("mingw")
         || normalized.starts_with("msys")
         || normalized.starts_with("cygwin")
         || normalized == "windows_nt"
@@ -443,6 +482,7 @@ mod tests {
             ("FreeBSD\n", "freebsd"),
             ("Linux\n", "linux"),
             ("MINGW64_NT-10.0\n", "windows"),
+            ("Microsoft Windows [Version 10.0.26100.4652]\n", "windows"),
             ("Plan9\n", "unknown"),
         ];
 
@@ -476,6 +516,8 @@ mod tests {
             "server.example.com".into(),
             22,
             Some("alice".into()),
+            Vec::new(),
+            HashMap::new(),
         );
         let control = MultiplexControl {
             path: std::path::Path::new("/tmp/luma-control-test").to_path_buf(),

@@ -68,3 +68,14 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 rand = "0.8"
 base64 = "0.22"
+fs2 = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Threading",
+] }

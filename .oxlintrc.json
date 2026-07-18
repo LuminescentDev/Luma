@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": [
+    "eslint",
+    "react",
+    "typescript",
+    "unicorn",
+    "oxc",
+    "import",
+    "promise",
+    "jsx-a11y",
+    "vitest"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "env": {
+    "browser": true,
+    "es2024": true
+  },
+  "settings": {
+    "react": {
+      "version": "detect"
+    }
+  },
+  "ignorePatterns": ["dist/**", "src-tauri/**", "node_modules/**"]
+}

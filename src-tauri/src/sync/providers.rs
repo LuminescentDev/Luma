@@ -1,9 +1,11 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine;
+use fs2::FileExt;
 use reqwest::header::{ETAG, IF_MATCH, IF_NONE_MATCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,7 +16,9 @@ use crate::errors::{LumaError, Result};
 use super::MAX_BLOB_BYTES;
 
 const SYNC_FILE_NAME: &str = "luma-sync.bin";
+const LOCK_FILE_NAME: &str = ".luma-sync.lock";
 const GIST_FILE_NAME: &str = "luma-sync.bin.b64";
+const STALE_LOCK_AGE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone)]
 pub struct RemoteBlob {
@@ -99,25 +103,11 @@ impl SyncProvider for LocalFolderProvider {
             ));
         }
 
-        let lock_path = self.directory.join(".luma-sync.lock");
-        let mut lock = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    LumaError::SyncConflict("another sync is writing the local folder".into())
-                } else {
-                    sync_io(error)
-                }
-            })?;
-        let _guard = LockGuard(lock_path);
-        lock.write_all(b"luma sync lock").map_err(sync_io)?;
-
+        let _guard = LocalSyncLock::acquire(&self.directory)?;
         let current = self.current()?;
         verify_expected_version(current.as_ref(), expected_remote_version)?;
 
-        fs::write(self.blob_path(), blob).map_err(sync_io)?;
+        atomic_write(&self.blob_path(), blob)?;
         Ok(UploadResult {
             version: content_version(blob),
             remote_id: None,
@@ -125,11 +115,223 @@ impl SyncProvider for LocalFolderProvider {
     }
 }
 
-struct LockGuard(PathBuf);
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct LockOwner {
+    process_id: u32,
+    created_at_unix_seconds: u64,
+}
 
-impl Drop for LockGuard {
+struct LocalSyncLock {
+    file: Option<File>,
+    path: PathBuf,
+}
+
+impl LocalSyncLock {
+    fn acquire(directory: &Path) -> Result<Self> {
+        let path = directory.join(LOCK_FILE_NAME);
+        let (mut file, created) = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => (file, true),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .map_err(sync_io)?;
+                (file, false)
+            }
+            Err(error) => return Err(sync_io(error)),
+        };
+        file.try_lock_exclusive().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                LumaError::SyncConflict("another sync is writing the local folder".into())
+            } else {
+                sync_io(error)
+            }
+        })?;
+
+        if !created {
+            let mut contents = String::new();
+            file.read_to_string(&mut contents).map_err(sync_io)?;
+            let owner = serde_json::from_str::<LockOwner>(&contents).ok();
+            let stale = owner.as_ref().is_some_and(lock_owner_is_stale)
+                || (owner.is_none() && lock_file_is_old(&file));
+            if !stale {
+                let _ = FileExt::unlock(&file);
+                return Err(LumaError::SyncConflict(
+                    "another sync is writing the local folder".into(),
+                ));
+            }
+        }
+
+        let owner = LockOwner {
+            process_id: std::process::id(),
+            created_at_unix_seconds: unix_timestamp(),
+        };
+        file.set_len(0).map_err(sync_io)?;
+        file.seek(SeekFrom::Start(0)).map_err(sync_io)?;
+        serde_json::to_writer(&mut file, &owner).map_err(|error| {
+            LumaError::SyncUnavailable(format!("could not record local sync lock owner: {error}"))
+        })?;
+        file.flush().map_err(sync_io)?;
+        file.sync_all().map_err(sync_io)?;
+        Ok(Self {
+            file: Some(file),
+            path,
+        })
+    }
+}
+
+impl Drop for LocalSyncLock {
+    fn drop(&mut self) {
+        if let Some(file) = self.file.take() {
+            let _ = FileExt::unlock(&file);
+            drop(file);
+        }
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn lock_owner_is_stale(owner: &LockOwner) -> bool {
+    unix_timestamp().saturating_sub(owner.created_at_unix_seconds) > STALE_LOCK_AGE.as_secs()
+        || !process_is_alive(owner.process_id)
+}
+
+fn lock_file_is_old(file: &File) -> bool {
+    file.metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age > STALE_LOCK_AGE)
+}
+
+#[cfg(unix)]
+fn process_is_alive(process_id: u32) -> bool {
+    if process_id == 0 || process_id > i32::MAX as u32 {
+        return false;
+    }
+    // SAFETY: kill(pid, 0) performs only a liveness/permission check and does
+    // not send a signal. The PID is range-checked above.
+    let result = unsafe { libc::kill(process_id as i32, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn process_is_alive(process_id: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    if process_id == 0 {
+        return false;
+    }
+    // SAFETY: the handle is requested with synchronization-only access and is
+    // closed on every successful OpenProcess path.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, process_id) };
+    if handle.is_null() {
+        return false;
+    }
+    // SAFETY: handle is a valid process handle and the zero timeout is
+    // non-blocking. CloseHandle releases it immediately afterwards.
+    let status = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe { CloseHandle(handle) };
+    status == WAIT_TIMEOUT
+}
+
+#[cfg(not(any(unix, windows)))]
+fn process_is_alive(process_id: u32) -> bool {
+    process_id == std::process::id()
+}
+
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_before_replace(path, bytes, || Ok(()))
+}
+
+fn atomic_write_before_replace(
+    path: &Path,
+    bytes: &[u8],
+    before_replace: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(SYNC_FILE_NAME);
+    let temp_path = path.with_file_name(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let guard = TempFileGuard(temp_path.clone());
+    let mut temp = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp_path)
+        .map_err(sync_io)?;
+    temp.write_all(bytes).map_err(sync_io)?;
+    temp.flush().map_err(sync_io)?;
+    temp.sync_all().map_err(sync_io)?;
+    drop(temp);
+    before_replace()?;
+    atomic_replace(&temp_path, path)?;
+    std::mem::forget(guard);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
+    fs::rename(source, destination).map_err(sync_io)
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: both paths are NUL-terminated UTF-16 buffers that remain alive
+    // for the duration of the call.
+    let replaced = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if replaced == 0 {
+        Err(sync_io(std::io::Error::last_os_error()))
+    } else {
+        Ok(())
     }
 }
 
@@ -526,6 +728,70 @@ mod tests {
         assert_eq!(error.category(), "sync-conflict");
         assert_eq!(provider.download().await.unwrap().unwrap().bytes, b"first");
 
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_folder_recovers_stale_lock_with_dead_owner() {
+        let directory = temporary_directory();
+        let lock_path = directory.join(LOCK_FILE_NAME);
+        fs::write(
+            &lock_path,
+            serde_json::to_vec(&LockOwner {
+                process_id: u32::MAX,
+                created_at_unix_seconds: unix_timestamp(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let provider = LocalFolderProvider::new(directory.clone());
+        provider.upload(b"recovered", None).await.unwrap();
+        assert_eq!(
+            provider.download().await.unwrap().unwrap().bytes,
+            b"recovered"
+        );
+        assert!(!lock_path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn interrupted_atomic_write_preserves_destination_and_cleans_temp_file() {
+        let directory = temporary_directory();
+        let destination = directory.join(SYNC_FILE_NAME);
+        fs::write(&destination, b"original").unwrap();
+
+        let error = atomic_write_before_replace(&destination, b"replacement", || {
+            Err(LumaError::SyncUnavailable("injected interruption".into()))
+        })
+        .unwrap_err();
+        assert_eq!(error.category(), "sync-unavailable");
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+        let temp_files = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-"))
+            .collect::<Vec<_>>();
+        assert!(temp_files.is_empty(), "temporary files: {temp_files:?}");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_folder_atomic_write_replaces_blob_without_temp_files() {
+        let directory = temporary_directory();
+        let provider = LocalFolderProvider::new(directory.clone());
+        let first = provider.upload(b"first", None).await.unwrap();
+        provider
+            .upload(b"second", Some(&first.version))
+            .await
+            .unwrap();
+        assert_eq!(fs::read(directory.join(SYNC_FILE_NAME)).unwrap(), b"second");
+        let leftovers = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp-") || name == LOCK_FILE_NAME)
+            .collect::<Vec<_>>();
+        assert!(leftovers.is_empty(), "leftover files: {leftovers:?}");
         fs::remove_dir_all(directory).unwrap();
     }
 

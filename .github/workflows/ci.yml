@@ -53,8 +53,14 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint frontend
+        run: pnpm lint
+
       - name: Typecheck and build frontend
         run: pnpm build
+
+      - name: Frontend tests
+        run: pnpm test
 
       - name: Rustfmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
