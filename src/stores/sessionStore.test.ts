@@ -16,6 +16,25 @@ async function flush(times = 6): Promise<void> {
   for (let i = 0; i < times; i += 1) await tick();
 }
 
+/**
+ * Poll until `predicate()` is truthy, then return. Fails loudly if the bounded
+ * timeout elapses first. Used instead of a fixed number of `flush()` ticks: the
+ * SSH open path awaits `requestAnimationFrame` (waitForPaneLayout) before it runs
+ * the host-key preflight that sets `connectionPrompt`, so the number of macrotask
+ * ticks needed is not fixed and a hard-coded count races the rAF under load.
+ */
+async function waitFor(
+  predicate: () => boolean,
+  message: string,
+  timeoutMs = 2000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`waitFor timed out: ${message}`);
+    await tick();
+  }
+}
+
 function latestSession() {
   const { sessions } = useSessionStore.getState();
   return sessions[sessions.length - 1];
@@ -127,7 +146,10 @@ describe("SSH host-key preflight decisions", () => {
     });
 
     const done = useSessionStore.getState().openSshSession("host-1", "prod", "prod.example.com");
-    await flush();
+    await waitFor(
+      () => latestSession()?.connectionPrompt?.type === "host-key",
+      "SSH session reaches the host-key preflight prompt",
+    );
     const pending = latestSession();
     expect(pending.connectionPrompt?.type).toBe("host-key");
     expect(invoke).not.toHaveBeenCalledWith("ssh_spawn", expect.anything());
@@ -153,7 +175,10 @@ describe("SSH host-key preflight decisions", () => {
     });
 
     const done = useSessionStore.getState().openSshSession("host-1", "prod", "prod.example.com");
-    await flush();
+    await waitFor(
+      () => latestSession()?.connectionPrompt?.type === "host-key",
+      "SSH session reaches the host-key preflight prompt",
+    );
     const pending = latestSession();
     expect(pending.connectionPrompt?.type).toBe("host-key");
 
