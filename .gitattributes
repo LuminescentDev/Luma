@@ -1,0 +1,2 @@
+# SQLx migration checksums hash raw bytes; enforce stable bytes on every platform.
+src-tauri/migrations/*.sql text eol=lf

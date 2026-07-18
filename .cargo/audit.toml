@@ -1,0 +1,5 @@
+[advisories]
+# Accepted risk: RUSTSEC-2023-0071 has no upstream fix. Luma uses RSA locally
+# for SSH and public-key derivation, not server-side RSA decryption; exploiting
+# Marvin requires an attacker able to measure repeated decryption timings.
+ignore = ["RUSTSEC-2023-0071"]
