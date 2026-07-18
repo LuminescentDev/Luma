@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/LuminescentDev/Luma/compare/v0.4.0...v0.5.0) (2026-07-18)
+
+
+### Features
+
+* add audit.toml for advisory management and .gitattributes for SQLx migration stability ([52e85d6](https://github.com/LuminescentDev/Luma/commit/52e85d6dcd6fbe520c22b34d480be6ba85176bae))
+* add terminalManager tests for spawn races and session handling ([9b7a88d](https://github.com/LuminescentDev/Luma/commit/9b7a88d7a1f08755e4b0e88c3b4ca9b3fec5195a))
+* enhance session management with new features and improve error handling ([9ec74ef](https://github.com/LuminescentDev/Luma/commit/9ec74effbacff2fe8fe8139fe014a7c81ed74041))
+* Implement embedded SSH backend and enhance askpass functionality ([7293d71](https://github.com/LuminescentDev/Luma/commit/7293d71a6cf3f7f4062f7fe8e3588def49d5173e))
+* implement waitFor function to enhance polling mechanism in session tests ([c89a14b](https://github.com/LuminescentDev/Luma/commit/c89a14bdbdd3cb664015b61254f8854e07ff15cc))
+
 ## [0.4.0](https://github.com/LuminescentDev/Luma/compare/v0.3.0...v0.4.0) (2026-07-17)
 
 
