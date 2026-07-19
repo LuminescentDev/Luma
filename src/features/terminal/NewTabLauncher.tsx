@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Cable, Clock3, FolderKanban, Layers, Search, Server, SquareTerminal, Star, X } from "lucide-react";
+import { Cable, Clock3, FolderKanban, Layers, Loader2, PlugZap, Search, Server, SquareTerminal, Star, X } from "lucide-react";
 import { useHostGroups, useHosts, useRecentHosts } from "../../hooks/useHosts";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -9,9 +9,13 @@ import {
   useTemplateStore,
 } from "../../stores/templateStore";
 import { cn } from "../../lib/utils";
+import { looksLikeConnectionString } from "../../lib/connectionString";
+import { parseLumaError, quickConnectPrepare } from "../../lib/hosts";
 
 export function NewTabLauncher() {
   const [query, setQuery] = useState("");
+  const [quickError, setQuickError] = useState<string | null>(null);
+  const [quickBusy, setQuickBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const { data: hosts = [] } = useHosts();
   const { data: recent = [] } = useRecentHosts();
@@ -58,7 +62,24 @@ export function NewTabLauncher() {
   );
 
   const connect = (host: (typeof hosts)[number]) =>
-    void openSshSession(host.id, host.name, host.hostname);
+    void openSshSession(host.id, host.name, host.hostname, false, host.tabColor);
+
+  const trimmedQuery = query.trim();
+  const isConnectionString = looksLikeConnectionString(trimmedQuery);
+  // Quick connect: parse the typed connection string into an ephemeral host on
+  // the backend, then launch it through the normal SSH connect flow.
+  const runQuickConnect = () => {
+    if (!trimmedQuery || quickBusy) return;
+    setQuickError(null);
+    setQuickBusy(true);
+    quickConnectPrepare(trimmedQuery)
+      .then((host) => {
+        closeNewTab();
+        void openSshSession(host.id, host.name, host.hostname, true);
+      })
+      .catch((error) => setQuickError(parseLumaError(error).message))
+      .finally(() => setQuickBusy(false));
+  };
   // A host group now opens as ONE grouped (split) tab reproducing an even
   // layout of all its hosts, rather than a separate tab per host.
   const openGroup = (groupId: string) => {
@@ -93,14 +114,38 @@ export function NewTabLauncher() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && matchingHosts[0]) connect(matchingHosts[0]);
+              if (event.key !== "Enter") return;
+              if (matchingHosts[0]) connect(matchingHosts[0]);
+              else if (isConnectionString) runQuickConnect();
             }}
-            placeholder="Search hosts, templates, or commands"
-            aria-label="Search hosts and workspace templates"
+            placeholder="Search hosts, or type user@host to connect"
+            aria-label="Search hosts, workspace templates, or a connection string"
             className="h-11 w-full rounded-xl border border-border bg-surface pl-11 pr-16 text-sm outline-none transition focus:border-accent focus:shadow-glow"
           />
           <kbd className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-raised px-2 py-0.5 text-[10px] text-muted">ESC</kbd>
         </div>
+
+        {isConnectionString && (
+          <button
+            type="button"
+            onClick={runQuickConnect}
+            disabled={quickBusy}
+            className="mt-3 flex w-full items-center gap-3 rounded-xl border border-accent/50 bg-accent/10 px-4 py-3 text-left text-sm hover:bg-accent/15 disabled:opacity-60"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/20 text-accent">
+              {quickBusy ? <Loader2 size={16} className="animate-spin" /> : <PlugZap size={16} />}
+            </span>
+            <span className="min-w-0">
+              <span className="block font-medium">Connect to {trimmedQuery}</span>
+              <span className="text-xs text-muted">Quick connect over SSH (not saved)</span>
+            </span>
+          </button>
+        )}
+        {quickError && (
+          <p role="alert" className="mt-2 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+            {quickError}
+          </p>
+        )}
 
         {!needle && (
           <div className="mt-4 grid gap-2 sm:grid-cols-2">

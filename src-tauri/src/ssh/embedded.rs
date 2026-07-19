@@ -1,17 +1,21 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
 use russh::{ChannelMsg, Pty};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::{
     DataCallback, ExitCallback, RemoteOsCallback, SshConnectionConfig, SshExit,
     SSH_AUTHENTICATED_MARKER,
 };
 use crate::errors::{LumaError, Result};
+use crate::terminal::logging::SessionLogManager;
+use crate::terminal::{SessionLogMode, SessionLogStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SshBackend {
@@ -34,20 +38,29 @@ pub(crate) fn select_backend(config: &SshConnectionConfig) -> SshBackend {
     SshBackend::OpenSsh
 }
 
+enum PingFailure {
+    Timeout,
+    ConnectionLost(String),
+    SshError(String),
+}
+
 enum Control {
     Write(Vec<u8>),
     Resize(u16, u16),
+    Ping(oneshot::Sender<std::result::Result<u64, PingFailure>>),
     Disconnect,
 }
 
 #[derive(Default)]
 pub struct EmbeddedSshManager {
-    sessions: Arc<Mutex<HashMap<String, mpsc::Sender<Control>>>>,
+    sessions: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>>,
+    logs: SessionLogManager,
 }
 
 #[derive(Clone)]
 pub(crate) struct Client {
     trusted_keys: Arc<Vec<PublicKey>>,
+    key_mismatch: Arc<AtomicBool>,
 }
 
 impl client::Handler for Client {
@@ -57,7 +70,11 @@ impl client::Handler for Client {
         &mut self,
         key: &PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        Ok(self.trusted_keys.iter().any(|trusted| trusted == key))
+        let trusted = self.trusted_keys.iter().any(|candidate| candidate == key);
+        if !trusted {
+            self.key_mismatch.store(true, Ordering::Release);
+        }
+        Ok(trusted)
     }
 }
 
@@ -75,7 +92,7 @@ impl EmbeddedSshManager {
         on_exit: ExitCallback,
         on_remote_os: RemoteOsCallback,
     ) -> Result<String> {
-        let handle = authenticated_handle(&config).await?;
+        let handle = Arc::new(authenticated_handle(&config).await?);
 
         let remote_os = detect_remote_os(&handle).await;
         let mut channel = handle.channel_open_session().await.map_err(connect_error)?;
@@ -100,10 +117,15 @@ impl EmbeddedSshManager {
             channel.request_shell(true).await.map_err(connect_error)?;
         }
 
-        let (control_tx, mut control_rx) = mpsc::channel(128);
+        // Input is already serialized and coalesced by the frontend. An
+        // unbounded control lane makes command submission synchronous and
+        // avoids holding a Tauri invoke open while a busy SSH transport drains.
+        let (control_tx, mut control_rx) = mpsc::unbounded_channel();
         let id = uuid::Uuid::new_v4().to_string();
         self.sessions.lock().unwrap().insert(id.clone(), control_tx);
+        self.logs.register(&id, cols, rows);
         let sessions = Arc::clone(&self.sessions);
+        let logs = self.logs.clone();
         let task_id = id.clone();
         let _identity = config.ephemeral_identity_file.clone();
         let _credential = config.ephemeral_credential.clone();
@@ -117,11 +139,12 @@ impl EmbeddedSshManager {
         on_remote_os(remote_os);
 
         tauri::async_runtime::spawn(async move {
-            let _handle = handle;
+            let handle = handle;
             let _identity = _identity;
             let _credential = _credential;
             let mut exit_code = None;
             let mut failure = None;
+            let mut channel_disappeared = false;
             loop {
                 tokio::select! {
                     control = control_rx.recv() => match control {
@@ -137,6 +160,29 @@ impl EmbeddedSshManager {
                                 break;
                             }
                         }
+                        Some(Control::Ping(reply)) => {
+                            let handle = Arc::clone(&handle);
+                            tauri::async_runtime::spawn(async move {
+                                let started = Instant::now();
+                                let result = match tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    handle.channel_open_session(),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(channel)) => {
+                                        let _ = channel.close().await;
+                                        Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+                                    }
+                                    Ok(Err(error)) if handle.is_closed() => {
+                                        Err(PingFailure::ConnectionLost(error.to_string()))
+                                    }
+                                    Ok(Err(error)) => Err(PingFailure::SshError(error.to_string())),
+                                    Err(_) => Err(PingFailure::Timeout),
+                                };
+                                let _ = reply.send(result);
+                            });
+                        }
                         Some(Control::Disconnect) | None => {
                             let _ = channel.eof().await;
                             let _ = channel.close().await;
@@ -144,44 +190,130 @@ impl EmbeddedSshManager {
                         }
                     },
                     message = channel.wait() => match message {
-                        Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => on_data(&data),
+                        Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            logs.write(&task_id, &data);
+                            on_data(&data);
+                        }
                         Some(ChannelMsg::ExitStatus { exit_status }) => exit_code = Some(exit_status),
-                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => break,
+                        None => {
+                            channel_disappeared = true;
+                            break;
+                        }
                         _ => {}
                     }
                 }
             }
             sessions.lock().unwrap().remove(&task_id);
+            logs.unregister(&task_id);
+            let (error_category, error_message) = if let Some(message) = failure {
+                (Some("connection-lost".into()), Some(message))
+            } else if channel_disappeared && handle.is_closed() {
+                (
+                    Some("connection-lost".into()),
+                    Some("The SSH transport closed unexpectedly".into()),
+                )
+            } else if exit_code.is_some_and(|code| code != 0) {
+                (
+                    Some("ssh-error".into()),
+                    Some("The remote SSH session exited with a non-zero status".into()),
+                )
+            } else {
+                (None, None)
+            };
             on_exit(SshExit {
                 code: exit_code,
-                error_category: failure.as_ref().map(|_| "ssh-error".into()),
-                error_message: failure,
+                error_category,
+                error_message,
             });
         });
         Ok(id)
     }
 
-    pub async fn write(&self, session_id: &str, data: String) -> Result<bool> {
+    pub fn write(&self, session_id: &str, data: String) -> Result<bool> {
         self.send(session_id, Control::Write(data.into_bytes()))
+    }
+
+    pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<bool> {
+        let sent = self.send(session_id, Control::Resize(cols, rows))?;
+        if sent {
+            self.logs.update_dimensions(session_id, cols, rows);
+        }
+        Ok(sent)
+    }
+
+    pub fn contains(&self, session_id: &str) -> bool {
+        self.logs.contains(session_id)
+    }
+
+    pub fn log_start(
+        &self,
+        session_id: &str,
+        mode: SessionLogMode,
+        path: Option<&str>,
+        app_data_dir: &Path,
+    ) -> Result<PathBuf> {
+        self.logs.start(session_id, mode, path, app_data_dir)
+    }
+
+    pub fn log_stop(&self, session_id: &str) -> Result<()> {
+        self.logs.stop(session_id)
+    }
+
+    pub fn log_status(&self, session_id: &str) -> Result<SessionLogStatus> {
+        self.logs.status(session_id)
+    }
+
+    pub async fn ping(&self, session_id: &str) -> Result<Option<u64>> {
+        let sender = self.sessions.lock().unwrap().get(session_id).cloned();
+        let Some(sender) = sender else {
+            return Ok(None);
+        };
+        let (reply, receiver) = oneshot::channel();
+        sender
+            .send(Control::Ping(reply))
+            .map_err(|_| LumaError::SshConnection {
+                category: "connection-lost",
+                message: "SSH session is no longer available".into(),
+            })?;
+        let latency = tokio::time::timeout(Duration::from_secs(6), receiver)
             .await
+            .map_err(|_| LumaError::SshConnection {
+                category: "timeout",
+                message: "SSH ping timed out".into(),
+            })?
+            .map_err(|_| LumaError::SshConnection {
+                category: "connection-lost",
+                message: "SSH session closed during ping".into(),
+            })?
+            .map_err(|failure| match failure {
+                PingFailure::Timeout => LumaError::SshConnection {
+                    category: "timeout",
+                    message: "SSH ping timed out".into(),
+                },
+                PingFailure::ConnectionLost(message) => LumaError::SshConnection {
+                    category: "connection-lost",
+                    message: format!("SSH ping failed because the transport closed: {message}"),
+                },
+                PingFailure::SshError(message) => LumaError::SshConnection {
+                    category: "ssh-error",
+                    message: format!("SSH ping request failed: {message}"),
+                },
+            })?;
+        Ok(Some(latency))
     }
 
-    pub async fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<bool> {
-        self.send(session_id, Control::Resize(cols, rows)).await
+    pub fn disconnect(&self, session_id: &str) -> Result<bool> {
+        self.send(session_id, Control::Disconnect)
     }
 
-    pub async fn disconnect(&self, session_id: &str) -> Result<bool> {
-        self.send(session_id, Control::Disconnect).await
-    }
-
-    async fn send(&self, session_id: &str, control: Control) -> Result<bool> {
+    fn send(&self, session_id: &str, control: Control) -> Result<bool> {
         let sender = self.sessions.lock().unwrap().get(session_id).cloned();
         let Some(sender) = sender else {
             return Ok(false);
         };
         sender
             .send(control)
-            .await
             .map_err(|_| LumaError::Pty("SSH session is no longer available".into()))?;
         Ok(true)
     }
@@ -195,7 +327,7 @@ impl EmbeddedSshManager {
             .map(|(_, tx)| tx)
             .collect();
         for sender in senders {
-            let _ = sender.try_send(Control::Disconnect);
+            let _ = sender.send(Control::Disconnect);
         }
     }
 }
@@ -239,10 +371,11 @@ pub(crate) async fn authenticated_handle(
     let trusted_keys = Arc::new(load_trusted_keys(config)?);
     if trusted_keys.is_empty() {
         return Err(LumaError::SshConnection {
-            category: "host-key",
+            category: "host-key-rejected",
             message: "No trusted host key was found for this server".into(),
         });
     }
+    let key_mismatch = Arc::new(AtomicBool::new(false));
     let mut handle = tokio::time::timeout(
         Duration::from_secs(15),
         client::connect(
@@ -253,7 +386,10 @@ pub(crate) async fn authenticated_handle(
                 ..Default::default()
             }),
             (config.hostname.as_str(), config.port),
-            Client { trusted_keys },
+            Client {
+                trusted_keys,
+                key_mismatch: Arc::clone(&key_mismatch),
+            },
         ),
     )
     .await
@@ -261,7 +397,16 @@ pub(crate) async fn authenticated_handle(
         category: "timeout",
         message: "Embedded SSH transport timed out".into(),
     })?
-    .map_err(connect_error)?;
+    .map_err(|error| {
+        if key_mismatch.load(Ordering::Acquire) {
+            LumaError::SshConnection {
+                category: "host-key-changed",
+                message: "The remote host key no longer matches the trusted key".into(),
+            }
+        } else {
+            connect_error(error)
+        }
+    })?;
     tracing::debug!(host = %config.hostname, "embedded SSH: transport established");
     let authenticated = if let Some(identity_file) = &config.identity_file {
         let passphrase = credential_secret(config, "passphrase")?;
@@ -312,7 +457,7 @@ pub(crate) async fn authenticated_handle(
     } else {
         let password =
             credential_secret(config, "password")?.ok_or_else(|| LumaError::SshConnection {
-                category: "authentication",
+                category: "auth-failed",
                 message: "Saved SSH password was unavailable".into(),
             })?;
         tracing::debug!(host = %config.hostname, "embedded SSH: authenticating with saved password");
@@ -330,7 +475,7 @@ pub(crate) async fn authenticated_handle(
     };
     if !authenticated {
         return Err(LumaError::SshConnection {
-            category: "authentication",
+            category: "auth-failed",
             message: "SSH authentication failed".into(),
         });
     }
@@ -361,18 +506,42 @@ fn load_trusted_keys(config: &SshConnectionConfig) -> Result<Vec<PublicKey>> {
         .collect())
 }
 
-fn connect_error(error: russh::Error) -> LumaError {
-    if matches!(
-        error,
-        russh::Error::UnknownKey | russh::Error::WrongServerSig
-    ) {
-        return LumaError::SshConnection {
-            category: "host-key-rejected",
-            message: "The SSH server key did not match the trusted host key".into(),
-        };
-    }
+pub(crate) fn connect_error(error: russh::Error) -> LumaError {
+    let category = match &error {
+        russh::Error::UnknownKey
+        | russh::Error::WrongServerSig
+        | russh::Error::KeyChanged { .. } => "host-key-rejected",
+        russh::Error::ConnectionTimeout
+        | russh::Error::KeepaliveTimeout
+        | russh::Error::InactivityTimeout
+        | russh::Error::Elapsed(_) => "timeout",
+        russh::Error::IO(error) if error.kind() == std::io::ErrorKind::TimedOut => "timeout",
+        russh::Error::IO(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::HostUnreachable
+                    | std::io::ErrorKind::NetworkUnreachable
+            ) =>
+        {
+            "host-unreachable"
+        }
+        russh::Error::IO(error)
+            if {
+                let lower = error.to_string().to_ascii_lowercase();
+                lower.contains("could not resolve")
+                    || lower.contains("name or service not known")
+                    || lower.contains("nodename nor servname")
+                    || lower.contains("no such host")
+                    || lower.contains("getaddrinfo")
+            } =>
+        {
+            "dns-failed"
+        }
+        _ => "ssh-error",
+    };
     LumaError::SshConnection {
-        category: "ssh-error",
+        category,
         message: format!("embedded SSH connection failed: {error}"),
     }
 }

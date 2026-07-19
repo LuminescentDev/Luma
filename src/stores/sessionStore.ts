@@ -20,6 +20,7 @@ import {
   type SessionExit,
   type SpawnDescriptor,
 } from "../features/terminal/terminalManager";
+import { planReconnect } from "../features/terminal/reconnect";
 import type {
   SnapshotPaneNode,
   WorkspaceSnapshot,
@@ -35,6 +36,7 @@ import {
   splitLeaf,
 } from "../features/terminal/paneTree";
 import { useUiStore } from "./uiStore";
+import { useSessionLogStore } from "./sessionLogStore";
 
 /*
  * Session METADATA and split-pane LAYOUT only. Terminal byte streams and
@@ -53,9 +55,31 @@ type SessionState = {
   activeSessionId: string | null;
 
   openLocalSession: (ref?: ShellRef, title?: string) => Promise<void>;
-  openSshSession: (hostId: string, title?: string, hostname?: string) => Promise<void>;
+  openSshSession: (
+    hostId: string,
+    title?: string,
+    hostname?: string,
+    ephemeral?: boolean,
+    tabColor?: string | null,
+  ) => Promise<void>;
   openSerialSession: (config: SerialConfig, title?: string) => Promise<void>;
-  restartSession: (id: string) => Promise<void>;
+  /** Restart a session's backend. `reconnect` marks an auto-reconnect attempt:
+   * it preserves the terminal buffer and keeps the reconnect attempt counter,
+   * whereas a manual restart clears the terminal and resets the counter. */
+  restartSession: (
+    id: string,
+    options?: { reconnect?: boolean },
+  ) => Promise<void>;
+  /** Trigger the pending SSH reconnect immediately (cancels the backoff timer). */
+  retryReconnectNow: (id: string) => void;
+  /** Abandon the SSH reconnect run and leave the session in its failed state. */
+  stopReconnect: (id: string) => void;
+  /** Record the latest measured latency (ms) for a connected SSH session, or
+   * null when the last probe failed. Called by the latency monitor. */
+  setLatency: (id: string, latencyMs: number | null) => void;
+  /** Clear the ephemeral flag on every session bound to a host that was just
+   * saved via quick-connect, so the "Save host…" affordance disappears. */
+  markHostSaved: (hostId: string) => void;
   /** Accept the host keys shown in an SSH session's host-key preflight prompt.
    * Resolves the awaiting preflight so it trusts the scan and proceeds to spawn.
    * No-op if the session is not currently awaiting a host-key decision. */
@@ -97,7 +121,72 @@ type SessionState = {
   /** Swap the active pane's session with the next pane in the tab. */
   moveActivePaneToNext: () => void;
   resizeSplit: (tabId: string, splitId: string, sizes: number[]) => void;
+  /** Toggle broadcast input for a tab (fan keystrokes from the focused pane out
+   * to every non-excluded pane). Clears any per-pane exclusions on toggle and
+   * pushes the resulting membership to terminalManager. */
+  toggleBroadcast: (tabId: string) => void;
+  /** Toggle broadcast for the active tab (command palette / keyboard shortcut).
+   * No-op unless the active tab has at least two panes. */
+  toggleActiveBroadcast: () => void;
+  /** Include/exclude a single pane's session from its tab's broadcast group. */
+  setPaneBroadcast: (tabId: string, sessionId: string, enabled: boolean) => void;
 };
+
+/** The session ids that should currently receive broadcast for a tab: every
+ * pane's session minus the excluded ones, but only when broadcast is enabled and
+ * the tab actually has more than one pane. Empty when broadcast is off. */
+function broadcastMembers(tab: WorkspaceTab): string[] {
+  if (!tab.broadcastEnabled) return [];
+  const leaves = collectLeaves(tab.root);
+  if (leaves.length < 2) return [];
+  const excluded = new Set(tab.broadcastExcluded ?? []);
+  return leaves.map((leaf) => leaf.sessionId).filter((id) => !excluded.has(id));
+}
+
+/** Push a tab's current broadcast membership into terminalManager. Called after
+ * any change that can affect membership (toggle, exclude, split, close). Bytes
+ * never touch React — this only hands the manager the metadata list. */
+function syncBroadcast(tab: WorkspaceTab | undefined): void {
+  if (!tab) return;
+  const members = broadcastMembers(tab);
+  // An empty membership means broadcast is off, or has fallen below two eligible
+  // panes (toggle off, exclusions, or a tab dropping to one pane). setBroadcastGroup
+  // can only detach the old shared peer set by following a listed member's set, so
+  // an empty list would leave every pane's broadcastPeers stale and keystrokes would
+  // keep fanning out. Explicitly clear each pane in the tab instead — clearBroadcastGroup
+  // disbands the group and leaves no session with a lingering peer set.
+  if (members.length === 0) {
+    for (const leaf of collectLeaves(tab.root)) {
+      terminalManager.clearBroadcastGroup(leaf.sessionId);
+    }
+    return;
+  }
+  terminalManager.setBroadcastGroup(members);
+}
+
+/*
+ * SSH auto-reconnect engine. Timers live at module scope (never React state or
+ * terminal bytes) keyed by the store's session id, mirroring the host-key waiter
+ * map above. `autoReconnectEnabled` is a device-local setting pushed in from the
+ * settings load (see setAutoReconnectEnabled, wired in Layout); the engine reads
+ * it synchronously when deciding whether to schedule a retry.
+ */
+let autoReconnectEnabled = true;
+const reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Honor the "Auto-reconnect SSH sessions" setting. Called on settings load and
+ * whenever the toggle changes. */
+export function setAutoReconnectEnabled(enabled: boolean): void {
+  autoReconnectEnabled = enabled;
+}
+
+function clearReconnectTimer(id: string): void {
+  const timer = reconnectTimers.get(id);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    reconnectTimers.delete(id);
+  }
+}
 
 /** Map a session exit into the metadata patch React should store. SSH failures
  * carry an errorCategory; clean exits (code 0/null, no category) disconnect. */
@@ -119,6 +208,70 @@ function patchSession(
   patch: Partial<TerminalSession>,
 ): TerminalSession[] {
   return sessions.map((s) => (s.id === id ? { ...s, ...patch } : s));
+}
+
+/**
+ * Handle a session's backend exit: schedule an auto-reconnect when it is a
+ * transient SSH failure (and the feature is enabled and attempts remain),
+ * otherwise fall through to the normal disconnected/error patch. A reconnect run
+ * keeps the terminal buffer and counts attempts; a successful reconnection
+ * (onSshAuthenticated) resets the counter.
+ */
+function handleSessionExit(
+  set: SetFn,
+  get: () => SessionState,
+  id: string,
+  exit: SessionExit,
+): void {
+  // The backend auto-stops session logging on exit; drop our indicator so it
+  // never outlives the capture.
+  useSessionLogStore.getState().markInactive(id);
+
+  const session = get().sessions.find((s) => s.id === id);
+  const isSsh = session?.type === "ssh";
+  const previousAttempt = session?.reconnectAttempt ?? 0;
+  const plan =
+    isSsh && session
+      ? planReconnect(exit.errorCategory, autoReconnectEnabled, previousAttempt)
+      : null;
+
+  if (plan && session) {
+    clearReconnectTimer(id);
+    set((state) => ({
+      sessions: patchSession(state.sessions, id, {
+        status: "error",
+        errorCategory: exit.errorCategory,
+        errorMessage: exit.errorMessage ?? undefined,
+        exitCode: exit.code,
+        connectionState: "reconnecting",
+        reconnectAttempt: plan.attempt,
+        nextRetryAt: Date.now() + plan.delayMs,
+        latencyMs: null,
+        connectionPrompt: undefined,
+      }),
+    }));
+    const timer = setTimeout(() => {
+      reconnectTimers.delete(id);
+      if (sessionStillOpen(get, id)) {
+        void get().restartSession(id, { reconnect: true });
+      }
+    }, plan.delayMs);
+    reconnectTimers.set(id, timer);
+    return;
+  }
+
+  // No reconnect: attempts exhausted, non-reconnectable, disabled, or a clean
+  // exit. Non-clean SSH exits become "failed" so the UI can distinguish an
+  // error from a deliberate disconnect.
+  clearReconnectTimer(id);
+  set((state) => ({
+    sessions: patchSession(state.sessions, id, {
+      ...exitPatch(exit),
+      connectionState: exit.errorCategory ? "failed" : "disconnected",
+      nextRetryAt: null,
+      latencyMs: null,
+    }),
+  }));
 }
 
 /*
@@ -294,7 +447,7 @@ type SetFn = (
 ) => void;
 
 /** Register manager callbacks that write session metadata back into the store. */
-function makeCallbacks(set: SetFn, id: string) {
+function makeCallbacks(set: SetFn, get: () => SessionState, id: string) {
   return {
     onTitle: (title: string) =>
       set((state) => {
@@ -303,13 +456,14 @@ function makeCallbacks(set: SetFn, id: string) {
         // or serial port); only local shells adopt xterm's OSC title.
         return session?.type === "local" ? { sessions: patchSession(state.sessions, id, { title }) } : {};
       }),
-    onExit: (exit: SessionExit) =>
-      set((state) => ({
-        sessions: patchSession(state.sessions, id, exitPatch(exit)),
-      })),
+    onExit: (exit: SessionExit) => handleSessionExit(set, get, id, exit),
     onSearchRequested: () => useUiStore.getState().setTerminalSearchOpen(true),
-    onSshAuthenticated: () =>
-      set((state) => ({ sessions: patchSession(state.sessions, id, { status: "connected", connectionPrompt: undefined, connectionStage: "ready" }) })),
+    onSshAuthenticated: () => {
+      // A successful (re)connection ends any reconnect run and resets its
+      // counter, so a later drop starts its backoff schedule from the top.
+      clearReconnectTimer(id);
+      set((state) => ({ sessions: patchSession(state.sessions, id, { status: "connected", connectionPrompt: undefined, connectionStage: "ready", connectionState: "connected", reconnectAttempt: 0, nextRetryAt: null }) }));
+    },
     // Only interactive credential prompts arrive here now; host-key trust is
     // handled by the store's backend preflight before spawn.
     onSshPrompt: (connectionPrompt: { type: "credential"; label: string }) =>
@@ -343,7 +497,7 @@ async function launch(
     const result = await terminalManager.createSession(
       id,
       descriptor,
-      makeCallbacks(set, id),
+      makeCallbacks(set, get, id),
     );
     set((state) => {
       const current = state.sessions.find((s) => s.id === id);
@@ -445,6 +599,7 @@ function sessionFromRestore(
         connectionTarget: restore.connectionTarget ?? restore.title ?? "SSH host",
         status: "connecting",
         connectionStage: "starting",
+        tabColor: restore.tabColor ?? null,
         activePaneId: id,
         restore,
       },
@@ -526,7 +681,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await openInNewTab(set, get, session, { kind: "local", ref }, title);
   },
 
-  openSshSession: async (hostId, title, hostname) => {
+  openSshSession: async (hostId, title, hostname, ephemeral, tabColor) => {
     const id = crypto.randomUUID();
     const session: TerminalSession = {
       id,
@@ -536,12 +691,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       connectionTarget: hostname ?? title ?? "SSH host",
       status: "connecting",
       connectionStage: "starting",
+      hostEphemeral: ephemeral === true,
+      tabColor: tabColor ?? null,
       activePaneId: id,
       restore: {
         kind: "ssh",
         hostId,
         title: title ?? "SSH",
         connectionTarget: hostname ?? title ?? "SSH host",
+        tabColor: tabColor ?? null,
       },
     };
     await openInNewTab(set, get, session, { kind: "ssh", hostId }, title);
@@ -562,7 +720,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await openInNewTab(set, get, session, { kind: "serial", config }, title);
   },
 
-  restartSession: async (id) => {
+  restartSession: async (id, options = {}) => {
+    const reconnect = options.reconnect === true;
+    // A restart mints a new backendId, so any prior logging session is gone.
+    useSessionLogStore.getState().markInactive(id);
+    // A manual restart cancels any auto-reconnect run in flight and starts the
+    // terminal fresh; an auto-reconnect attempt keeps the reconnect metadata.
+    if (!reconnect) clearReconnectTimer(id);
+    const attempt = get().sessions.find((session) => session.id === id)?.reconnectAttempt;
     set((state) => ({
       sessions: patchSession(state.sessions, id, {
         status: "connecting",
@@ -575,6 +740,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         connectionIssue: undefined,
         hostKeyScanned: undefined,
         hostKeyKnown: undefined,
+        latencyMs: null,
+        ...(reconnect
+          ? { connectionState: "reconnecting" as const, nextRetryAt: null }
+          : { connectionState: undefined, reconnectAttempt: 0, nextRetryAt: null }),
       }),
     }));
     // Reconnecting an SSH host re-runs the host-key preflight: a host trusted on
@@ -587,7 +756,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (!proceed || !sessionStillOpen(get, id)) return;
     }
     try {
-      const result = await terminalManager.restart(id);
+      const result = await terminalManager.restart(
+        id,
+        reconnect ? { preserveBuffer: true, reconnectAttempt: attempt } : {},
+      );
       set((state) => {
         const current = state.sessions.find((session) => session.id === id);
         const isSsh = current?.type === "ssh";
@@ -614,12 +786,53 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
   },
 
+  retryReconnectNow: (id) => {
+    clearReconnectTimer(id);
+    if (sessionStillOpen(get, id)) void get().restartSession(id, { reconnect: true });
+  },
+
+  stopReconnect: (id) => {
+    clearReconnectTimer(id);
+    set((state) => ({
+      sessions: patchSession(state.sessions, id, {
+        status: "error",
+        connectionState: "failed",
+        nextRetryAt: null,
+      }),
+    }));
+  },
+
+  setLatency: (id, latencyMs) => {
+    set((state) => {
+      const session = state.sessions.find((s) => s.id === id);
+      if (!session || session.latencyMs === latencyMs) return {};
+      return { sessions: patchSession(state.sessions, id, { latencyMs }) };
+    });
+  },
+
+  markHostSaved: (hostId) => {
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.hostId === hostId && s.hostEphemeral
+          ? { ...s, hostEphemeral: false }
+          : s,
+      ),
+    }));
+  },
+
   trustHostKey: (id) => resolveHostKeyDecision(id, "trust"),
 
   closeSession: (id) => {
     // Cancel an in-flight host-key preflight so its awaiting launch aborts
     // instead of spawning (closing the pane is the "Cancel" action).
     resolveHostKeyDecision(id, "cancel");
+    // Stop any pending auto-reconnect so a closed pane never respawns.
+    clearReconnectTimer(id);
+    // Disposing the backend stops any active logging; clear our indicator too.
+    useSessionLogStore.getState().markInactive(id);
+    // Remember which tab owned this pane so its broadcast membership can be
+    // re-synced after removal (dispose() already detached the closed session).
+    const owningTabId = get().tabs.find((t) => findLeafBySession(t.root, id))?.id;
     terminalManager.dispose(id);
     set((state) => {
       const sessions = state.sessions.filter((s) => s.id !== id);
@@ -647,7 +860,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             remaining[Math.min(removedIndex, remaining.length - 1)]?.id ??
             remaining[0].id;
         }
-        tabs[tabIndex] = { ...tab, root: newRoot, activePaneId };
+        // Dropping back to a single pane disables broadcast for the tab; drop the
+        // closed session from any exclusion set so it can't linger.
+        const stillMultiPane = collectLeaves(newRoot).length > 1;
+        tabs[tabIndex] = {
+          ...tab,
+          root: newRoot,
+          activePaneId,
+          broadcastEnabled: stillMultiPane ? tab.broadcastEnabled : false,
+          broadcastExcluded: (tab.broadcastExcluded ?? []).filter((sid) => sid !== id),
+        };
       }
       return {
         sessions,
@@ -656,6 +878,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         activeSessionId: computeActiveSession(tabs, activeTabId),
       };
     });
+    // Re-push the surviving membership (empty when the tab was removed or
+    // dropped below two panes) so the manager's group matches the layout.
+    syncBroadcast(get().tabs.find((t) => t.id === owningTabId));
     fallbackToHostsIfEmpty(get);
   },
 
@@ -666,6 +891,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     for (const sessionId of doomed) {
       // Abort any pending host-key preflight before disposing the backend.
       resolveHostKeyDecision(sessionId, "cancel");
+      // Stop any pending auto-reconnect for the closed sessions.
+      clearReconnectTimer(sessionId);
+      useSessionLogStore.getState().markInactive(sessionId);
       terminalManager.dispose(sessionId);
     }
     set((state) => {
@@ -744,12 +972,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         connectionTarget: source.connectionTarget,
         status: "connecting",
         connectionStage: "starting",
+        tabColor: source.tabColor ?? null,
         activePaneId: id,
         restore: {
           kind: "ssh",
           hostId: source.hostId,
           title: source.title,
           connectionTarget: source.connectionTarget,
+          tabColor: source.tabColor ?? null,
         },
       };
     } else {
@@ -776,6 +1006,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
     await waitForPaneLayout();
     await launch(set, get, id, descriptor, title);
+    // A new pane in an already-broadcasting tab joins the group automatically.
+    syncBroadcast(get().tabs.find((t) => t.id === tab.id));
   },
 
   splitActivePaneWith: async (direction, restore) => {
@@ -801,10 +1033,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
     await waitForPaneLayout();
     await launch(set, get, id, descriptor, title);
+    // A new pane in an already-broadcasting tab joins the group automatically.
+    syncBroadcast(get().tabs.find((t) => t.id === tab.id));
   },
 
   mergeTabs: (sourceTabId, targetTabId, direction = "row", placement = "after", targetPaneId) => {
     if (sourceTabId === targetTabId) return;
+    // Sessions grafted out of the source tab must not keep the source's broadcast
+    // group; they re-join only if the target tab itself broadcasts (synced below).
+    const movedSessionIds =
+      get().tabs.find((t) => t.id === sourceTabId)?.root
+        ? collectLeaves(get().tabs.find((t) => t.id === sourceTabId)!.root).map(
+            (leaf) => leaf.sessionId,
+          )
+        : [];
     set((state) => {
       const source = state.tabs.find((t) => t.id === sourceTabId);
       const target = state.tabs.find((t) => t.id === targetTabId);
@@ -863,6 +1105,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       };
     });
     useUiStore.getState().showTerminal();
+    for (const sid of movedSessionIds) terminalManager.clearBroadcastGroup(sid);
+    syncBroadcast(get().tabs.find((t) => t.id === targetTabId));
     const sessionId = get().activeSessionId;
     if (sessionId) requestAnimationFrame(() => terminalManager.focus(sessionId));
   },
@@ -976,5 +1220,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           : t,
       ),
     }));
+  },
+
+  toggleBroadcast: (tabId) => {
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, broadcastEnabled: !t.broadcastEnabled, broadcastExcluded: [] }
+          : t,
+      ),
+    }));
+    syncBroadcast(get().tabs.find((t) => t.id === tabId));
+  },
+
+  toggleActiveBroadcast: () => {
+    const state = get();
+    const tab = state.tabs.find((t) => t.id === state.activeTabId);
+    // Broadcast only makes sense across multiple panes; the toggle is hidden in
+    // the UI for single-pane tabs, so the shortcut/palette entry match that.
+    if (!tab || collectLeaves(tab.root).length < 2) return;
+    get().toggleBroadcast(tab.id);
+  },
+
+  setPaneBroadcast: (tabId, sessionId, enabled) => {
+    set((state) => ({
+      tabs: state.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const excluded = new Set(t.broadcastExcluded ?? []);
+        if (enabled) excluded.delete(sessionId);
+        else excluded.add(sessionId);
+        return { ...t, broadcastExcluded: [...excluded] };
+      }),
+    }));
+    syncBroadcast(get().tabs.find((t) => t.id === tabId));
   },
 }));

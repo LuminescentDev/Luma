@@ -318,6 +318,120 @@ pub struct GenerateKeyInput {
     certificate: Option<String>,
 }
 
+struct GeneratedVaultKey {
+    private_key: Zeroizing<String>,
+    public_key: String,
+    fingerprint: String,
+}
+
+fn generate_vault_key_material(
+    key_type: &str,
+    comment: &str,
+    passphrase: Option<&str>,
+) -> Result<GeneratedVaultKey> {
+    if comment.len() > 1024 || comment.chars().any(char::is_control) {
+        return Err(crate::errors::LumaError::InvalidInput(
+            "key comment must be at most 1024 characters and contain no control characters".into(),
+        ));
+    }
+    let algorithm = match key_type {
+        "ed25519" => Algorithm::Ed25519,
+        "rsa4096" => Algorithm::Rsa { hash: None },
+        _ => {
+            return Err(crate::errors::LumaError::InvalidInput(
+                "keyType must be 'ed25519' or 'rsa4096'".into(),
+            ))
+        }
+    };
+    let mut rng = OsRng;
+    let mut private_key = PrivateKey::random(&mut rng, algorithm).map_err(|_| {
+        crate::errors::LumaError::InvalidInput("could not generate the SSH key".into())
+    })?;
+    private_key.set_comment(comment);
+    let public_key = private_key.public_key().to_openssh().map_err(|_| {
+        crate::errors::LumaError::InvalidInput("could not encode the SSH public key".into())
+    })?;
+    let fingerprint = private_key
+        .public_key()
+        .fingerprint(ssh_key::HashAlg::Sha256)
+        .to_string();
+    let encoded = match passphrase.filter(|value| !value.is_empty()) {
+        Some(passphrase) => private_key
+            .encrypt(&mut rng, passphrase.as_bytes())
+            .and_then(|key| key.to_openssh(LineEnding::LF)),
+        None => private_key.to_openssh(LineEnding::LF),
+    }
+    .map_err(|_| {
+        crate::errors::LumaError::InvalidInput("could not encode the SSH private key".into())
+    })?;
+    Ok(GeneratedVaultKey {
+        private_key: Zeroizing::new(encoded.to_string()),
+        public_key,
+        fingerprint,
+    })
+}
+
+async fn generate_vault_ssh_key(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    key_type: String,
+    name: String,
+    passphrase: Option<String>,
+    comment: Option<String>,
+) -> Result<KeyReference> {
+    if !vault::is_unlocked(vault_state) {
+        return Err(crate::errors::LumaError::VaultLocked(
+            "unlock the vault before generating a private key".into(),
+        ));
+    }
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() || trimmed_name.len() > 128 {
+        return Err(crate::errors::LumaError::InvalidInput(
+            "key name must be 1-128 characters".into(),
+        ));
+    }
+    if passphrase
+        .as_ref()
+        .is_some_and(|value| value.len() > 16 * 1024)
+    {
+        return Err(crate::errors::LumaError::InvalidInput(
+            "passphrase is too large".into(),
+        ));
+    }
+    let comment = comment.unwrap_or_else(|| trimmed_name.to_string());
+    let key_type_for_task = key_type.clone();
+    let comment_for_task = comment.clone();
+    let passphrase_for_task = passphrase.clone();
+    let generated = tokio::task::spawn_blocking(move || {
+        generate_vault_key_material(
+            &key_type_for_task,
+            &comment_for_task,
+            passphrase_for_task.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| {
+        crate::errors::LumaError::InvalidInput(format!("SSH key generation task failed: {error}"))
+    })??;
+
+    create_key_reference(
+        pool,
+        vault_state,
+        KeyReferenceInput {
+            name,
+            public_key: Some(generated.public_key),
+            storage_mode: "encrypted-vault".into(),
+            local_path: None,
+            fingerprint: Some(generated.fingerprint),
+            certificate: None,
+            private_key: Some(generated.private_key.to_string()),
+            passphrase: passphrase.filter(|value| !value.is_empty()),
+        },
+        AtomicWriteFailure::None,
+    )
+    .await
+}
+
 struct GeneratedKeyFiles {
     private_path: PathBuf,
     public_path: PathBuf,
@@ -459,9 +573,31 @@ async fn generate_ssh_key(
 pub async fn ssh_key_generate(
     state: State<'_, AppState>,
     vault_state: State<'_, VaultState>,
-    input: GenerateKeyInput,
+    key_type: Option<String>,
+    name: Option<String>,
+    passphrase: Option<String>,
+    comment: Option<String>,
+    input: Option<GenerateKeyInput>,
 ) -> Result<KeyReference> {
-    generate_ssh_key(&state.pool, &vault_state, input).await
+    if let Some(input) = input {
+        if key_type.is_some() || name.is_some() || passphrase.is_some() || comment.is_some() {
+            return Err(crate::errors::LumaError::InvalidInput(
+                "legacy input cannot be combined with keyType, name, passphrase, or comment".into(),
+            ));
+        }
+        return generate_ssh_key(&state.pool, &vault_state, input).await;
+    }
+
+    generate_vault_ssh_key(
+        &state.pool,
+        &vault_state,
+        key_type
+            .ok_or_else(|| crate::errors::LumaError::InvalidInput("keyType is required".into()))?,
+        name.ok_or_else(|| crate::errors::LumaError::InvalidInput("name is required".into()))?,
+        passphrase,
+        comment,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -635,6 +771,87 @@ mod tests {
         let public = std::fs::read_to_string(format!("{}.pub", path.to_string_lossy())).unwrap();
         assert!(public.starts_with("ssh-ed25519 "));
         pool.close().await;
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn generated_ed25519_and_rsa4096_keys_have_stable_public_metadata() {
+        for key_type in ["ed25519", "rsa4096"] {
+            let generated = generate_vault_key_material(
+                key_type,
+                "luma-generated-test",
+                Some("test key passphrase"),
+            )
+            .unwrap();
+            let private = PrivateKey::from_openssh(generated.private_key.as_str()).unwrap();
+            assert!(private.is_encrypted());
+            let decrypted = private.decrypt(b"test key passphrase").unwrap();
+            let public = ssh_key::PublicKey::from_openssh(&generated.public_key).unwrap();
+            assert_eq!(decrypted.public_key().key_data(), public.key_data());
+            assert_eq!(
+                public.fingerprint(ssh_key::HashAlg::Sha256).to_string(),
+                generated.fingerprint
+            );
+            assert_eq!(public.comment(), "luma-generated-test");
+            match key_type {
+                "ed25519" => assert!(generated.public_key.starts_with("ssh-ed25519 ")),
+                "rsa4096" => assert!(generated.public_key.starts_with("ssh-rsa ")),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_private_key_plaintext_is_absent_from_database_file() {
+        let directory = std::env::temp_dir().join(format!(
+            "luma-generated-vault-key-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let database_path = directory.join("luma.db");
+        let pool = crate::storage::init(&database_path).await.unwrap();
+        let vault_state = VaultState::default();
+        vault::setup(&pool, &vault_state, "test vault password", false)
+            .await
+            .unwrap();
+        let created = generate_vault_ssh_key(
+            &pool,
+            &vault_state,
+            "ed25519".into(),
+            "Vault generated".into(),
+            Some("private key passphrase".into()),
+            Some("db plaintext sentinel".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.storage_mode, "encrypted-vault");
+        assert!(created.has_private_key);
+        assert!(created
+            .public_key
+            .as_deref()
+            .is_some_and(|value| value.starts_with("ssh-ed25519 ")));
+        assert!(created
+            .fingerprint
+            .as_deref()
+            .is_some_and(|value| value.starts_with("SHA256:")));
+        let private_key = Zeroizing::new(
+            vault::load(&pool, &vault_state, "key", &created.id, "private-key")
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        sqlx::query("PRAGMA wal_checkpoint(FULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        let database = std::fs::read(&database_path).unwrap();
+        assert!(
+            !database
+                .windows(private_key.len())
+                .any(|window| window == private_key.as_bytes()),
+            "plaintext private key was found in SQLite"
+        );
         let _ = std::fs::remove_dir_all(directory);
     }
 

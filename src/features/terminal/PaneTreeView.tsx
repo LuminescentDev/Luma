@@ -66,12 +66,21 @@ function PaneNodeView({
     const session = sessions.find((s) => s.id === node.sessionId);
     if (!session) return null;
     const selected = targetPaneId === node.id;
+    // Broadcast is only meaningful across multiple panes. `broadcastActive`
+    // drives the per-pane include/exclude action; `broadcasting` marks the panes
+    // that currently receive fanned-out input (tinted border + badge).
+    const broadcastActive = Boolean(tab.broadcastEnabled) && multiPane;
+    const broadcasting =
+      broadcastActive && !(tab.broadcastExcluded ?? []).includes(session.id);
     return (
       <div className="relative h-full min-h-0 w-full min-w-0">
         <PaneView
           session={session}
+          tabId={tab.id}
           focused={tab.activePaneId === node.id}
           showFocusRing={multiPane}
+          broadcastActive={broadcastActive}
+          broadcasting={broadcasting}
           onFocus={() => focusPane(tab.id, node.id)}
         />
         {showDropPreview && (

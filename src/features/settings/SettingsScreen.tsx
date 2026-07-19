@@ -6,6 +6,8 @@ import { parseShellRef, serializeShellRef } from "../../lib/terminal";
 import { SETTING_KEYS, type ThemeMode } from "../../types";
 import { cn } from "../../lib/utils";
 import { ProfilesSection } from "./ProfilesSection";
+import { AppearanceSection } from "./AppearanceSection";
+import { KeymapSection } from "./KeymapSection";
 import { SyncSection } from "../sync/SyncSection";
 import { BackupSection } from "../sync/BackupSection";
 import { UpdatesSection } from "../updater/UpdatesSection";
@@ -23,9 +25,9 @@ export function SettingsScreen() {
   const { data: shells } = useShells();
   const { data: profiles } = useProfiles();
 
-  const fontSize = Number(settings?.[SETTING_KEYS.fontSize] ?? 14);
   const scrollback = Number(settings?.[SETTING_KEYS.scrollback] ?? 5000);
   const restoreSessions = settings?.[SETTING_KEYS.restoreSessions] !== false;
+  const autoReconnect = settings?.[SETTING_KEYS.autoReconnect] !== false;
   const defaultShell = parseShellRef(settings?.[SETTING_KEYS.defaultShell]);
   const defaultShellValue = defaultShell ? serializeShellRef(defaultShell) : "";
 
@@ -39,7 +41,7 @@ export function SettingsScreen() {
         </p>
 
         <Section title="Appearance">
-          <Field label="Theme" hint="Dark is Luma's native look.">
+          <Field label="Theme" hint="Light/dark base used when Color theme is Auto.">
             <div className="flex gap-1 rounded-lg border border-border bg-surface p-1">
               {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
                 <button
@@ -60,6 +62,7 @@ export function SettingsScreen() {
               ))}
             </div>
           </Field>
+          <AppearanceSection />
         </Section>
 
         <Section title="Terminal">
@@ -86,16 +89,6 @@ export function SettingsScreen() {
                 </option>
               ))}
             </select>
-          </Field>
-          <Field label="Font size" hint="Applies to all open terminals.">
-            <NumberInput
-              value={fontSize}
-              min={8}
-              max={32}
-              onChange={(value) =>
-                setSetting.mutate({ key: SETTING_KEYS.fontSize, value })
-              }
-            />
           </Field>
           <Field label="Scrollback lines" hint="Maximum lines kept per terminal.">
             <NumberInput
@@ -125,8 +118,30 @@ export function SettingsScreen() {
           </Field>
         </Section>
 
+        <Section title="SSH">
+          <Field
+            label="Auto-reconnect SSH sessions"
+            hint="Retries dropped connections with backoff; scrollback is kept."
+          >
+            <Toggle
+              checked={autoReconnect}
+              label="Auto-reconnect SSH sessions"
+              onClick={() =>
+                setSetting.mutate({
+                  key: SETTING_KEYS.autoReconnect,
+                  value: !autoReconnect,
+                })
+              }
+            />
+          </Field>
+        </Section>
+
         <Section title="Shell profiles">
           <ProfilesSection />
+        </Section>
+
+        <Section title="Keyboard shortcuts">
+          <KeymapSection />
         </Section>
 
         <Section title="Sync">

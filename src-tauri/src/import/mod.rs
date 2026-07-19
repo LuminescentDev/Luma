@@ -838,6 +838,7 @@ pub async fn apply_hosts(
             environment: None,
             tags: Vec::new(),
             favorite: false,
+            tab_color: None,
         };
         hosts::validate_fields(&input)?;
         prepared.push(PreparedHost {

@@ -33,7 +33,33 @@ export type DirectoryListing = {
   entries: SftpEntry[];
 };
 
-export type TransferState = "running" | "completed" | "failed" | "cancelled";
+export type TransferState =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  /** Only used on per-entry ("entry") events for skipped symlinks. */
+  | "skipped";
+
+/**
+ * Which facet of a directory transfer an event describes. Absent entirely for
+ * single-file jobs, whose events carry only the original five fields (legacy).
+ *  - "file": progress of the file currently being transferred, plus an
+ *    aggregate snapshot of the whole job.
+ *  - "aggregate": overall progress; `transferred`=bytesDone, `total`=totalBytes.
+ *  - "entry": a per-entry outcome (skipped symlink or failed entry); `filePath`
+ *    is the entry's path relative to the transfer root, always using "/".
+ */
+export type TransferProgressKind = "file" | "aggregate" | "entry";
+
+/** Whole-job snapshot carried on directory "file" events. */
+export type TransferAggregate = {
+  totalBytes: number;
+  bytesDone: number;
+  totalFiles: number;
+  filesDone: number;
+  currentFilePath: string | null;
+};
 
 export type TransferProgress = {
   transferId: string;
@@ -41,6 +67,16 @@ export type TransferProgress = {
   total: number | null;
   state: TransferState;
   errorMessage: string | null;
+  /** Absent on single-file (legacy) events; set on every directory event. */
+  progressKind?: TransferProgressKind;
+  /** Relative "/"-separated path: current file on "file", entry on "entry". */
+  filePath?: string;
+  /** Whole-job snapshot; present on directory "file" events. */
+  aggregate?: TransferAggregate;
+  /** Byte offset a resumed file started at, present on the FIRST "file" (and
+   * single-file running) event of a resumed transfer — `transferred` begins at
+   * this offset. Absent for transfers that started from the beginning. */
+  resumedFrom?: number;
 };
 
 export type SftpSessionInfo = { sftpSessionId: string; hostId: string };
@@ -137,6 +173,25 @@ export function sftpDownload(
 
 export function sftpCancel(transferId: string): Promise<void> {
   return invoke<void>("sftp_cancel", { transferId });
+}
+
+/**
+ * Retry the failed / incomplete entries of a finished transfer. Returns a NEW
+ * transferId that owns the retry — the caller must rebind its queue row to it
+ * for any subsequent cancel or progress handling. Rejects with invalid-input
+ * "unknown transfer", "transfer is still running", or "transfer has no failed
+ * or incomplete entries to retry".
+ */
+export function sftpRetry(
+  transferId: string,
+  onProgress: (progress: TransferProgress) => void,
+): Promise<TransferHandle> {
+  const channel = new Channel<TransferProgress>();
+  channel.onmessage = onProgress;
+  return invoke<TransferHandle>("sftp_retry", {
+    transferId,
+    onProgress: channel,
+  });
 }
 
 // Formatting + path helpers --------------------------------------------------

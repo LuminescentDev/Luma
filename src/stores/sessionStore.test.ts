@@ -1,6 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setInvoke, invoke } from "../test/tauriMock";
 import { useSessionStore } from "./sessionStore";
+import { terminalManager } from "../features/terminal/terminalManager";
+import { createdTerminals } from "../test/xtermMock";
 import { collectLeaves } from "../features/terminal/paneTree";
 import { serializeNode } from "../features/terminal/sessionSnapshot";
 import { buildHostGroupLayout, parseTemplates } from "./templateStore";
@@ -215,6 +217,62 @@ describe("SSH host-key preflight decisions", () => {
   });
 });
 
+describe("SSH auto-reconnect engine", () => {
+  it("schedules a reconnect on a transient failure and stopReconnect ends it", async () => {
+    setInvoke((cmd, args) => {
+      if (cmd === "ssh_host_key_status") {
+        return { status: "known", scannedKeys: [], knownKeys: [] };
+      }
+      if (cmd === "ssh_spawn") {
+        fire<SshExitPayload>(args.onExit, {
+          code: null,
+          errorCategory: "timeout",
+          errorMessage: "connection timed out",
+        });
+        return { sessionId: "backend-ssh", title: "prod" };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    await useSessionStore.getState().openSshSession("host-1", "prod", "prod.example.com");
+    const session = latestSession();
+    // A transient SSH failure enters the reconnecting state (attempt 1) rather
+    // than a terminal error.
+    expect(session.connectionState).toBe("reconnecting");
+    expect(session.reconnectAttempt).toBe(1);
+    expect(typeof session.nextRetryAt).toBe("number");
+
+    // Stopping abandons the run and leaves a failed session (no more retries).
+    useSessionStore.getState().stopReconnect(session.id);
+    const stopped = latestSession();
+    expect(stopped.connectionState).toBe("failed");
+    expect(stopped.status).toBe("error");
+  });
+
+  it("does not auto-reconnect an auth failure", async () => {
+    setInvoke((cmd, args) => {
+      if (cmd === "ssh_host_key_status") {
+        return { status: "known", scannedKeys: [], knownKeys: [] };
+      }
+      if (cmd === "ssh_spawn") {
+        fire<SshExitPayload>(args.onExit, {
+          code: null,
+          errorCategory: "auth-failed",
+          errorMessage: "Permission denied",
+        });
+        return { sessionId: "backend-ssh", title: "prod" };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    await useSessionStore.getState().openSshSession("host-1", "prod", "prod.example.com");
+    const session = latestSession();
+    expect(session.status).toBe("error");
+    expect(session.connectionState).toBe("failed");
+    expect(session.reconnectAttempt).toBeUndefined();
+  });
+});
+
 /** Answer pty_spawn for local sessions/splits used by the grouping tests. */
 function mockLocalSpawn(): void {
   setInvoke((cmd) => {
@@ -356,6 +414,136 @@ describe("mergeTabs", () => {
 
     useSessionStore.getState().mergeTabs(tab1.id, "nope");
     expect(useSessionStore.getState().tabs).toHaveLength(2);
+  });
+});
+
+describe("broadcast input", () => {
+  it("enables broadcast for a multi-pane tab and pushes full membership", async () => {
+    mockLocalSpawn();
+    const setGroup = vi.spyOn(terminalManager, "setBroadcastGroup");
+    const store = useSessionStore.getState();
+    await store.openLocalSession();
+    await store.splitActivePane("row");
+
+    const tab = useSessionStore.getState().tabs[0];
+    const sessionIds = collectLeaves(tab.root).map((l) => l.sessionId);
+
+    setGroup.mockClear();
+    useSessionStore.getState().toggleBroadcast(tab.id);
+
+    expect(useSessionStore.getState().tabs[0].broadcastEnabled).toBe(true);
+    expect(setGroup).toHaveBeenLastCalledWith(sessionIds);
+    setGroup.mockRestore();
+  });
+
+  it("excludes a pane from the broadcast membership", async () => {
+    mockLocalSpawn();
+    const setGroup = vi.spyOn(terminalManager, "setBroadcastGroup");
+    const store = useSessionStore.getState();
+    await store.openLocalSession();
+    await store.splitActivePane("row");
+
+    const tab = useSessionStore.getState().tabs[0];
+    const [a, b] = collectLeaves(tab.root).map((l) => l.sessionId);
+    useSessionStore.getState().toggleBroadcast(tab.id);
+
+    setGroup.mockClear();
+    useSessionStore.getState().setPaneBroadcast(tab.id, b, false);
+
+    expect(useSessionStore.getState().tabs[0].broadcastExcluded).toContain(b);
+    expect(setGroup).toHaveBeenLastCalledWith([a]);
+    setGroup.mockRestore();
+  });
+
+  it("a new split pane joins an already-broadcasting tab", async () => {
+    mockLocalSpawn();
+    const store = useSessionStore.getState();
+    await store.openLocalSession();
+    await store.splitActivePane("row");
+    const tab = useSessionStore.getState().tabs[0];
+    useSessionStore.getState().toggleBroadcast(tab.id);
+
+    const setGroup = vi.spyOn(terminalManager, "setBroadcastGroup");
+    await useSessionStore.getState().splitActivePane("row");
+
+    const after = useSessionStore.getState().tabs[0];
+    const sessionIds = collectLeaves(after.root).map((l) => l.sessionId);
+    expect(sessionIds).toHaveLength(3);
+    expect(setGroup).toHaveBeenLastCalledWith(sessionIds);
+    setGroup.mockRestore();
+  });
+
+  it("disables broadcast when the tab drops back to a single pane", async () => {
+    mockLocalSpawn();
+    const store = useSessionStore.getState();
+    await store.openLocalSession();
+    await store.splitActivePane("row");
+    const tab = useSessionStore.getState().tabs[0];
+    useSessionStore.getState().toggleBroadcast(tab.id);
+    expect(useSessionStore.getState().tabs[0].broadcastEnabled).toBe(true);
+
+    const leaves = collectLeaves(useSessionStore.getState().tabs[0].root);
+    useSessionStore.getState().closeSession(leaves[0].sessionId);
+
+    expect(useSessionStore.getState().tabs[0].broadcastEnabled).toBe(false);
+  });
+
+  it("stops fan-out through the real manager once broadcast is toggled off", async () => {
+    // Unique backend id per spawn plus per-backend write capture so we can assert
+    // real fan-out through the un-mocked terminalManager (only invoke is mocked).
+    const writes: Record<string, string[]> = {};
+    let spawnCount = 0;
+    setInvoke((cmd, args) => {
+      if (cmd === "pty_spawn") {
+        spawnCount += 1;
+        return { sessionId: `toff-backend-${spawnCount}`, shellName: "bash" };
+      }
+      if (cmd === "pty_write") {
+        const id = args.sessionId as string;
+        (writes[id] ??= []).push(args.data as string);
+        return undefined;
+      }
+      if (cmd === "pty_kill") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    const startIndex = createdTerminals.length;
+    const store = useSessionStore.getState();
+    await store.openLocalSession();
+    await store.splitActivePane("row"); // second pane -> second backend
+    const termA = createdTerminals[startIndex];
+    const [backendA, backendB] = ["toff-backend-1", "toff-backend-2"];
+
+    const tab = useSessionStore.getState().tabs[0];
+    useSessionStore.getState().toggleBroadcast(tab.id);
+    expect(useSessionStore.getState().tabs[0].broadcastEnabled).toBe(true);
+
+    // Broadcast on: typing into A fans out to B.
+    termA.emitData("x");
+    await flush();
+    expect(writes[backendA]).toEqual(["x"]);
+    expect(writes[backendB]).toEqual(["x"]);
+
+    // Toggle broadcast OFF. syncBroadcast now computes an empty membership; the
+    // regression is that it must disband the group (clear every former member)
+    // rather than call setBroadcastGroup([]) and leave a stale shared peer set.
+    useSessionStore.getState().toggleBroadcast(tab.id);
+    expect(useSessionStore.getState().tabs[0].broadcastEnabled).toBe(false);
+
+    termA.emitData("y");
+    await flush();
+    expect(writes[backendA]).toEqual(["x", "y"]);
+    expect(writes[backendB]).toEqual(["x"]); // B no longer receives fan-out
+
+    const leaves = collectLeaves(useSessionStore.getState().tabs[0].root);
+    for (const leaf of leaves) useSessionStore.getState().closeSession(leaf.sessionId);
+  });
+
+  it("toggleActiveBroadcast is a no-op on a single-pane tab", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    useSessionStore.getState().toggleActiveBroadcast();
+    expect(useSessionStore.getState().tabs[0].broadcastEnabled).toBeFalsy();
   });
 });
 

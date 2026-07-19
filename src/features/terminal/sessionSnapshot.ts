@@ -112,10 +112,19 @@ function isRestoreDescriptor(value: unknown): value is RestoreDescriptor {
   if (kind === "ssh") {
     // hostId is required; the display strings are optional so pre-existing
     // snapshots (hostId only) still validate. When present they must be strings.
-    const ssh = value as { hostId?: unknown; title?: unknown; connectionTarget?: unknown };
+    const ssh = value as {
+      hostId?: unknown;
+      title?: unknown;
+      connectionTarget?: unknown;
+      tabColor?: unknown;
+    };
     if (typeof ssh.hostId !== "string") return false;
     if (ssh.title !== undefined && typeof ssh.title !== "string") return false;
     if (ssh.connectionTarget !== undefined && typeof ssh.connectionTarget !== "string") {
+      return false;
+    }
+    // tabColor is optional; when present it must be a string or null.
+    if (ssh.tabColor !== undefined && ssh.tabColor !== null && typeof ssh.tabColor !== "string") {
       return false;
     }
     return true;

@@ -1,0 +1,1 @@
+ALTER TABLE hosts ADD COLUMN tab_color TEXT NULL;

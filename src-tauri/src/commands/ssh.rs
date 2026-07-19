@@ -1,16 +1,18 @@
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::errors::{LumaError, Result};
+use crate::sftp::{self, SftpManager};
 use crate::ssh::{
     self, EmbeddedSshManager, OpenSshEngine, SshBackend, SshConfigCandidate,
     SshConfigImportRequest, SshConfigImportResult, SshDetection, SshEngine, SshExit,
     SshHostKeyStatus, SshRemoteOs,
 };
-use crate::storage::hosts;
+use crate::storage::{hosts, key_references};
 use crate::terminal::PtyManager;
 use crate::vault::VaultState;
 use crate::AppState;
@@ -30,6 +32,25 @@ pub struct SshSpawnRequest {
 pub struct SshSpawnResponse {
     pub session_id: String,
     pub title: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SshLatencyResponse {
+    pub latency_ms: u64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SshKeyInstallStatus {
+    Installed,
+    AlreadyPresent,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SshKeyInstallResponse {
+    pub status: SshKeyInstallStatus,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +97,138 @@ fn take_remote_os_event(state: &Arc<Mutex<PendingRemoteOsEvent>>) -> Option<SshR
 #[tauri::command]
 pub async fn ssh_detect() -> Result<SshDetection> {
     Ok(ssh::detect())
+}
+
+#[tauri::command]
+pub async fn quick_connect_prepare(
+    state: State<'_, AppState>,
+    input: String,
+) -> Result<crate::storage::hosts::Host> {
+    hosts::create_ephemeral(&state.pool, &input).await
+}
+
+#[tauri::command]
+pub async fn quick_connect_save(
+    state: State<'_, AppState>,
+    host_id: String,
+    name: Option<String>,
+) -> Result<crate::storage::hosts::Host> {
+    ssh::validate_host_id(&host_id)?;
+    hosts::save_ephemeral(&state.pool, &host_id, name.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn ssh_ping(
+    pty: State<'_, PtyManager>,
+    embedded: State<'_, EmbeddedSshManager>,
+    session_id: String,
+) -> Result<SshLatencyResponse> {
+    if let Some(latency_ms) = embedded.ping(&session_id).await? {
+        return Ok(SshLatencyResponse { latency_ms });
+    }
+    if pty.contains(&session_id) {
+        return Err(LumaError::SshConnection {
+            category: "unsupported",
+            message: "in-band ping is unavailable for system OpenSSH sessions".into(),
+        });
+    }
+    Err(LumaError::InvalidInput("unknown SSH session".into()))
+}
+
+#[tauri::command]
+pub async fn ssh_probe(state: State<'_, AppState>, host_id: String) -> Result<SshLatencyResponse> {
+    ssh::validate_host_id(&host_id)?;
+    let host = hosts::get(&state.pool, &host_id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
+    let started = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::TcpStream::connect((host.hostname.as_str(), host.port)),
+    )
+    .await
+    .map_err(|_| LumaError::SshConnection {
+        category: "timeout",
+        message: "SSH TCP probe timed out".into(),
+    })?
+    .map_err(probe_error)?;
+    Ok(SshLatencyResponse {
+        latency_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    })
+}
+
+fn probe_error(error: std::io::Error) -> LumaError {
+    let lower = error.to_string().to_ascii_lowercase();
+    let category = if matches!(error.kind(), std::io::ErrorKind::TimedOut) {
+        "timeout"
+    } else if matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::HostUnreachable
+            | std::io::ErrorKind::NetworkUnreachable
+    ) {
+        "host-unreachable"
+    } else if lower.contains("name")
+        && (lower.contains("resolve") || lower.contains("known") || lower.contains("getaddrinfo"))
+    {
+        "dns-failed"
+    } else {
+        "host-unreachable"
+    };
+    LumaError::SshConnection {
+        category,
+        message: format!("SSH TCP probe failed: {error}"),
+    }
+}
+
+#[tauri::command]
+pub async fn ssh_key_install(
+    state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
+    sftp_manager: State<'_, SftpManager>,
+    host_id: String,
+    key_reference_id: String,
+) -> Result<SshKeyInstallResponse> {
+    ssh::validate_host_id(&host_id)?;
+    let key = key_references::get(&state.pool, &key_reference_id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown key reference".into()))?;
+    let public_key = key
+        .public_key
+        .ok_or_else(|| LumaError::KeyUnavailable("key reference has no public key".into()))?;
+    let public_key = ssh_key::PublicKey::from_openssh(&public_key)
+        .and_then(|key| key.to_openssh())
+        .map_err(|_| LumaError::InvalidInput("stored public key is invalid".into()))?;
+
+    let session = sftp_manager
+        .connect(&state.pool, &vault_state, &host_id)
+        .await?;
+    let install_result = sftp::install_authorized_key(
+        &sftp_manager,
+        &session.sftp_session_id,
+        &session.initial_path,
+        &public_key,
+    )
+    .await;
+    let disconnect_result = sftp_manager.disconnect(&session.sftp_session_id).await;
+    match install_result {
+        Ok(installed) => {
+            disconnect_result?;
+            Ok(SshKeyInstallResponse {
+                status: if installed {
+                    SshKeyInstallStatus::Installed
+                } else {
+                    SshKeyInstallStatus::AlreadyPresent
+                },
+            })
+        }
+        Err(error) => {
+            if let Err(disconnect_error) = disconnect_result {
+                tracing::warn!(host_id = %host_id, %disconnect_error, "could not close key-install SFTP session");
+            }
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
@@ -196,7 +349,7 @@ pub async fn ssh_spawn(
     }
 
     if let Err(error) = hosts::record_recent_connection(&state.pool, &request.host_id).await {
-        if !embedded.disconnect(&session_id).await.unwrap_or(false) {
+        if !embedded.disconnect(&session_id).unwrap_or(false) {
             let _ = pty.kill(&session_id);
         }
         return Err(error);

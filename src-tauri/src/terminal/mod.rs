@@ -1,11 +1,16 @@
+pub(crate) mod logging;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::errors::{LumaError, Result};
+
+use logging::SessionLogManager;
+pub use logging::{SessionLogMode, SessionLogStatus};
 
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -28,6 +33,7 @@ struct PtySession {
 #[derive(Default)]
 pub struct PtyManager {
     sessions: Arc<Mutex<HashMap<String, Arc<PtySession>>>>,
+    logs: SessionLogManager,
 }
 
 impl PtyManager {
@@ -104,6 +110,7 @@ impl PtyManager {
             killer: Mutex::new(killer),
         });
         self.sessions.lock().unwrap().insert(id.clone(), session);
+        self.logs.register(&id, cols, rows);
 
         // Waiter thread: reaps the child, then drops the session so the PTY
         // master closes. On Windows the ConPTY reader only unblocks with EOF
@@ -124,6 +131,7 @@ impl PtyManager {
         // Reader thread: drains output until the PTY closes, then reports the
         // exit code collected by the waiter.
         let reader_id = id.clone();
+        let logs = self.logs.clone();
         std::thread::Builder::new()
             .name(format!("pty-reader-{reader_id}"))
             .spawn(move || {
@@ -131,9 +139,13 @@ impl PtyManager {
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => on_data(&buf[..n]),
+                        Ok(n) => {
+                            logs.write(&reader_id, &buf[..n]);
+                            on_data(&buf[..n]);
+                        }
                     }
                 }
+                logs.unregister(&reader_id);
                 let code = exit_rx.recv().ok().flatten();
                 on_exit(code);
             })
@@ -144,26 +156,64 @@ impl PtyManager {
     }
 
     pub fn write(&self, session_id: &str, data: &str) -> Result<()> {
+        if self.write_if_present(session_id, data.as_bytes())? {
+            return Ok(());
+        }
+        Err(LumaError::InvalidInput("unknown terminal session".into()))
+    }
+
+    /// Write without turning a missing id into an error. Commands shared by
+    /// native PTYs and embedded SSH use this fast path to route the overwhelmingly
+    /// common local/OpenSSH case without first touching the SSH manager.
+    pub fn write_if_present(&self, session_id: &str, data: &[u8]) -> Result<bool> {
         if data.len() > MAX_INPUT_BYTES {
             return Err(LumaError::InvalidInput("input too large".into()));
         }
-        let session = self.get(session_id)?;
+        let Some(session) = self.sessions.lock().unwrap().get(session_id).cloned() else {
+            return Ok(false);
+        };
         let mut writer = session.writer.lock().unwrap();
         writer
-            .write_all(data.as_bytes())
-            .and_then(|_| writer.flush())
-            .map_err(|e| LumaError::Pty(format!("write failed: {e}")))
+            .write_all(data)
+            .map_err(|e| LumaError::Pty(format!("write failed: {e}")))?;
+        Ok(true)
     }
 
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
         let session = self.get(session_id)?;
+        let rows = rows.clamp(2, 500);
+        let cols = cols.clamp(2, 1000);
         let result = session.master.lock().unwrap().resize(PtySize {
-            rows: rows.clamp(2, 500),
-            cols: cols.clamp(2, 1000),
+            rows,
+            cols,
             pixel_width: 0,
             pixel_height: 0,
         });
-        result.map_err(|e| LumaError::Pty(format!("resize failed: {e}")))
+        result.map_err(|e| LumaError::Pty(format!("resize failed: {e}")))?;
+        self.logs.update_dimensions(session_id, cols, rows);
+        Ok(())
+    }
+
+    pub fn contains(&self, session_id: &str) -> bool {
+        self.logs.contains(session_id)
+    }
+
+    pub fn log_start(
+        &self,
+        session_id: &str,
+        mode: SessionLogMode,
+        path: Option<&str>,
+        app_data_dir: &Path,
+    ) -> Result<PathBuf> {
+        self.logs.start(session_id, mode, path, app_data_dir)
+    }
+
+    pub fn log_stop(&self, session_id: &str) -> Result<()> {
+        self.logs.stop(session_id)
+    }
+
+    pub fn log_status(&self, session_id: &str) -> Result<SessionLogStatus> {
+        self.logs.status(session_id)
     }
 
     pub fn kill(&self, session_id: &str) -> Result<()> {
@@ -320,6 +370,70 @@ mod tests {
             .recv_timeout(Duration::from_secs(15))
             .expect("killed shell did not exit");
         assert_cleaned_up(&manager);
+    }
+
+    #[test]
+    fn raw_session_logging_captures_pty_output() {
+        let manager = PtyManager::default();
+        let (exit_tx, exit_rx) = mpsc::channel();
+        let base = std::env::temp_dir().join(format!("luma-pty-log-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&base).unwrap();
+        let path = base.join("session.log");
+
+        #[cfg(windows)]
+        let shell = ResolvedShell {
+            path: "cmd.exe".into(),
+            args: vec![],
+            working_directory: None,
+            environment: HashMap::new(),
+        };
+        #[cfg(not(windows))]
+        let shell = ResolvedShell {
+            path: "/bin/sh".into(),
+            args: vec![],
+            working_directory: None,
+            environment: HashMap::new(),
+        };
+
+        let id = manager
+            .spawn(
+                shell,
+                80,
+                24,
+                |_| {},
+                move |code| {
+                    let _ = exit_tx.send(code);
+                },
+            )
+            .unwrap();
+        manager
+            .log_start(
+                &id,
+                SessionLogMode::Raw,
+                Some(path.to_str().unwrap()),
+                &base,
+            )
+            .unwrap();
+        manager.write(&id, "\x1b[1;1R").unwrap();
+        #[cfg(windows)]
+        manager
+            .write(&id, "echo luma-session-log-test\r\nexit\r\n")
+            .unwrap();
+        #[cfg(not(windows))]
+        manager
+            .write(&id, "echo luma-session-log-test\nexit\n")
+            .unwrap();
+
+        exit_rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("logged shell did not exit");
+        assert_cleaned_up(&manager);
+        let contents = std::fs::read(&path).unwrap();
+        assert!(
+            String::from_utf8_lossy(&contents).contains("luma-session-log-test"),
+            "session log did not contain expected output"
+        );
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

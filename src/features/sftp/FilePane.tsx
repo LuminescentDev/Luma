@@ -154,8 +154,8 @@ export function FilePane({
     () => entries.filter((e) => selected.has(e.path)),
     [entries, selected],
   );
-  const transferableSelected = selectedEntries.filter((e) => e.kind !== "dir");
-  const hasDirSelected = selectedEntries.some((e) => e.kind === "dir");
+  // Files AND directories can be transferred (the backend recurses folders).
+  const transferableSelected = selectedEntries;
 
   const clearSelection = () => {
     setSelected(new Set());
@@ -406,9 +406,7 @@ export function FilePane({
             title={
               !canTransfer
                 ? "Connect to a host first"
-                : hasDirSelected && transferableSelected.length === 0
-                  ? "Directory transfer not yet supported"
-                  : `${transferLabel} ${transferableSelected.length} file${transferableSelected.length === 1 ? "" : "s"}`
+                : `${transferLabel} ${transferableSelected.length} item${transferableSelected.length === 1 ? "" : "s"}`
             }
             onClick={() =>
               onRequestTransfer(scope, transferableSelected, "__counterpart__")
@@ -420,12 +418,6 @@ export function FilePane({
             {transferableSelected.length > 0 && ` (${transferableSelected.length})`}
           </button>
         </div>
-        {hasDirSelected && (
-          <p className="text-[10px] text-muted/80">
-            Directory transfer is not yet supported — folders in the selection are
-            skipped.
-          </p>
-        )}
       </div>
 
       {/* Column header ----------------------------------------------------- */}
@@ -462,7 +454,8 @@ export function FilePane({
           <ul role="list">
             {capped.map((entry, index) => {
               const isSelected = selected.has(entry.path);
-              const canRowTransfer = entry.kind !== "dir" && canTransfer;
+              // Files and directories alike can be transferred.
+              const canRowTransfer = canTransfer;
               const rowActions: MenuAction[] = [];
               if (canRowTransfer) {
                 rowActions.push({

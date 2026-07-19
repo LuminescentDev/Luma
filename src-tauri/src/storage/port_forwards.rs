@@ -308,6 +308,7 @@ mod tests {
                 environment: None,
                 tags: vec![],
                 favorite: false,
+                tab_color: None,
             },
         )
         .await

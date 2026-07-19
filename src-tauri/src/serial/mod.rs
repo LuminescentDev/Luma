@@ -216,7 +216,6 @@ impl SerialManager {
         let mut writer = session.writer.lock().unwrap();
         writer
             .write_all(data)
-            .and_then(|_| writer.flush())
             .map_err(|error| LumaError::Serial(format!("write failed: {error}")))
     }
 

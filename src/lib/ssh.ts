@@ -45,6 +45,7 @@ export type SshExitCategory =
   | "host-key-changed"
   | "host-key-rejected"
   | "auth-failed"
+  | "connection-lost"
   | "dns-failed"
   | "host-unreachable"
   | "timeout"
@@ -117,6 +118,40 @@ export function sshHostKeyStatus(hostId: string): Promise<SshHostKeyStatus> {
 export function sshHostKeyTrust(hostId: string): Promise<SshHostKeyStatus> {
   return invoke<SshHostKeyStatus>("ssh_host_key_trust", {
     request: { hostId },
+  });
+}
+
+/** Round-trip latency of an embedded (Luma-managed) SSH session, measured
+ * in-band. `sessionId` is the BACKEND session id (what ssh_spawn returned),
+ * never the frontend/React session id. Rejects with category `unsupported` for
+ * system-OpenSSH-backed sessions (fall back to sshProbe), and with
+ * `invalid-input` / `timeout` / `connection-lost` / `ssh-error` otherwise. */
+export function sshPing(sessionId: string): Promise<{ latencyMs: number }> {
+  return invoke<{ latencyMs: number }>("ssh_ping", { sessionId });
+}
+
+/** TCP connect-time latency to a saved host (5s timeout). Used as the fallback
+ * health probe when sshPing is `unsupported` (system OpenSSH sessions). Rejects
+ * with invalid-input / dns-failed / host-unreachable / timeout / database. */
+export function sshProbe(hostId: string): Promise<{ latencyMs: number }> {
+  return invoke<{ latencyMs: number }>("ssh_probe", { hostId });
+}
+
+/** Whether a key install succeeded or the key was already present. */
+export type SshKeyInstallStatus = "installed" | "already-present";
+
+/** Append a key reference's public key to a host's authorized_keys over SFTP.
+ * Host-key trust must already be established (run the ssh_host_key_status/trust
+ * preflight first). Rejects with invalid-input / key-unavailable / auth-failed /
+ * dns-failed / host-unreachable / timeout / host-key-rejected / sftp-failed /
+ * ssh-error. */
+export function sshKeyInstall(
+  hostId: string,
+  keyReferenceId: string,
+): Promise<{ status: SshKeyInstallStatus }> {
+  return invoke<{ status: SshKeyInstallStatus }>("ssh_key_install", {
+    hostId,
+    keyReferenceId,
   });
 }
 

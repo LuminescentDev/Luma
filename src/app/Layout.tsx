@@ -2,8 +2,9 @@ import { lazy, Suspense, useEffect, type ComponentType } from "react";
 import { Sidebar } from "../components/Sidebar";
 import { Workspace } from "../features/terminal/Workspace";
 import { terminalManager } from "../features/terminal/terminalManager";
+import { startLatencyMonitor } from "../features/terminal/latencyMonitor";
 import { useUiStore } from "../stores/uiStore";
-import { useSessionStore } from "../stores/sessionStore";
+import { setAutoReconnectEnabled, useSessionStore } from "../stores/sessionStore";
 import { useTemplateStore } from "../stores/templateStore";
 import { useTunnelStore } from "../stores/tunnelStore";
 import { useSettings } from "../hooks/useSettings";
@@ -15,11 +16,15 @@ import {
   startSnapshotPersistence,
 } from "../features/terminal/sessionSnapshot";
 import { SETTING_KEYS } from "../types";
+import { useKeymapStore } from "../stores/keymapStore";
+import { useTerminalStyleStore } from "../stores/terminalStyleStore";
+import { resolveAction, type KeymapActionId } from "../lib/keymap";
 import { TitleBar } from "../components/TitleBar";
 import { HostsScreen } from "../features/hosts/HostsScreen";
 import { SectionScreen } from "../features/workspace/SectionScreen";
 import { SnippetsScreen } from "../features/snippets/SnippetsScreen";
 import { SnippetRunner } from "../features/snippets/SnippetRunner";
+import { MultiHostRunDialog } from "../features/snippets/MultiHostRunDialog";
 import { CommandPalette } from "../features/palette/CommandPalette";
 import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
 import { useUpdaterStore } from "../stores/updaterStore";
@@ -47,6 +52,10 @@ const KeychainScreen = named(
   "KeychainScreen",
 );
 const SftpScreen = named(() => import("../features/sftp/SftpScreen"), "SftpScreen");
+const KnownHostsScreen = named(
+  () => import("../features/knownHosts/KnownHostsScreen"),
+  "KnownHostsScreen",
+);
 const SyncDialogs = named(
   () => import("../features/sync/SyncDialogs"),
   "SyncDialogs",
@@ -73,14 +82,22 @@ export function Layout() {
   const { data: settings } = useSettings();
 
   // Push persisted terminal settings into the manager (outside React state).
+  // Font size / family / color scheme are owned by terminalStyleStore (loaded
+  // below), so this only handles scrollback + the default shell.
   useEffect(() => {
     if (!settings) return;
     terminalManager.configure({
-      fontSize: Number(settings[SETTING_KEYS.fontSize] ?? 14),
       scrollback: Number(settings[SETTING_KEYS.scrollback] ?? 5000),
       defaultShell: parseShellRef(settings[SETTING_KEYS.defaultShell]),
     });
+    // Honor the "Auto-reconnect SSH sessions" toggle (default on). The reconnect
+    // engine reads this synchronously when deciding whether to schedule a retry.
+    setAutoReconnectEnabled(settings[SETTING_KEYS.autoReconnect] !== false);
   }, [settings]);
+
+  // Poll connection health (latency) for connected SSH sessions, outside React
+  // render paths. Started once; ticks are no-ops when nothing is connected.
+  useEffect(() => startLatencyMonitor(), []);
 
   // Reflect any tunnels the backend already has running (e.g. after a reload).
   useEffect(() => {
@@ -90,6 +107,18 @@ export function Layout() {
   // Load saved workspace templates once so the New tab launcher can list them.
   useEffect(() => {
     void useTemplateStore.getState().load();
+  }, []);
+
+  // Load the persisted keymap once (merged with defaults) and push the chord set
+  // into terminalManager so the terminal swallows rebound app chords correctly.
+  useEffect(() => {
+    void useKeymapStore.getState().load();
+  }, []);
+
+  // Load persisted terminal Appearance styling (color scheme + font) once and
+  // push it into terminalManager (outside React state), like the keymap above.
+  useEffect(() => {
+    void useTerminalStyleStore.getState().load();
   }, []);
 
   // Automatic, opt-out update check on launch. Runs one silent check after a
@@ -152,13 +181,52 @@ export function Layout() {
       setActiveTab(tabs[next].id);
     };
 
+    const runAction = (action: KeymapActionId) => {
+      const session = useSessionStore.getState();
+      switch (action) {
+        case "workspace.newTab":
+          useUiStore.getState().openNewTab();
+          break;
+        case "workspace.splitRight":
+          void session.splitActivePane("row");
+          break;
+        case "workspace.splitDown":
+          void session.splitActivePane("column");
+          break;
+        case "workspace.closePane":
+          // closeActivePane no-ops when there is no active session.
+          session.closeActivePane();
+          break;
+        case "workspace.commandPalette":
+          useUiStore.getState().togglePalette();
+          break;
+        case "workspace.toggleBroadcast":
+          // No-op on single-pane tabs, matching the toolbar button / palette.
+          session.toggleActiveBroadcast();
+          break;
+        case "terminal.jumpPreviousPrompt": {
+          const id = session.activeSessionId;
+          if (id) terminalManager.jumpToPrompt(id, "previous");
+          break;
+        }
+        case "terminal.jumpNextPrompt": {
+          const id = session.activeSessionId;
+          if (id) terminalManager.jumpToPrompt(id, "next");
+          break;
+        }
+        default:
+          break;
+      }
+    };
+
     const onKeyDown = (event: KeyboardEvent) => {
       const mod = hasPlatformModifier(event);
 
       // Workspace tab switching (cross-platform). Ctrl+Tab / Ctrl+Shift+Tab is
       // the universal tab-cycle chord (Ctrl even on macOS); mod+PageUp/PageDown
-      // mirrors browser tab navigation. These bubble up from xterm because the
-      // terminal key handler declines them.
+      // mirrors browser tab navigation. These are fixed accelerators (not part
+      // of the rebindable keymap) and bubble up from xterm because the terminal
+      // key handler declines them.
       if (event.ctrlKey && event.code === "Tab") {
         event.preventDefault();
         cycleTab(event.shiftKey ? -1 : 1);
@@ -170,35 +238,13 @@ export function Layout() {
         return;
       }
 
-      if (!mod || !event.shiftKey) return;
-      const session = useSessionStore.getState();
-      switch (event.code) {
-        case "KeyT":
-          event.preventDefault();
-          useUiStore.getState().openNewTab();
-          break;
-        case "KeyD":
-          event.preventDefault();
-          void session.splitActivePane("row");
-          break;
-        case "KeyE":
-          event.preventDefault();
-          void session.splitActivePane("column");
-          break;
-        case "KeyW":
-          // Always consume the chord (closeActivePane no-ops when there is no
-          // active session). Ctrl/Cmd+Shift+W is a reserved "close" browser
-          // accelerator in the webview; preventing default here stops the webview
-          // from swallowing/acting on it before the app closes the pane.
-          event.preventDefault();
-          session.closeActivePane();
-          break;
-        case "KeyP":
-          event.preventDefault();
-          useUiStore.getState().togglePalette();
-          break;
-        default:
-          break;
+      // Every other global chord is resolved through the configurable keymap.
+      // Ctrl/Cmd+Shift+W is a reserved "close" webview accelerator; preventing
+      // default here stops the webview from acting on it before we handle it.
+      const action = resolveAction(useKeymapStore.getState().keymap, event);
+      if (action) {
+        event.preventDefault();
+        runAction(action);
       }
     };
     // Capture phase so the app intercepts reserved chords (notably
@@ -245,12 +291,18 @@ export function Layout() {
               <KeychainScreen />
             </Suspense>
           )}
+          {mainView === "known-hosts" && (
+            <Suspense fallback={<ScreenFallback />}>
+              <KnownHostsScreen />
+            </Suspense>
+          )}
         </div>
         </main>
       </div>
       <CommandPalette />
       <SerialConnectDialog />
       <SnippetRunner />
+      <MultiHostRunDialog />
       {/* Always mounted but idle until triggered; a null fallback keeps them
           invisible while their chunks load. */}
       <Suspense fallback={null}>

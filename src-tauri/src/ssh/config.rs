@@ -391,6 +391,7 @@ pub async fn import_config(
             environment: None,
             tags: Vec::new(),
             favorite: false,
+            tab_color: None,
         };
         hosts::validate_fields(&input)?;
         proxy_graph.insert(id.clone(), proxy_id);

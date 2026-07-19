@@ -5,6 +5,7 @@ mod logging;
 mod platform;
 mod serial;
 mod sftp;
+mod snippet_runs;
 mod ssh;
 mod storage;
 mod sync;
@@ -18,6 +19,7 @@ use tauri::Manager;
 
 use serial::SerialManager;
 use sftp::SftpManager;
+use snippet_runs::SnippetRunManager;
 use ssh::{EmbeddedSshManager, TunnelManager};
 use terminal::PtyManager;
 
@@ -41,6 +43,11 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let db_path = app_data_dir.join("luma.db");
             let pool = tauri::async_runtime::block_on(storage::init(&db_path))?;
+            let removed_ephemeral =
+                tauri::async_runtime::block_on(storage::hosts::cleanup_stale_ephemeral(&pool))?;
+            if removed_ephemeral > 0 {
+                tracing::info!(removed_ephemeral, "removed stale quick-connect hosts");
+            }
             app.manage(AppState { pool, app_data_dir });
             let vault_state = vault::VaultState::default();
             tauri::async_runtime::block_on(vault::try_device_unlock(
@@ -59,6 +66,7 @@ pub fn run() {
             app.manage(SerialManager::default());
             app.manage(TunnelManager::default());
             app.manage(SftpManager::default());
+            app.manage(SnippetRunManager::default());
 
             Ok(())
         })
@@ -94,8 +102,15 @@ pub fn run() {
             commands::identity_update,
             commands::identity_delete,
             commands::ssh_detect,
+            commands::quick_connect_prepare,
+            commands::quick_connect_save,
+            commands::ssh_ping,
+            commands::ssh_probe,
+            commands::ssh_key_install,
             commands::ssh_host_key_status,
             commands::ssh_host_key_trust,
+            commands::known_hosts_list,
+            commands::known_hosts_remove,
             commands::ssh_spawn,
             commands::ssh_config_preview,
             commands::ssh_config_import,
@@ -105,6 +120,8 @@ pub fn run() {
             commands::snippet_create,
             commands::snippet_update,
             commands::snippet_delete,
+            commands::snippet_run_hosts,
+            commands::snippet_run_cancel,
             commands::port_forwards_list,
             commands::port_forward_create,
             commands::port_forward_update,
@@ -126,10 +143,14 @@ pub fn run() {
             commands::sftp_upload,
             commands::sftp_download,
             commands::sftp_cancel,
+            commands::sftp_retry,
             commands::pty_spawn,
             commands::pty_write,
             commands::pty_resize,
             commands::pty_kill,
+            commands::session_log_start,
+            commands::session_log_stop,
+            commands::session_log_status,
             commands::serial_ports_list,
             commands::serial_spawn,
             commands::serial_write,
@@ -157,6 +178,7 @@ pub fn run() {
             // No serial device, tunnel, SFTP, transfer, or shell may outlive the application.
             app_handle.state::<SerialManager>().kill_all();
             app_handle.state::<SftpManager>().kill_all();
+            app_handle.state::<SnippetRunManager>().kill_all();
             app_handle.state::<EmbeddedSshManager>().kill_all();
             let pty = app_handle.state::<PtyManager>();
             app_handle.state::<TunnelManager>().kill_all(&pty);

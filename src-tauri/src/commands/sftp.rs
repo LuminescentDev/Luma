@@ -132,3 +132,12 @@ pub async fn sftp_download(
 pub async fn sftp_cancel(manager: State<'_, SftpManager>, transfer_id: String) -> Result<()> {
     manager.cancel_transfer(&transfer_id)
 }
+
+#[tauri::command]
+pub async fn sftp_retry(
+    manager: State<'_, SftpManager>,
+    transfer_id: String,
+    on_progress: Channel<TransferProgress>,
+) -> Result<TransferStartResponse> {
+    sftp::sftp_retry(&manager, &transfer_id, on_progress).await
+}

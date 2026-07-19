@@ -41,13 +41,13 @@ Luma account or paid cloud service.
 
 - Dual-pane local/remote SFTP browser
 - Create, rename, and delete files and directories
-- Multi-file upload and download with progress, cancellation, and retry
+- File and directory upload and download, including drag-and-drop between panes,
+  with per-file and whole-folder aggregate progress, cancellation, and retry
+- Recursive directory transfers that report skipped symlinks and per-entry
+  failures, with retry limited to the failed or incomplete entries
 - Saved snippets with a parameterized snippet runner
 - Local and remote port forwarding
 - Searchable command palette
-
-Directory transfers are not implemented yet; transfer selections currently
-operate on files.
 
 ### Security, backup, and updates
 

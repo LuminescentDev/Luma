@@ -9,6 +9,166 @@ use super::{
 use crate::errors::{LumaError, Result};
 use crate::terminal::home_dir;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct LocalTransferFile {
+    pub source: PathBuf,
+    pub relative_path: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TransferWalkIssue {
+    pub path: String,
+    pub message: String,
+    pub retryable: bool,
+    pub skipped: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct LocalTransferPlan {
+    pub directories: Vec<String>,
+    pub files: Vec<LocalTransferFile>,
+    pub issues: Vec<TransferWalkIssue>,
+}
+
+pub(super) fn build_local_transfer_plan(root: &Path) -> Result<LocalTransferPlan> {
+    let metadata = fs::symlink_metadata(root)
+        .map_err(|error| local_io_error("could not inspect upload source", error))?;
+    if !metadata.file_type().is_dir() {
+        return Err(LumaError::InvalidInput(
+            "upload source must be a local file or directory".into(),
+        ));
+    }
+
+    let mut plan = LocalTransferPlan::default();
+    let mut stack = vec![(root.to_path_buf(), 0_usize)];
+    let mut entries = 1_usize;
+    while let Some((directory, depth)) = stack.pop() {
+        if depth > MAX_DELETE_DEPTH {
+            return Err(LumaError::SftpFailed(format!(
+                "recursive transfer exceeds the maximum depth of {MAX_DELETE_DEPTH}"
+            )));
+        }
+        let relative = relative_transfer_path(root, &directory)?;
+        plan.directories.push(relative.clone());
+        let read_dir = match fs::read_dir(&directory) {
+            Ok(read_dir) => read_dir,
+            Err(error) => {
+                plan.issues.push(TransferWalkIssue {
+                    path: relative,
+                    message: format!("could not read local directory: {error}"),
+                    retryable: true,
+                    skipped: false,
+                });
+                continue;
+            }
+        };
+        let mut children = Vec::new();
+        for child in read_dir {
+            entries += 1;
+            if entries > MAX_DELETE_ENTRIES {
+                return Err(LumaError::SftpFailed(format!(
+                    "recursive transfer exceeds the maximum of {MAX_DELETE_ENTRIES} entries"
+                )));
+            }
+            let child = match child {
+                Ok(child) => child,
+                Err(error) => {
+                    plan.issues.push(TransferWalkIssue {
+                        path: relative.clone(),
+                        message: format!("could not read local entry: {error}"),
+                        retryable: true,
+                        skipped: false,
+                    });
+                    continue;
+                }
+            };
+            let path = child.path();
+            let relative_path = match relative_transfer_path(root, &path) {
+                Ok(path) => path,
+                Err(error) => {
+                    plan.issues.push(TransferWalkIssue {
+                        path: path.to_string_lossy().into_owned(),
+                        message: error.to_string(),
+                        retryable: false,
+                        skipped: true,
+                    });
+                    continue;
+                }
+            };
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) => {
+                    plan.issues.push(TransferWalkIssue {
+                        path: relative_path,
+                        message: format!("could not inspect local entry: {error}"),
+                        retryable: true,
+                        skipped: false,
+                    });
+                    continue;
+                }
+            };
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                plan.issues.push(TransferWalkIssue {
+                    path: relative_path,
+                    message: "symlink skipped".into(),
+                    retryable: false,
+                    skipped: true,
+                });
+            } else if file_type.is_dir() {
+                children.push(path);
+            } else if file_type.is_file() {
+                plan.files.push(LocalTransferFile {
+                    source: path,
+                    relative_path,
+                    size: metadata.len(),
+                });
+            } else {
+                plan.issues.push(TransferWalkIssue {
+                    path: relative_path,
+                    message: "non-regular filesystem entry skipped".into(),
+                    retryable: false,
+                    skipped: true,
+                });
+            }
+        }
+        children.sort();
+        for child in children.into_iter().rev() {
+            stack.push((child, depth + 1));
+        }
+    }
+    plan.directories
+        .sort_by_key(|path| path.matches('/').count());
+    plan.files
+        .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(plan)
+}
+
+fn relative_transfer_path(root: &Path, path: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| LumaError::SftpFailed("local transfer path escaped its source root".into()))?;
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(value) = component else {
+            return Err(LumaError::SftpFailed(
+                "local transfer path contains an invalid component".into(),
+            ));
+        };
+        let value = value.to_str().ok_or_else(|| {
+            LumaError::SftpFailed("local transfer filename is not valid Unicode".into())
+        })?;
+        if value.contains('\0') {
+            return Err(LumaError::SftpFailed(
+                "local transfer filename contains NUL".into(),
+            ));
+        }
+        components.push(value);
+    }
+    Ok(components.join("/"))
+}
+
 pub async fn local_list(path: Option<String>) -> Result<DirectoryListing> {
     tokio::task::spawn_blocking(move || list_blocking(path.as_deref()))
         .await
@@ -446,6 +606,56 @@ mod tests {
     fn permission_format_is_nine_rwx_characters() {
         assert_eq!(format_permissions(0o755), "rwxr-xr-x");
         assert_eq!(format_permissions(0o600), "rw-------");
+    }
+
+    #[test]
+    fn transfer_walker_preserves_structure_and_empty_directories() {
+        let base = std::env::temp_dir().join(format!("luma-walk-test-{}", uuid::Uuid::new_v4()));
+        let root = base.join("source");
+        fs::create_dir_all(root.join("nested").join("empty")).unwrap();
+        fs::create_dir_all(root.join("empty-root-child")).unwrap();
+        fs::write(root.join("root.txt"), b"root").unwrap();
+        fs::write(root.join("nested").join("child.txt"), b"child").unwrap();
+
+        let plan = build_local_transfer_plan(&root).unwrap();
+        assert!(plan.directories.contains(&String::new()));
+        assert!(plan.directories.contains(&"nested".to_string()));
+        assert!(plan.directories.contains(&"nested/empty".to_string()));
+        assert!(plan.directories.contains(&"empty-root-child".to_string()));
+        assert_eq!(
+            plan.files
+                .iter()
+                .map(|file| file.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nested/child.txt", "root.txt"]
+        );
+        assert!(plan.issues.is_empty());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn transfer_walker_skips_symlinks_without_following_them() {
+        let base = std::env::temp_dir().join(format!("luma-walk-link-{}", uuid::Uuid::new_v4()));
+        let root = base.join("source");
+        fs::create_dir_all(&root).unwrap();
+        let target = base.join("outside.txt");
+        fs::write(&target, b"outside").unwrap();
+        let link = root.join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&target, &link).is_err() {
+            let _ = fs::remove_dir_all(base);
+            return;
+        }
+
+        let plan = build_local_transfer_plan(&root).unwrap();
+        assert!(plan.files.is_empty());
+        assert_eq!(plan.issues.len(), 1);
+        assert_eq!(plan.issues[0].path, "link.txt");
+        assert!(plan.issues[0].skipped);
+        assert!(!plan.issues[0].retryable);
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

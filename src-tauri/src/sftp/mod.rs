@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 
 use russh_sftp::client::fs::Metadata as RemoteMetadata;
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::FileType as RemoteFileType;
+use russh_sftp::protocol::{FileType as RemoteFileType, OpenFlags};
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use tokio::sync::watch;
 
@@ -22,12 +22,15 @@ use crate::ssh::{
 use crate::vault::VaultState;
 
 pub use local::{local_delete, local_list, local_mkdir, local_rename};
-pub use transfer::{sftp_download, sftp_upload, TransferProgress, TransferStartResponse};
+pub use transfer::{
+    sftp_download, sftp_retry, sftp_upload, TransferProgress, TransferStartResponse,
+};
 
 const MAX_PATH_BYTES: usize = 32_768;
 const MAX_DIRECTORY_ENTRIES: usize = 20_000;
 const MAX_DELETE_DEPTH: usize = 64;
 const MAX_DELETE_ENTRIES: usize = 100_000;
+const MAX_AUTHORIZED_KEYS_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +132,7 @@ pub(super) struct ActiveTransfer {
 pub struct SftpManager {
     sessions: Arc<Mutex<SessionStore<Arc<ActiveSession>>>>,
     pub(super) transfers: Arc<Mutex<HashMap<String, ActiveTransfer>>>,
+    pub(super) transfer_records: Arc<Mutex<HashMap<String, Arc<transfer::TransferRecord>>>>,
 }
 
 impl SftpManager {
@@ -308,6 +312,7 @@ impl SftpManager {
         for (_, transfer) in self.transfers.lock().unwrap().drain() {
             let _ = transfer.cancel.send(true);
         }
+        self.transfer_records.lock().unwrap().clear();
         let sessions = self.sessions.lock().unwrap().drain();
         for session in sessions {
             if let Some(child) = session.child.lock().unwrap().as_mut() {
@@ -353,6 +358,132 @@ fn embedded_fallback_allowed(error: &LumaError) -> bool {
             | "auth-failed"
             | "key-unavailable"
     )
+}
+
+fn authorized_key_blob(line: &[u8]) -> Option<(&str, &str)> {
+    let text = std::str::from_utf8(line).ok()?;
+    let fields = text.split_whitespace().collect::<Vec<_>>();
+    fields.windows(2).find_map(|pair| {
+        let algorithm = pair[0];
+        let is_key = algorithm.starts_with("ssh-")
+            || algorithm.starts_with("ecdsa-")
+            || algorithm.starts_with("sk-");
+        is_key.then_some((algorithm, pair[1]))
+    })
+}
+
+fn merge_authorized_keys(existing: &[u8], public_key: &str) -> Result<(Vec<u8>, bool)> {
+    if public_key.contains(['\r', '\n', '\0']) {
+        return Err(LumaError::InvalidInput(
+            "public key contains an invalid control character".into(),
+        ));
+    }
+    let target = authorized_key_blob(public_key.as_bytes())
+        .ok_or_else(|| LumaError::InvalidInput("stored public key is invalid".into()))?;
+    if existing
+        .split(|byte| *byte == b'\n')
+        .filter_map(authorized_key_blob)
+        .any(|candidate| candidate == target)
+    {
+        return Ok((existing.to_vec(), false));
+    }
+
+    let mut updated = Vec::with_capacity(existing.len() + public_key.len() + 2);
+    updated.extend_from_slice(existing);
+    if !updated.is_empty() && !updated.ends_with(b"\n") {
+        updated.push(b'\n');
+    }
+    updated.extend_from_slice(public_key.as_bytes());
+    updated.push(b'\n');
+    Ok((updated, true))
+}
+
+pub async fn install_authorized_key(
+    manager: &SftpManager,
+    session_id: &str,
+    home: &str,
+    public_key: &str,
+) -> Result<bool> {
+    let client = manager.client(session_id)?;
+    let ssh_directory = join_remote_path(home, ".ssh");
+    if client
+        .try_exists(ssh_directory.clone())
+        .await
+        .map_err(remote_error)?
+    {
+        let metadata = client
+            .metadata(ssh_directory.clone())
+            .await
+            .map_err(remote_error)?;
+        if !metadata.is_dir() {
+            return Err(LumaError::SftpFailed(
+                "remote ~/.ssh path is not a directory".into(),
+            ));
+        }
+    } else {
+        client
+            .create_dir(ssh_directory.clone())
+            .await
+            .map_err(remote_error)?;
+    }
+    let mut directory_permissions = RemoteMetadata::empty();
+    directory_permissions.permissions = Some(0o700);
+    client
+        .set_metadata(ssh_directory.clone(), directory_permissions)
+        .await
+        .map_err(remote_error)?;
+
+    let authorized_keys = join_remote_path(&ssh_directory, "authorized_keys");
+    let existing = if client
+        .try_exists(authorized_keys.clone())
+        .await
+        .map_err(remote_error)?
+    {
+        let metadata = client
+            .metadata(authorized_keys.clone())
+            .await
+            .map_err(remote_error)?;
+        if metadata.len() > MAX_AUTHORIZED_KEYS_BYTES {
+            return Err(LumaError::SftpFailed(format!(
+                "remote authorized_keys exceeds {MAX_AUTHORIZED_KEYS_BYTES} bytes"
+            )));
+        }
+        client
+            .read(authorized_keys.clone())
+            .await
+            .map_err(remote_error)?
+    } else {
+        Vec::new()
+    };
+    let (updated, installed) = merge_authorized_keys(&existing, public_key)?;
+    if installed {
+        let suffix = &updated[existing.len()..];
+        let mut file = client
+            .open_with_flags_and_attributes(
+                authorized_keys.clone(),
+                OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::APPEND,
+                {
+                    let mut metadata = RemoteMetadata::empty();
+                    metadata.permissions = Some(0o600);
+                    metadata
+                },
+            )
+            .await
+            .map_err(remote_error)?;
+        file.write_all(suffix)
+            .await
+            .map_err(|error| LumaError::SftpFailed(error.to_string()))?;
+        file.flush()
+            .await
+            .map_err(|error| LumaError::SftpFailed(error.to_string()))?;
+    }
+    let mut file_permissions = RemoteMetadata::empty();
+    file_permissions.permissions = Some(0o600);
+    client
+        .set_metadata(authorized_keys, file_permissions)
+        .await
+        .map_err(remote_error)?;
+    Ok(installed)
 }
 
 pub async fn list(manager: &SftpManager, session_id: &str, path: &str) -> Result<DirectoryListing> {
@@ -754,6 +885,35 @@ mod tests {
                 .map(|entry| entry.name)
                 .collect::<Vec<_>>(),
             vec!["Alpha", "beta", "z.txt"]
+        );
+    }
+
+    #[test]
+    fn authorized_keys_install_is_idempotent_and_preserves_content() {
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest generated@example";
+        let existing = b"# keep this comment\nssh-rsa AAAAB3NzaExisting old@example\n";
+        let (installed, changed) = merge_authorized_keys(existing, key).unwrap();
+        assert!(changed);
+        assert!(installed.starts_with(existing));
+        assert!(installed.ends_with(format!("{key}\n").as_bytes()));
+
+        let same_blob_different_comment =
+            "restrict ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest other-comment";
+        let (unchanged, changed) =
+            merge_authorized_keys(&installed, same_blob_different_comment).unwrap();
+        assert!(!changed);
+        assert_eq!(unchanged, installed);
+    }
+
+    #[test]
+    fn authorized_keys_append_repairs_missing_trailing_newline_without_rewriting_existing_bytes() {
+        let existing = b"ssh-rsa AAAAexisting no-newline";
+        let key = "ssh-ed25519 AAAAnew comment";
+        let (updated, changed) = merge_authorized_keys(existing, key).unwrap();
+        assert!(changed);
+        assert_eq!(
+            updated,
+            b"ssh-rsa AAAAexisting no-newline\nssh-ed25519 AAAAnew comment\n"
         );
     }
 

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { SETTING_KEYS, type ThemeMode } from "../types";
 import { terminalManager } from "../features/terminal/terminalManager";
+import { setResolvedMode } from "../lib/appTheme";
 import { useSettings, useSetSetting } from "./useSettings";
 
 function resolve(mode: ThemeMode): "dark" | "light" {
@@ -14,7 +15,10 @@ function resolve(mode: ThemeMode): "dark" | "light" {
 
 function apply(mode: ThemeMode) {
   const resolved = resolve(mode);
-  document.documentElement.dataset.theme = resolved;
+  // Record the resolved mode as the app's dark/light base. When a concrete color
+  // scheme is active its kind wins for data-theme (handled in lib/appTheme), so
+  // this must not set data-theme directly or it would stomp the scheme override.
+  setResolvedMode(resolved);
   terminalManager.configure({ theme: resolved });
 }
 

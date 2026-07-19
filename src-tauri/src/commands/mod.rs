@@ -9,11 +9,12 @@ use crate::errors::{LumaError, Result};
 use crate::platform::{self, DetectedShell};
 use crate::storage::profiles::{self, ProfileInput, TerminalProfile};
 use crate::storage::settings;
-use crate::terminal::{PtyManager, ResolvedShell};
+use crate::terminal::{PtyManager, ResolvedShell, SessionLogMode, SessionLogStatus};
 use crate::AppState;
 
 mod hosts;
 mod import;
+mod known_hosts;
 mod port_forwards;
 mod serial;
 mod sftp;
@@ -24,6 +25,7 @@ mod vault;
 
 pub use hosts::*;
 pub use import::*;
+pub use known_hosts::*;
 pub use port_forwards::*;
 pub use serial::*;
 pub use sftp::*;
@@ -172,10 +174,13 @@ pub async fn pty_write(
     session_id: String,
     data: String,
 ) -> Result<()> {
-    if embedded.write(&session_id, data.clone()).await? {
+    if pty.write_if_present(&session_id, data.as_bytes())? {
         return Ok(());
     }
-    pty.write(&session_id, &data)
+    if embedded.write(&session_id, data)? {
+        return Ok(());
+    }
+    Err(LumaError::InvalidInput("unknown terminal session".into()))
 }
 
 #[tauri::command]
@@ -186,7 +191,7 @@ pub async fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<()> {
-    if embedded.resize(&session_id, cols, rows).await? {
+    if embedded.resize(&session_id, cols, rows)? {
         return Ok(());
     }
     pty.resize(&session_id, cols, rows)
@@ -198,8 +203,61 @@ pub async fn pty_kill(
     embedded: State<'_, crate::ssh::EmbeddedSshManager>,
     session_id: String,
 ) -> Result<()> {
-    if embedded.disconnect(&session_id).await? {
+    if embedded.disconnect(&session_id)? {
         return Ok(());
     }
     pty.kill(&session_id)
+}
+
+#[tauri::command]
+pub async fn session_log_start(
+    state: State<'_, AppState>,
+    pty: State<'_, PtyManager>,
+    embedded: State<'_, crate::ssh::EmbeddedSshManager>,
+    session_id: String,
+    mode: String,
+    path: Option<String>,
+) -> Result<String> {
+    let mode = SessionLogMode::parse(&mode)?;
+    let resolved = if pty.contains(&session_id) {
+        pty.log_start(&session_id, mode, path.as_deref(), &state.app_data_dir)?
+    } else if embedded.contains(&session_id) {
+        embedded.log_start(&session_id, mode, path.as_deref(), &state.app_data_dir)?
+    } else {
+        return Err(LumaError::InvalidInput("unknown terminal session".into()));
+    };
+    resolved
+        .to_str()
+        .map(str::to_string)
+        .ok_or_else(|| LumaError::InvalidInput("resolved log path is not valid Unicode".into()))
+}
+
+#[tauri::command]
+pub async fn session_log_stop(
+    pty: State<'_, PtyManager>,
+    embedded: State<'_, crate::ssh::EmbeddedSshManager>,
+    session_id: String,
+) -> Result<()> {
+    if pty.contains(&session_id) {
+        return pty.log_stop(&session_id);
+    }
+    if embedded.contains(&session_id) {
+        return embedded.log_stop(&session_id);
+    }
+    Err(LumaError::InvalidInput("unknown terminal session".into()))
+}
+
+#[tauri::command]
+pub async fn session_log_status(
+    pty: State<'_, PtyManager>,
+    embedded: State<'_, crate::ssh::EmbeddedSshManager>,
+    session_id: String,
+) -> Result<SessionLogStatus> {
+    if pty.contains(&session_id) {
+        return pty.log_status(&session_id);
+    }
+    if embedded.contains(&session_id) {
+        return embedded.log_status(&session_id);
+    }
+    Err(LumaError::InvalidInput("unknown terminal session".into()))
 }

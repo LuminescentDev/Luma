@@ -8,7 +8,12 @@ import type { SidebarSection } from "../types";
  * source of truth so a terminal tab can be the active main view independently of
  * any sidebar section.
  */
-export type MainView = SidebarSection | "terminal" | "settings" | "keychain";
+export type MainView =
+  | SidebarSection
+  | "terminal"
+  | "settings"
+  | "keychain"
+  | "known-hosts";
 
 type UiState = {
   /** What the main area shows to the right of the sidebar. */
@@ -25,6 +30,8 @@ type UiState = {
   /** Show the full-screen settings view. */
   openSettings: () => void;
   openKeychain: () => void;
+  /** Show the known-hosts trust-store manager in the main area. */
+  openKnownHosts: () => void;
   terminalSearchOpen: boolean;
   setTerminalSearchOpen: (open: boolean) => void;
   newTabOpen: boolean;
@@ -52,6 +59,7 @@ export const useUiStore = create<UiState>((set) => ({
   showTerminal: () => set({ mainView: "terminal" }),
   openSettings: () => set({ mainView: "settings" }),
   openKeychain: () => set({ mainView: "keychain" }),
+  openKnownHosts: () => set({ mainView: "known-hosts" }),
   terminalSearchOpen: false,
   setTerminalSearchOpen: (open) => set({ terminalSearchOpen: open }),
   newTabOpen: false,

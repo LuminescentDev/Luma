@@ -6,6 +6,7 @@ import {
 } from "../lib/snippets";
 import { terminalManager } from "../features/terminal/terminalManager";
 import { useSessionStore } from "./sessionStore";
+import { useSnippetHostRunStore } from "./snippetHostRunStore";
 
 /*
  * Coordinates snippet insertion. Both the snippets screen and the command
@@ -13,7 +14,7 @@ import { useSessionStore } from "./sessionStore";
  * through one path — and always through terminalManager, never React state.
  */
 
-export type SnippetMode = "insert" | "run";
+export type SnippetMode = "insert" | "run" | "hosts";
 
 type PendingSnippet = {
   snippet: Snippet;
@@ -38,7 +39,13 @@ function neededVariables(snippet: Snippet): string[] {
   return result;
 }
 
-function writeToActiveTerminal(command: string, mode: SnippetMode): void {
+/** Dispatch a fully-rendered command for a mode: "hosts" opens the multi-host
+ * runner dialog; "run"/"insert" go to the focused terminal. */
+function dispatch(command: string, mode: SnippetMode, snippetName: string): void {
+  if (mode === "hosts") {
+    useSnippetHostRunStore.getState().open(command, snippetName);
+    return;
+  }
   const sessionId = useSessionStore.getState().activeSessionId;
   if (!sessionId) return;
   if (mode === "run") {
@@ -54,7 +61,7 @@ export const useSnippetRunStore = create<SnippetRunState>((set) => ({
   request: (snippet, mode) => {
     const variables = neededVariables(snippet);
     if (variables.length === 0) {
-      writeToActiveTerminal(snippet.command, mode);
+      dispatch(snippet.command, mode, snippet.name);
       return;
     }
     set({ pending: { snippet, mode, variables } });
@@ -64,7 +71,7 @@ export const useSnippetRunStore = create<SnippetRunState>((set) => ({
     set((state) => {
       if (state.pending) {
         const command = substituteVariables(state.pending.snippet.command, values);
-        writeToActiveTerminal(command, state.pending.mode);
+        dispatch(command, state.pending.mode, state.pending.snippet.name);
       }
       return { pending: null };
     });

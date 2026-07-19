@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { KeyRound, ScrollText, Server, Settings, SquareCode } from "lucide-react";
+import { KeyRound, ScrollText, Server, Settings, ShieldCheck, SquareCode } from "lucide-react";
 import { useUiStore } from "../stores/uiStore";
 import type { SidebarSection } from "../types";
 import { cn } from "../lib/utils";
@@ -23,9 +23,11 @@ export function Sidebar() {
   const selectSection = useUiStore((s) => s.selectSection);
   const openSettings = useUiStore((s) => s.openSettings);
   const openKeychain = useUiStore((s) => s.openKeychain);
+  const openKnownHosts = useUiStore((s) => s.openKnownHosts);
 
   const items: RailItem[] = [
     { key: "keychain", label: "Keychain", icon: KeyRound, active: mainView === "keychain", onClick: openKeychain },
+    { key: "known-hosts", label: "Known hosts", icon: ShieldCheck, active: mainView === "known-hosts", onClick: openKnownHosts },
     ...ITEMS.map((item) => ({
       key: item.section,
       label: item.label,

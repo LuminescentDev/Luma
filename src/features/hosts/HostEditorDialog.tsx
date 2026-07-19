@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { KeyRound, Plus, Trash2 } from "lucide-react";
+import { Ban, KeyRound, Plus, Trash2 } from "lucide-react";
 import { Modal } from "../../components/Modal";
+import { cn } from "../../lib/utils";
 import {
   createHost,
   parseLumaError,
@@ -32,8 +33,22 @@ type FormState = {
   workingDirectory: string;
   tags: string;
   favorite: boolean;
+  /** Per-host tab accent color as "#RRGGBB", or "" for no accent. */
+  tabColor: string;
   env: EnvRow[];
 };
+
+/** A small set of accent presets for the per-host tab color swatch row. */
+const TAB_COLOR_PRESETS = [
+  "#4cc9f0",
+  "#60a5fa",
+  "#4ade80",
+  "#facc15",
+  "#fb923c",
+  "#f87171",
+  "#c084fc",
+  "#f472b6",
+];
 
 function initialState(host: Host | null, initialGroupId: string | null = null): FormState {
   return {
@@ -50,6 +65,7 @@ function initialState(host: Host | null, initialGroupId: string | null = null): 
     workingDirectory: host?.workingDirectory ?? "",
     tags: (host?.tags ?? []).join(", "),
     favorite: host?.favorite ?? false,
+    tabColor: host?.tabColor ?? "",
     env: host?.environment
       ? Object.entries(host.environment).map(([key, value]) => ({ key, value }))
       : [],
@@ -114,6 +130,7 @@ function toInput(state: FormState): HostInput {
       .map((t) => t.trim())
       .filter((t) => t.length > 0),
     favorite: state.favorite,
+    tabColor: state.tabColor || null,
   };
 }
 
@@ -357,6 +374,11 @@ export function HostEditorDialog({
 
         <EnvironmentEditor rows={state.env} onChange={(env) => patch({ env })} />
 
+        <TabColorField
+          value={state.tabColor}
+          onChange={(tabColor) => patch({ tabColor })}
+        />
+
         <CheckboxField
           label="Favorite"
           checked={state.favorite}
@@ -372,6 +394,54 @@ export function HostEditorDialog({
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Per-host tab accent picker: a "none" option plus preset swatches. The chosen
+ * color is stored as "#RRGGBB" (or "" for none) and drives the colored tab. */
+function TabColorField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div>
+      <span className="mb-1.5 block text-xs font-medium text-muted">Tab color</span>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="No tab color"
+          aria-pressed={value === ""}
+          title="None"
+          className={cn(
+            "flex h-6 w-6 items-center justify-center rounded-full border text-muted",
+            value === "" ? "border-accent ring-1 ring-accent" : "border-border",
+          )}
+        >
+          <Ban size={13} />
+        </button>
+        {TAB_COLOR_PRESETS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            onClick={() => onChange(color)}
+            aria-label={`Tab color ${color}`}
+            aria-pressed={value.toLowerCase() === color.toLowerCase()}
+            title={color}
+            style={{ backgroundColor: color }}
+            className={cn(
+              "h-6 w-6 rounded-full border transition-transform hover:scale-110",
+              value.toLowerCase() === color.toLowerCase()
+                ? "border-foreground ring-2 ring-foreground/40"
+                : "border-transparent",
+            )}
+          />
+        ))}
+      </div>
+    </div>
   );
 }
 

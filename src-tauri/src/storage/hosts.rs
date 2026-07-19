@@ -33,8 +33,17 @@ pub struct Host {
     pub environment: Option<HashMap<String, String>>,
     pub tags: Vec<String>,
     pub favorite: bool,
+    pub tab_color: Option<String>,
     pub os_id: Option<String>,
     pub os_pretty_name: Option<String>,
+    pub is_ephemeral: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickConnectTarget {
+    pub username: Option<String>,
+    pub hostname: String,
+    pub port: u16,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -58,6 +67,8 @@ pub struct HostInput {
     pub tags: Vec<String>,
     #[serde(default)]
     pub favorite: bool,
+    #[serde(default)]
+    pub tab_color: Option<String>,
 }
 
 fn default_port() -> i64 {
@@ -122,6 +133,107 @@ fn validate_safe_username(value: &str) -> Result<()> {
     {
         return Err(LumaError::InvalidInput(
             "username contains whitespace or unsupported characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn parse_quick_connect(input: &str) -> Result<QuickConnectTarget> {
+    if input.is_empty()
+        || input.len() > 512
+        || input
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(LumaError::InvalidInput(
+            "quick connect input must be non-empty and contain no whitespace or control characters"
+                .into(),
+        ));
+    }
+
+    let target = input.strip_prefix("ssh://").unwrap_or(input);
+    if target.is_empty() || target.contains(['/', '?', '#']) {
+        return Err(LumaError::InvalidInput(
+            "quick connect input must use [ssh://][user@]host[:port]".into(),
+        ));
+    }
+
+    let (username, address) = match target.rsplit_once('@') {
+        Some((username, address)) => {
+            if username.contains('@') {
+                return Err(LumaError::InvalidInput(
+                    "quick connect input contains too many '@' separators".into(),
+                ));
+            }
+            validate_safe_username(username)?;
+            (Some(username.to_string()), address)
+        }
+        None => (None, target),
+    };
+
+    let (hostname, port) = if let Some(bracketed) = address.strip_prefix('[') {
+        let closing = bracketed.find(']').ok_or_else(|| {
+            LumaError::InvalidInput("bracketed IPv6 host is missing a closing ']'".into())
+        })?;
+        let hostname = &bracketed[..closing];
+        let remainder = &bracketed[closing + 1..];
+        let port = if remainder.is_empty() {
+            22
+        } else {
+            parse_quick_connect_port(remainder.strip_prefix(':').ok_or_else(|| {
+                LumaError::InvalidInput("unexpected text after bracketed IPv6 host".into())
+            })?)?
+        };
+        (hostname, port)
+    } else {
+        match address.matches(':').count() {
+            0 => (address, 22),
+            1 => {
+                let (hostname, port) = address.rsplit_once(':').expect("one colon is present");
+                (hostname, parse_quick_connect_port(port)?)
+            }
+            _ => {
+                return Err(LumaError::InvalidInput(
+                    "IPv6 addresses must be enclosed in brackets".into(),
+                ))
+            }
+        }
+    };
+
+    validate_safe_hostname(hostname)?;
+    if hostname.starts_with('[') || hostname.ends_with(']') {
+        return Err(LumaError::InvalidInput(
+            "hostname contains unmatched brackets".into(),
+        ));
+    }
+
+    Ok(QuickConnectTarget {
+        username,
+        hostname: hostname.to_string(),
+        port,
+    })
+}
+
+fn parse_quick_connect_port(value: &str) -> Result<u16> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| LumaError::InvalidInput("port must be a number between 1 and 65535".into()))?;
+    if port == 0 {
+        return Err(LumaError::InvalidInput(
+            "port must be between 1 and 65535".into(),
+        ));
+    }
+    Ok(port)
+}
+
+pub(crate) fn validate_tab_color(tab_color: Option<&str>) -> Result<()> {
+    if tab_color.is_some_and(|value| {
+        value.len() != 7
+            || !value.starts_with('#')
+            || !value[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
+        return Err(LumaError::InvalidInput(
+            "tabColor must be null or a hex color in #RRGGBB format".into(),
         ));
     }
     Ok(())
@@ -214,6 +326,8 @@ pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
         ));
     }
 
+    validate_tab_color(input.tab_color.as_deref())?;
+
     Ok(())
 }
 
@@ -237,18 +351,22 @@ fn row_to_host(row: &sqlx::sqlite::SqliteRow) -> Host {
         environment: environment.and_then(|value| serde_json::from_str(&value).ok()),
         tags: serde_json::from_str(&tags).unwrap_or_default(),
         favorite: row.get::<i64, _>("favorite") != 0,
+        tab_color: row.get("tab_color"),
         os_id: row.get("os_id"),
         os_pretty_name: row.get("os_pretty_name"),
+        is_ephemeral: row.get::<i64, _>("is_ephemeral") != 0,
     }
 }
 
 const HOST_COLUMNS: &str =
     "id, name, hostname, port, username, group_id, auth_type, key_id, identity_id, proxy_jump_host_id, \
-     startup_command, working_directory, environment, tags, favorite, os_id, os_pretty_name";
+     startup_command, working_directory, environment, tags, favorite, tab_color, os_id, os_pretty_name, is_ephemeral";
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Host>> {
-    let query =
-        format!("SELECT {HOST_COLUMNS} FROM hosts ORDER BY favorite DESC, name COLLATE NOCASE");
+    let query = format!(
+        "SELECT {HOST_COLUMNS} FROM hosts WHERE is_ephemeral = 0 \
+         ORDER BY favorite DESC, name COLLATE NOCASE"
+    );
     let rows = sqlx::query(&query).fetch_all(pool).await?;
     Ok(rows.iter().map(row_to_host).collect())
 }
@@ -352,8 +470,9 @@ pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
     sqlx::query(
         "INSERT INTO hosts (
              id, name, hostname, port, username, group_id, auth_type, key_id, identity_id,
-             proxy_jump_host_id, startup_command, working_directory, environment, tags, favorite
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             proxy_jump_host_id, startup_command, working_directory, environment, tags, favorite,
+             tab_color
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
     )
     .bind(&id)
     .bind(input.name.trim())
@@ -380,12 +499,90 @@ pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
             .map_err(|error| LumaError::InvalidInput(format!("invalid tags: {error}")))?,
     )
     .bind(input.favorite)
+    .bind(&input.tab_color)
     .execute(pool)
     .await?;
 
     get(pool, &id)
         .await?
         .ok_or_else(|| LumaError::InvalidInput("host creation failed".into()))
+}
+
+pub async fn create_ephemeral(pool: &SqlitePool, input: &str) -> Result<Host> {
+    let target = parse_quick_connect(input)?;
+    let display_host = if target.hostname.contains(':') {
+        format!("[{}]", target.hostname)
+    } else {
+        target.hostname.clone()
+    };
+    let mut name = format!(
+        "{}{}{}",
+        target
+            .username
+            .as_ref()
+            .map(|username| format!("{username}@"))
+            .unwrap_or_default(),
+        display_host,
+        if target.port == 22 {
+            String::new()
+        } else {
+            format!(":{}", target.port)
+        }
+    );
+    name.truncate(name.floor_char_boundary(MAX_NAME_LENGTH));
+
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO hosts (
+             id, name, hostname, port, username, auth_type, tags, favorite, is_ephemeral
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'agent', '[]', 0, 1)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(&target.hostname)
+    .bind(i64::from(target.port))
+    .bind(&target.username)
+    .execute(pool)
+    .await?;
+
+    get(pool, &id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("quick connect host creation failed".into()))
+}
+
+pub async fn save_ephemeral(pool: &SqlitePool, id: &str, name: Option<&str>) -> Result<Host> {
+    let name = name.map(str::trim).filter(|value| !value.is_empty());
+    if name
+        .is_some_and(|value| value.len() > MAX_NAME_LENGTH || value.chars().any(char::is_control))
+    {
+        return Err(LumaError::InvalidInput(format!(
+            "host name must be 1-{MAX_NAME_LENGTH} non-control characters"
+        )));
+    }
+    let result = sqlx::query(
+        "UPDATE hosts SET is_ephemeral = 0, name = COALESCE(?2, name), updated_at = unixepoch()
+         WHERE id = ?1 AND is_ephemeral = 1",
+    )
+    .bind(id)
+    .bind(name)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(LumaError::InvalidInput("unknown ephemeral host".into()));
+    }
+    get(pool, id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))
+}
+
+pub async fn cleanup_stale_ephemeral(pool: &SqlitePool) -> Result<u64> {
+    let result = sqlx::query(
+        "DELETE FROM hosts
+         WHERE is_ephemeral = 1 AND created_at < unixepoch() - (7 * 24 * 60 * 60)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result<Host> {
@@ -414,7 +611,7 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result
              name = ?2, hostname = ?3, port = ?4, username = ?5, group_id = ?6,
              auth_type = ?7, key_id = ?8, identity_id = ?9, proxy_jump_host_id = ?10,
              startup_command = ?11, working_directory = ?12, environment = ?13,
-             tags = ?14, favorite = ?15,
+             tags = ?14, favorite = ?15, tab_color = ?16,
              os_id = CASE WHEN hostname <> ?3 OR port <> ?4 THEN NULL ELSE os_id END,
              os_pretty_name = CASE WHEN hostname <> ?3 OR port <> ?4 THEN NULL ELSE os_pretty_name END,
              updated_at = unixepoch()
@@ -445,6 +642,7 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result
             .map_err(|error| LumaError::InvalidInput(format!("invalid tags: {error}")))?,
     )
     .bind(input.favorite)
+    .bind(&input.tab_color)
     .execute(pool)
     .await?;
 
@@ -478,6 +676,7 @@ pub async fn duplicate(pool: &SqlitePool, id: &str) -> Result<Host> {
             environment: host.environment,
             tags: host.tags,
             favorite: false,
+            tab_color: host.tab_color,
         },
     )
     .await
@@ -572,9 +771,12 @@ pub async fn recent(pool: &SqlitePool, limit: u8) -> Result<Vec<Host>> {
     let query = format!(
         "SELECT {} FROM hosts h
          JOIN (
-             SELECT host_id, MAX(connected_at) AS last_connected_at, MAX(id) AS latest_id
-             FROM recent_connections
-             GROUP BY host_id
+             SELECT connections.host_id, MAX(connections.connected_at) AS last_connected_at,
+                    MAX(connections.id) AS latest_id
+             FROM recent_connections connections
+             JOIN hosts visible ON visible.id = connections.host_id
+             WHERE visible.is_ephemeral = 0
+             GROUP BY connections.host_id
              ORDER BY last_connected_at DESC, latest_id DESC
              LIMIT ?1
          ) recent ON recent.host_id = h.id
@@ -610,6 +812,7 @@ mod tests {
             environment: None,
             tags: vec!["test".into()],
             favorite: false,
+            tab_color: None,
         }
     }
 
@@ -681,6 +884,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tab_color_round_trips_and_rejects_invalid_values() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let mut input = sample_input("Colored", "color.example.com");
+        input.tab_color = Some("#12aBcF".into());
+        let created = create(&pool, input).await.unwrap();
+        assert_eq!(created.tab_color.as_deref(), Some("#12aBcF"));
+
+        let mut updated_input = sample_input("Colored", "color.example.com");
+        updated_input.tab_color = None;
+        let updated = update(&pool, &created.id, updated_input).await.unwrap();
+        assert_eq!(updated.tab_color, None);
+
+        for invalid in ["red", "#fff", "#12345g", " #123456", "#1234567"] {
+            let mut invalid_input = sample_input("Invalid", "invalid.example.com");
+            invalid_input.tab_color = Some(invalid.into());
+            let error = create(&pool, invalid_input).await.unwrap_err();
+            assert_eq!(error.category(), "invalid-input", "accepted {invalid:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn validates_hosts_and_rejects_option_injection() {
         let pool = crate::storage::init_in_memory().await.unwrap();
         for hostname in ["", "-oProxyCommand=bad", "has space", "bad@example.com"] {
@@ -719,6 +943,111 @@ mod tests {
         valid_key_auth.authentication_type = "key".into();
         valid_key_auth.key_id = Some(key.id);
         assert!(create(&pool, valid_key_auth).await.is_ok());
+    }
+
+    #[test]
+    fn parses_quick_connect_targets() {
+        let cases = [
+            (
+                "example.com",
+                QuickConnectTarget {
+                    username: None,
+                    hostname: "example.com".into(),
+                    port: 22,
+                },
+            ),
+            (
+                "alice@example.com:2222",
+                QuickConnectTarget {
+                    username: Some("alice".into()),
+                    hostname: "example.com".into(),
+                    port: 2222,
+                },
+            ),
+            (
+                "ssh://deploy@host_name",
+                QuickConnectTarget {
+                    username: Some("deploy".into()),
+                    hostname: "host_name".into(),
+                    port: 22,
+                },
+            ),
+            (
+                "[::1]:2222",
+                QuickConnectTarget {
+                    username: None,
+                    hostname: "::1".into(),
+                    port: 2222,
+                },
+            ),
+            (
+                "ssh://root@[2001:db8::1]",
+                QuickConnectTarget {
+                    username: Some("root".into()),
+                    hostname: "2001:db8::1".into(),
+                    port: 22,
+                },
+            ),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(parse_quick_connect(input).unwrap(), expected, "{input}");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_quick_connect_targets() {
+        for input in [
+            "",
+            " ",
+            "host name",
+            "host\nname",
+            "ssh://",
+            "ssh://host/path",
+            "user@@host",
+            "@host",
+            "host:",
+            "host:0",
+            "host:65536",
+            "host:not-a-port",
+            "[::1",
+            "[::1]extra",
+            "::1",
+            "-oProxyCommand=bad",
+        ] {
+            assert!(parse_quick_connect(input).is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ephemeral_hosts_are_hidden_until_saved_and_cleaned_when_stale() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let ephemeral = create_ephemeral(&pool, "alice@example.com:2222")
+            .await
+            .unwrap();
+        assert!(ephemeral.is_ephemeral);
+        assert!(list(&pool).await.unwrap().is_empty());
+        record_recent_connection(&pool, &ephemeral.id)
+            .await
+            .unwrap();
+        assert!(recent(&pool, 10).await.unwrap().is_empty());
+
+        let saved = save_ephemeral(&pool, &ephemeral.id, Some("Saved server"))
+            .await
+            .unwrap();
+        assert!(!saved.is_ephemeral);
+        assert_eq!(saved.name, "Saved server");
+        assert_eq!(list(&pool).await.unwrap().len(), 1);
+        assert_eq!(recent(&pool, 10).await.unwrap().len(), 1);
+
+        let stale = create_ephemeral(&pool, "stale.example.com").await.unwrap();
+        sqlx::query("UPDATE hosts SET created_at = unixepoch() - (8 * 24 * 60 * 60) WHERE id = ?1")
+            .bind(&stale.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(cleanup_stale_ephemeral(&pool).await.unwrap(), 1);
+        assert!(get(&pool, &stale.id).await.unwrap().is_none());
     }
 
     #[tokio::test]

@@ -82,6 +82,52 @@ describe("SFTP transfer queue transitions", () => {
     expect(transfers().find((t) => t.transferId === "up-1")).toBeUndefined();
   });
 
+  it("records resumedFrom from a resumed transfer's first event and keeps it sticky", async () => {
+    let channel: unknown;
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_download") {
+        channel = args.onProgress;
+        return { transferId: "dl-resume" };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    const remote: SftpEntry = {
+      name: "big.bin",
+      path: "/remote/big.bin",
+      kind: "file",
+      size: 1000,
+      modifiedAt: null,
+      permissions: null,
+    };
+    useSftpStore.getState().download("sess", [remote], "/local", "/");
+    await flush();
+
+    // First event of a resumed file carries resumedFrom; transferred starts there.
+    fire(channel, {
+      transferId: "dl-resume",
+      transferred: 400,
+      total: 1000,
+      state: "running",
+      errorMessage: null,
+      resumedFrom: 400,
+    });
+    let record = transfers().find((t) => t.transferId === "dl-resume");
+    expect(record?.resumedFrom).toBe(400);
+
+    // Subsequent events without resumedFrom keep the recorded offset.
+    fire(channel, {
+      transferId: "dl-resume",
+      transferred: 1000,
+      total: 1000,
+      state: "completed",
+      errorMessage: null,
+    });
+    record = transfers().find((t) => t.transferId === "dl-resume");
+    expect(record?.resumedFrom).toBe(400);
+    expect(record?.state).toBe("completed");
+  });
+
   it("merges a progress event that arrives before the invoke resolves", async () => {
     setInvoke((cmd, args) => {
       if (cmd === "sftp_upload") {
@@ -136,16 +182,195 @@ describe("SFTP transfer queue transitions", () => {
     expect(all.some((t) => t.state === "failed")).toBe(false);
   });
 
-  it("skips directories on upload", async () => {
-    setInvoke((cmd) => {
-      if (cmd === "sftp_upload") return { transferId: "should-not-happen" };
+  it("queues a directory upload and reduces aggregate progress + entries", async () => {
+    let channel: unknown;
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_upload") {
+        channel = args.onProgress;
+        return { transferId: "dir-1" };
+      }
       throw new Error(`unexpected ${cmd}`);
     });
+
     const dir: SftpEntry = { ...file("folder"), kind: "dir" };
     useSftpStore.getState().upload("sess", [dir], "/remote");
     await flush();
-    expect(transfers()).toHaveLength(0);
-    expect(invoke).not.toHaveBeenCalledWith("sftp_upload", expect.anything());
+
+    let record = transfers().find((t) => t.transferId === "dir-1");
+    expect(record?.isDirectory).toBe(true);
+    expect(record?.name).toBe("folder");
+
+    // A "file" event carries the current file's own progress plus an aggregate
+    // snapshot — the row must reflect OVERALL (aggregate) bytes, not the file's.
+    fire(channel, {
+      transferId: "dir-1",
+      transferred: 20,
+      total: 40,
+      state: "running",
+      errorMessage: null,
+      progressKind: "file",
+      filePath: "a.txt",
+      aggregate: {
+        totalBytes: 100,
+        bytesDone: 20,
+        totalFiles: 3,
+        filesDone: 0,
+        currentFilePath: "a.txt",
+      },
+    });
+    // A skipped symlink and a failed entry are collected without failing the job.
+    fire(channel, {
+      transferId: "dir-1",
+      transferred: 0,
+      total: null,
+      state: "skipped",
+      errorMessage: null,
+      progressKind: "entry",
+      filePath: "link",
+    });
+    fire(channel, {
+      transferId: "dir-1",
+      transferred: 0,
+      total: null,
+      state: "failed",
+      errorMessage: "permission denied",
+      progressKind: "entry",
+      filePath: "sub/b.txt",
+    });
+
+    record = transfers().find((t) => t.transferId === "dir-1");
+    expect(record?.state).toBe("running");
+    expect(record?.transferred).toBe(20); // aggregate bytesDone, not file's 20
+    expect(record?.total).toBe(100); // aggregate totalBytes
+    expect(record?.aggregate?.filesDone).toBe(0);
+    expect(record?.aggregate?.currentFilePath).toBe("a.txt");
+    expect(record?.entries).toHaveLength(2);
+    expect(record?.entries[0]).toMatchObject({ path: "link", state: "skipped" });
+    expect(record?.entries[1]).toMatchObject({
+      path: "sub/b.txt",
+      state: "failed",
+      errorMessage: "permission denied",
+    });
+
+    // An "aggregate" event drives overall progress between file events.
+    fire(channel, {
+      transferId: "dir-1",
+      transferred: 60,
+      total: 100,
+      state: "running",
+      errorMessage: null,
+      progressKind: "aggregate",
+    });
+    record = transfers().find((t) => t.transferId === "dir-1");
+    expect(record?.transferred).toBe(60);
+
+    // The directory job ends failed because a retryable entry failed.
+    fire(channel, {
+      transferId: "dir-1",
+      transferred: 100,
+      total: 100,
+      state: "failed",
+      errorMessage: null,
+      progressKind: "aggregate",
+    });
+    record = transfers().find((t) => t.transferId === "dir-1");
+    expect(record?.state).toBe("failed");
+    // Entry outcomes persist through completion for the expandable detail view.
+    expect(record?.entries).toHaveLength(2);
+  });
+
+  it("retries a directory job via sftp_retry, rebinding to the new id", async () => {
+    let uploadChannel: unknown;
+    let retryChannel: unknown;
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_upload") {
+        uploadChannel = args.onProgress;
+        return { transferId: "dir-old" };
+      }
+      if (cmd === "sftp_retry") {
+        expect(args.transferId).toBe("dir-old");
+        retryChannel = args.onProgress;
+        return { transferId: "dir-new" };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    const dir: SftpEntry = { ...file("folder"), kind: "dir" };
+    useSftpStore.getState().upload("sess", [dir], "/remote");
+    await flush();
+    fire(uploadChannel, {
+      transferId: "dir-old",
+      transferred: 40,
+      total: 100,
+      state: "failed",
+      errorMessage: null,
+      progressKind: "aggregate",
+    });
+    expect(transfers().find((t) => t.transferId === "dir-old")?.state).toBe(
+      "failed",
+    );
+
+    useSftpStore.getState().retryTransfer("dir-old");
+    await flush();
+
+    // The row rebinds to the NEW transferId and returns to running.
+    expect(transfers().find((t) => t.transferId === "dir-old")).toBeUndefined();
+    const rebound = transfers().find((t) => t.transferId === "dir-new");
+    expect(rebound?.state).toBe("running");
+    expect(rebound?.name).toBe("folder");
+    expect(rebound?.isDirectory).toBe(true);
+
+    // Subsequent progress on the NEW id drives the rebound row.
+    fire(retryChannel, {
+      transferId: "dir-new",
+      transferred: 100,
+      total: 100,
+      state: "completed",
+      errorMessage: null,
+      progressKind: "aggregate",
+    });
+    expect(transfers().find((t) => t.transferId === "dir-new")?.state).toBe(
+      "completed",
+    );
+    expect(invoke).toHaveBeenCalledWith("sftp_retry", expect.anything());
+  });
+
+  it("keeps a failed row when sftp_retry rejects (nothing to retry)", async () => {
+    let uploadChannel: unknown;
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_upload") {
+        uploadChannel = args.onProgress;
+        return { transferId: "dir-x" };
+      }
+      if (cmd === "sftp_retry") {
+        throw {
+          category: "invalid-input",
+          message: "transfer has no failed or incomplete entries to retry",
+        };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    const dir: SftpEntry = { ...file("folder"), kind: "dir" };
+    useSftpStore.getState().upload("sess", [dir], "/remote");
+    await flush();
+    fire(uploadChannel, {
+      transferId: "dir-x",
+      transferred: 100,
+      total: 100,
+      state: "failed",
+      errorMessage: null,
+      progressKind: "aggregate",
+    });
+
+    useSftpStore.getState().retryTransfer("dir-x");
+    await flush();
+
+    const record = transfers().find((t) => t.transferId === "dir-x");
+    expect(record?.state).toBe("failed");
+    expect(record?.errorMessage).toBe(
+      "transfer has no failed or incomplete entries to retry",
+    );
   });
 
   it("cancelTransfer invokes the backend cancel", () => {
@@ -183,11 +408,15 @@ describe("SFTP transfer queue transitions", () => {
           localPath: "/l/x",
           remotePath: "/r/x",
           sessionId: "s1",
+          isDirectory: false,
           targetDir: "/r",
           transferred: 5,
           total: 10,
           state: "running",
           errorMessage: null,
+          aggregate: null,
+          entries: [],
+          resumedFrom: null,
           startedAt: now,
           lastTickAt: now,
           lastTickBytes: 5,

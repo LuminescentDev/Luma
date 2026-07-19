@@ -55,6 +55,16 @@ pub struct SshHostKeyStatus {
     pub known_keys: Vec<HostKeyFingerprint>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownHostsEntry {
+    pub line_number: usize,
+    pub hosts: String,
+    pub key_type: String,
+    pub fingerprint: String,
+    pub marker: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HostKey {
     key_type: String,
@@ -110,6 +120,118 @@ impl Drop for EphemeralKnownHostsFile {
 
 pub fn file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("known_hosts")
+}
+
+pub fn list(known_hosts_file: &Path) -> Result<Vec<KnownHostsEntry>> {
+    let _guard = KNOWN_HOSTS_FILE_LOCK.lock().unwrap();
+    let contents = read_known_hosts_bytes(known_hosts_file)?;
+    let text = std::str::from_utf8(&contents).map_err(|_| LumaError::SshConnection {
+        category: "host-key-file-invalid",
+        message: "The Luma known_hosts file is not valid UTF-8.".into(),
+    })?;
+    Ok(parse_management_entries(text))
+}
+
+pub fn remove(known_hosts_file: &Path, line_number: usize) -> Result<()> {
+    if line_number == 0 {
+        return Err(LumaError::InvalidInput(
+            "lineNumber must be greater than zero".into(),
+        ));
+    }
+    let _guard = KNOWN_HOSTS_FILE_LOCK.lock().unwrap();
+    let contents = read_known_hosts_bytes(known_hosts_file)?;
+    let text = std::str::from_utf8(&contents).map_err(|_| LumaError::SshConnection {
+        category: "host-key-file-invalid",
+        message: "The Luma known_hosts file is not valid UTF-8.".into(),
+    })?;
+    if !parse_management_entries(text)
+        .iter()
+        .any(|entry| entry.line_number == line_number)
+    {
+        return Err(LumaError::InvalidInput(
+            "known_hosts entry was not found at lineNumber".into(),
+        ));
+    }
+
+    let ranges = physical_line_ranges(&contents);
+    let Some(range) = ranges.get(line_number - 1) else {
+        return Err(LumaError::InvalidInput(
+            "known_hosts entry was not found at lineNumber".into(),
+        ));
+    };
+    let mut updated = Vec::with_capacity(contents.len() - (range.end - range.start));
+    updated.extend_from_slice(&contents[..range.start]);
+    updated.extend_from_slice(&contents[range.end..]);
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(known_hosts_file)?;
+    file.write_all(&updated)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn read_known_hosts_bytes(path: &Path) -> Result<Vec<u8>> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.len() > MAX_KNOWN_HOSTS_BYTES {
+        return Err(LumaError::SshConnection {
+            category: "host-key-file-invalid",
+            message: "The Luma known_hosts file is too large to read safely.".into(),
+        });
+    }
+    Ok(fs::read(path)?)
+}
+
+fn parse_management_entries(contents: &str) -> Vec<KnownHostsEntry> {
+    contents
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            let has_marker = fields.first().is_some_and(|field| field.starts_with('@'));
+            let offset = usize::from(has_marker);
+            let hosts = *fields.get(offset)?;
+            let key_type = *fields.get(offset + 1)?;
+            let encoded = *fields.get(offset + 2)?;
+            let key = host_key(key_type, encoded)?;
+            let hosts = if hosts.split(',').any(|host| host.starts_with("|1|")) {
+                format!("Hashed: {hosts}")
+            } else {
+                hosts.to_string()
+            };
+            Some(KnownHostsEntry {
+                line_number: index + 1,
+                hosts,
+                key_type: key.key_type,
+                fingerprint: key.fingerprint,
+                marker: has_marker.then(|| fields[0].trim_start_matches('@').to_string()),
+            })
+        })
+        .collect()
+}
+
+fn physical_line_ranges(contents: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    for (index, byte) in contents.iter().enumerate() {
+        if *byte == b'\n' {
+            ranges.push(start..index + 1);
+            start = index + 1;
+        }
+    }
+    if start < contents.len() {
+        ranges.push(start..contents.len());
+    }
+    ranges
 }
 
 pub async fn file_path_for_pool(pool: &SqlitePool) -> Result<PathBuf> {
@@ -855,6 +977,35 @@ mod tests {
             .all(|key| key.fingerprint.starts_with("SHA256:")));
         assert!(keys.iter().any(|key| key.key_type == "ssh-ed25519"));
         assert!(keys.iter().any(|key| key.key_type == "ssh-rsa"));
+    }
+
+    #[test]
+    fn management_list_parses_entries_and_remove_preserves_other_bytes() {
+        let path = test_path("management");
+        let plain = encoded(b"plain management key");
+        let hashed = encoded(b"hashed management key");
+        let multi = encoded(b"multi management key");
+        let fixture = format!(
+            "# retained comment\r\nexample.com ssh-ed25519 {plain} first\r\n|1|salt|hash ssh-rsa {hashed}\r\n@revoked one.example,two.example ssh-ed25519 {multi}\r\n# final comment without newline"
+        );
+        fs::write(&path, fixture.as_bytes()).unwrap();
+
+        let entries = list(&path).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].line_number, 2);
+        assert_eq!(entries[0].hosts, "example.com");
+        assert!(entries[0].fingerprint.starts_with("SHA256:"));
+        assert_eq!(entries[1].line_number, 3);
+        assert!(entries[1].hosts.starts_with("Hashed: |1|"));
+        assert_eq!(entries[2].hosts, "one.example,two.example");
+        assert_eq!(entries[2].marker.as_deref(), Some("revoked"));
+
+        remove(&path, 3).unwrap();
+        let expected = format!(
+            "# retained comment\r\nexample.com ssh-ed25519 {plain} first\r\n@revoked one.example,two.example ssh-ed25519 {multi}\r\n# final comment without newline"
+        );
+        assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
+        let _ = fs::remove_file(path);
     }
 
     #[test]

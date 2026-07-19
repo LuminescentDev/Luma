@@ -12,6 +12,8 @@ const MESSAGES: Record<string, string> = {
     "The host key was rejected, so the server could not be verified. Confirm the fingerprint out-of-band before trusting it.",
   "auth-failed":
     "Authentication failed. Check the username, key reference, or that your SSH agent has the right key loaded.",
+  "connection-lost":
+    "The connection to the server was lost. This is usually a network drop or the remote closing the session.",
   "dns-failed":
     "The hostname could not be resolved (DNS lookup failed). Check the address for typos and your network.",
   "host-unreachable":
@@ -41,6 +43,8 @@ export function sshCategoryLabel(category: string): string {
       return "Host key rejected";
     case "auth-failed":
       return "Authentication failed";
+    case "connection-lost":
+      return "Connection lost";
     case "dns-failed":
       return "DNS lookup failed";
     case "host-unreachable":

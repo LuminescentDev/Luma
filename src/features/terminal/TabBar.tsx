@@ -9,7 +9,9 @@ import {
   Loader2,
   MoreHorizontal,
   Plus,
+  RadioTower,
   Save,
+  ServerCog,
   SplitSquareHorizontal,
   SquarePlus,
   Rows2,
@@ -18,13 +20,16 @@ import {
 } from "lucide-react";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useSessionLogStore } from "../../stores/sessionLogStore";
 import { useProfiles, useShells } from "../../hooks/useShells";
+import { terminalManager } from "./terminalManager";
 import { collectLeaves, findLeaf } from "./paneTree";
 import { cn } from "../../lib/utils";
 import { DistroIcon } from "../../components/DistroIcon";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { SaveTemplateDialog } from "./SaveTemplateDialog";
 import { SplitWithHostDialog } from "./SplitWithHostDialog";
+import { SaveHostDialog } from "./SaveHostDialog";
 import { useTabDragStore, type TabDropZone } from "../../stores/tabDragStore";
 import type { SplitDirection, TerminalSession, WorkspaceTab } from "../../types";
 
@@ -59,6 +64,9 @@ function workspaceActions(deps: {
   onSaveTemplate?: () => void;
   /** Whether the active tab has anything restorable to save. */
   canSaveTemplate?: boolean;
+  /** Save this tab's ephemeral quick-connect host to the host list (only offered
+   * when the tab's active session is an unsaved quick-connect). */
+  onSaveHost?: () => void;
   /** Merge this tab into the previous tab (tab context menu only). */
   onMergeIntoPrevious?: () => void;
 }): MenuAction[] {
@@ -99,6 +107,14 @@ function workspaceActions(deps: {
       icon: <X size={15} />,
       hint: "Ctrl+Shift+W",
       onSelect: () => deps.closeActivePane(),
+    });
+  }
+  if (deps.onSaveHost) {
+    actions.push({ separator: true });
+    actions.push({
+      label: "Save host…",
+      icon: <ServerCog size={15} />,
+      onSelect: deps.onSaveHost,
     });
   }
   if (deps.onSaveTemplate) {
@@ -147,10 +163,12 @@ export function TabBar() {
   const splitActivePane = useSessionStore((s) => s.splitActivePane);
   const closeActivePane = useSessionStore((s) => s.closeActivePane);
   const mergeTabs = useSessionStore((s) => s.mergeTabs);
+  const toggleBroadcast = useSessionStore((s) => s.toggleBroadcast);
   const openPalette = useUiStore((s) => s.openPalette);
   const openNewTab = useUiStore((s) => s.openNewTab);
   const closeNewTab = useUiStore((s) => s.closeNewTab);
   const newTabOpen = useUiStore((s) => s.newTabOpen);
+  const logs = useSessionLogStore((s) => s.logs);
 
   // Pointer-based drag state. Native HTML drag/drop is unreliable inside a
   // frameless WebView2 titlebar, where it competes with Tauri window dragging.
@@ -178,10 +196,17 @@ export function TabBar() {
   // layout the save dialog serializes is captured when the action fires.
   const [saveTemplateTab, setSaveTemplateTab] = useState<WorkspaceTab | null>(null);
   const [splitHostOpen, setSplitHostOpen] = useState(false);
+  // The ephemeral quick-connect session whose "Save host…" dialog is open.
+  const [saveHostSession, setSaveHostSession] = useState<TerminalSession | null>(null);
   // A terminal tab is "active" only when the terminal workspace is the current
   // main view; selecting a sidebar section deselects the tabs (they stay in the
   // bar so the user can click one to return).
   const terminalActive = useUiStore((s) => s.mainView === "terminal");
+
+  // Broadcast toggle is only offered when the active tab has more than one pane.
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const activePaneCount = activeTab ? collectLeaves(activeTab.root).length : 0;
+  const broadcastOn = Boolean(activeTab?.broadcastEnabled) && activePaneCount > 1;
 
   const activeSessionOf = (tab: WorkspaceTab): TerminalSession | undefined => {
     const leaf = findLeaf(tab.root, tab.activePaneId);
@@ -372,7 +397,15 @@ export function TabBar() {
           const session = activeSessionOf(tab);
           const active = tab.id === activeTabId && terminalActive && !newTabOpen;
           const title = session?.title ?? "Terminal";
-          const paneCount = collectLeaves(tab.root).length;
+          // Best-effort cwd tooltip from shell integration (OSC 7 / OSC 1337).
+          // Read outside React; refreshed on any tab re-render.
+          const cwd = session ? terminalManager.getCwd(session.id) : null;
+          const tabTooltip = cwd ? `${title} — ${cwd}` : title;
+          const leaves = collectLeaves(tab.root);
+          const paneCount = leaves.length;
+          // Per-host tab accent, carried into session metadata at spawn time.
+          const tabColor = session?.tabColor ?? null;
+          const isLogging = leaves.some((l) => logs[l.sessionId]?.active);
           const isDropTarget = dragOverTabId === tab.id;
           const isDragging = draggedTabId === tab.id;
           const tabActions = workspaceActions({
@@ -386,6 +419,11 @@ export function TabBar() {
             onSplitWithHost: () => setSplitHostOpen(true),
             onSaveTemplate: () => setSaveTemplateTab(tab),
             canSaveTemplate: tabHasRestorable(tab, sessions),
+            // Offer "Save host…" only for an unsaved quick-connect session.
+            onSaveHost:
+              session?.type === "ssh" && session.hostEphemeral && session.hostId
+                ? () => setSaveHostSession(session)
+                : undefined,
             // Only offer merge when there is a previous tab to merge into.
             onMergeIntoPrevious:
               index > 0
@@ -421,9 +459,17 @@ export function TabBar() {
                 isDragging && "scale-95 opacity-40",
               )}
             >
+              {tabColor && (
+                <span
+                  aria-hidden="true"
+                  className="h-4 w-0.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: tabColor }}
+                />
+              )}
               <button
                 type="button"
                 role="tab"
+                title={tabTooltip}
                 aria-selected={active}
                 aria-current={active ? "page" : undefined}
                 onClick={(event) => {
@@ -438,6 +484,18 @@ export function TabBar() {
               >
                 <TabIcon session={session} />
                 <span className="truncate">{title}</span>
+                {session?.type === "ssh" &&
+                  session.status === "connected" &&
+                  typeof session.latencyMs === "number" && (
+                    <LatencyChip latencyMs={session.latencyMs} />
+                  )}
+                {isLogging && (
+                  <span
+                    aria-label="Session logging active"
+                    title="Session logging active"
+                    className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-danger"
+                  />
+                )}
                 {isDropTarget && (
                   <span className="flex shrink-0 items-center gap-1 rounded bg-accent px-1.5 text-[10px] font-semibold leading-4 text-white shadow-sm">
                     <Combine size={10} /> Split
@@ -529,6 +587,23 @@ export function TabBar() {
         onDoubleClick={(event) => event.stopPropagation()}
         className="flex shrink-0 items-center"
       >
+        {terminalActive && activePaneCount > 1 && (
+          <button
+            type="button"
+            aria-label={broadcastOn ? "Disable broadcast input" : "Enable broadcast input"}
+            aria-pressed={broadcastOn}
+            title="Broadcast input to all panes (Ctrl+Shift+B)"
+            onClick={() => activeTabId && toggleBroadcast(activeTabId)}
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+              broadcastOn
+                ? "bg-accent/15 text-accent hover:bg-accent/25"
+                : "text-muted hover:bg-raised hover:text-foreground",
+            )}
+          >
+            <RadioTower size={15} />
+          </button>
+        )}
         <button
           type="button"
           aria-label="New tab"
@@ -563,6 +638,12 @@ export function TabBar() {
       tab={saveTemplateTab}
     />
     <SplitWithHostDialog open={splitHostOpen} onOpenChange={setSplitHostOpen} />
+    <SaveHostDialog
+      session={saveHostSession}
+      onOpenChange={(open) => {
+        if (!open) setSaveHostSession(null);
+      }}
+    />
     </>
   );
 }
@@ -638,8 +719,51 @@ function WorkspaceMenu({
   );
 }
 
+/** Latency thresholds → chip tone. Mirrors reconnect.latencyTone but returns the
+ * Tailwind class directly for the small "12 ms" chip in the tab. */
+function latencyChipClass(latencyMs: number): string {
+  if (latencyMs < 80) return "bg-raised/60 text-muted";
+  if (latencyMs < 300) return "bg-amber-500/15 text-amber-400";
+  return "bg-danger/15 text-danger";
+}
+
+/** Subtle latency chip shown on connected SSH tabs. */
+function LatencyChip({ latencyMs }: { latencyMs: number }) {
+  return (
+    <span
+      title={`Round-trip latency: ${latencyMs} ms`}
+      className={cn(
+        "shrink-0 rounded px-1 text-[10px] font-medium leading-4 tabular-nums",
+        latencyChipClass(latencyMs),
+      )}
+    >
+      {latencyMs} ms
+    </span>
+  );
+}
+
 function TabIcon({ session }: { session: TerminalSession | undefined }) {
   if (!session) return null;
+  // Reconnect state layers over the normal status so a dropped SSH session reads
+  // as "reconnecting" (amber spinner) or "failed" (red dot) at a glance.
+  if (session.connectionState === "reconnecting") {
+    return (
+      <Loader2
+        aria-label="Reconnecting"
+        size={12}
+        className="shrink-0 animate-spin text-amber-400"
+      />
+    );
+  }
+  if (session.connectionState === "failed") {
+    return (
+      <span
+        aria-label="Reconnect failed"
+        title="Reconnect failed"
+        className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger"
+      />
+    );
+  }
   if (session.status === "connecting") {
     return <Loader2 size={12} className="shrink-0 animate-spin text-accent" />;
   }

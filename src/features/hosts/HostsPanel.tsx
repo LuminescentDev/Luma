@@ -163,7 +163,7 @@ export function HostsPanel() {
   const connect = (host: Host) => {
     // The backend records the recent connection on a successful spawn; refresh
     // the Recent list once the connection attempt settles.
-    void openSshSession(host.id, host.name, host.hostname).then(() => {
+    void openSshSession(host.id, host.name, host.hostname, false, host.tabColor).then(() => {
       showTerminal();
       return queryClient.invalidateQueries({ queryKey: RECENT_HOSTS_KEY });
     });

@@ -7,6 +7,7 @@ mod tunnels;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
@@ -25,11 +26,14 @@ pub use config::{
     SshConfigImportResult,
 };
 pub use embedded::EmbeddedSshManager;
-pub(crate) use embedded::{authenticated_handle, Client as EmbeddedClient};
+pub(crate) use embedded::{
+    authenticated_handle, connect_error as embedded_connect_error, Client as EmbeddedClient,
+};
 pub(crate) use embedded::{select_backend, SshBackend};
 pub use known_hosts::{
-    file_path as known_hosts_file_path, status as host_key_status, trust as trust_host_key,
-    validate_host_id, SshHostKeyStatus,
+    file_path as known_hosts_file_path, list as known_hosts_list, remove as known_hosts_remove,
+    status as host_key_status, trust as trust_host_key, validate_host_id, KnownHostsEntry,
+    SshHostKeyStatus,
 };
 pub use remote_os::SshRemoteOs;
 use remote_os::{detect_remote_os, prepare_multiplex_control, MultiplexControl, RemoteOsTarget};
@@ -213,6 +217,9 @@ impl SshEngine for OpenSshEngine<'_> {
         let mut pending_control = Some(multiplex_control);
         let mut pending_remote_os_callback = Some(on_remote_os);
         let mut authentication_observer = AuthenticationObserver::default();
+        let authenticated = Arc::new(AtomicBool::new(false));
+        let authenticated_for_data = Arc::clone(&authenticated);
+        let authenticated_for_exit = Arc::clone(&authenticated);
 
         let environment = askpass_environment(&config)?;
         let ephemeral_credential = config.ephemeral_credential.clone();
@@ -235,6 +242,7 @@ impl SshEngine for OpenSshEngine<'_> {
                     drop(captured);
 
                     if authentication_observer.observe(bytes) {
+                        authenticated_for_data.store(true, Ordering::Release);
                         if let (Some(target), Some(control), Some(callback)) = (
                             pending_target.take(),
                             pending_control.take(),
@@ -252,22 +260,13 @@ impl SshEngine for OpenSshEngine<'_> {
                     let _ephemeral_identity_file = ephemeral_identity_file;
                     let _ephemeral_credential = ephemeral_credential;
                     let _control = control_for_exit;
-                    let (error_category, error_message) = if code == Some(0) {
-                        (None, None)
-                    } else {
-                        let captured = captured_for_exit.lock().unwrap();
-                        let output = String::from_utf8_lossy(&captured);
-                        let classified = classify_error_output(&output);
-                        match classified {
-                            Some((category, message)) => {
-                                (Some(category.to_string()), Some(message.to_string()))
-                            }
-                            None => (
-                                Some("ssh-error".into()),
-                                Some("SSH process exited before the session was established or completed".into()),
-                            ),
-                        }
-                    };
+                    let captured = captured_for_exit.lock().unwrap();
+                    let output = String::from_utf8_lossy(&captured);
+                    let (error_category, error_message) = classify_openssh_exit(
+                        code,
+                        &output,
+                        authenticated_for_exit.load(Ordering::Acquire),
+                    );
                     on_exit(SshExit {
                         code,
                         error_category,
@@ -805,6 +804,33 @@ pub async fn connection_config(
     ))
 }
 
+fn classify_openssh_exit(
+    code: Option<u32>,
+    output: &str,
+    authenticated: bool,
+) -> (Option<String>, Option<String>) {
+    if code.is_none() || code == Some(0) {
+        return (None, None);
+    }
+    if let Some((category, message)) = classify_error_output(output) {
+        return (Some(category.into()), Some(message.into()));
+    }
+    if authenticated && code == Some(255) {
+        return (
+            Some("connection-lost".into()),
+            Some("The SSH connection ended unexpectedly after authentication".into()),
+        );
+    }
+    (
+        Some("ssh-error".into()),
+        Some(if authenticated {
+            "The remote SSH session exited with a non-zero status".into()
+        } else {
+            "SSH process exited before the session was established".into()
+        }),
+    )
+}
+
 pub(crate) fn classify_error_output(output: &str) -> Option<(&'static str, &'static str)> {
     let lower = output.to_ascii_lowercase();
     if lower.contains("remote host identification has changed") {
@@ -846,6 +872,15 @@ pub(crate) fn classify_error_output(output: &str) -> Option<(&'static str, &'sta
         || lower.contains("timed out")
     {
         Some(("timeout", "The SSH connection timed out."))
+    } else if lower.contains("connection reset")
+        || lower.contains("broken pipe")
+        || lower.contains("connection closed by remote host")
+        || lower.contains("connection to ") && lower.contains(" closed")
+    {
+        Some((
+            "connection-lost",
+            "The SSH transport was lost during the session.",
+        ))
     } else {
         None
     }
@@ -1091,11 +1126,39 @@ mod tests {
                 "ssh: connect to host x port 22: Connection timed out",
                 "timeout",
             ),
+            (
+                "client_loop: send disconnect: Broken pipe",
+                "connection-lost",
+            ),
         ];
         for (output, expected) in cases {
             assert_eq!(classify_error_output(output).unwrap().0, expected);
         }
         assert!(classify_error_output("unrecognized failure").is_none());
+    }
+
+    #[test]
+    fn classifies_openssh_exit_by_connection_phase() {
+        assert_eq!(classify_openssh_exit(Some(0), "", true), (None, None));
+        assert_eq!(classify_openssh_exit(None, "", true), (None, None));
+        assert_eq!(
+            classify_openssh_exit(Some(255), "", true).0.as_deref(),
+            Some("connection-lost")
+        );
+        assert_eq!(
+            classify_openssh_exit(Some(255), "", false).0.as_deref(),
+            Some("ssh-error")
+        );
+        assert_eq!(
+            classify_openssh_exit(Some(1), "", true).0.as_deref(),
+            Some("ssh-error")
+        );
+        assert_eq!(
+            classify_openssh_exit(Some(255), "Permission denied", false)
+                .0
+                .as_deref(),
+            Some("auth-failed")
+        );
     }
 
     #[test]
@@ -1262,6 +1325,7 @@ mod tests {
                 environment: None,
                 tags: vec![],
                 favorite: false,
+                tab_color: None,
             },
         )
         .await

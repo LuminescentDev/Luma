@@ -120,6 +120,8 @@ pub struct SyncHost {
     pub environment: Option<HashMap<String, String>>,
     pub tags: Vec<String>,
     pub favorite: bool,
+    #[serde(default)]
+    pub tab_color: Option<String>,
     pub updated_at: i64,
 }
 
@@ -991,7 +993,8 @@ async fn assemble_bundle_inner(
 
     let hosts = sqlx::query(
         "SELECT id,name,hostname,port,username,group_id,auth_type,key_id,proxy_jump_host_id,
-                startup_command,working_directory,environment,tags,favorite,updated_at FROM hosts",
+                startup_command,working_directory,environment,tags,favorite,tab_color,updated_at FROM hosts
+         WHERE is_ephemeral = 0",
     )
     .fetch_all(pool)
     .await?
@@ -1021,6 +1024,7 @@ async fn assemble_bundle_inner(
             tags: serde_json::from_str(&tags)
                 .map_err(|_| LumaError::InvalidInput("stored host tags are invalid".into()))?,
             favorite: row.get::<i64, _>("favorite") != 0,
+            tab_color: row.get("tab_color"),
             updated_at: row.get("updated_at"),
         })
     })
@@ -1629,6 +1633,7 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
                     environment: host.environment,
                     tags: host.tags,
                     favorite: host.favorite,
+                    tab_color: host.tab_color,
                 })?;
                 host_ids.insert(host.id.clone());
                 host_proxies.insert(
@@ -1996,15 +2001,16 @@ async fn apply_object(
             let value: SyncHost = payload_as(item)?;
             sqlx::query(
                 "INSERT INTO hosts(id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,
-                 proxy_jump_host_id,startup_command,working_directory,environment,tags,favorite,
+                 proxy_jump_host_id,startup_command,working_directory,environment,tags,favorite,tab_color,
                  created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9,?10,?11,?12,?13,?14,?15,?15)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9,?10,?11,?12,?13,?14,?15,?16,?16)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,hostname=excluded.hostname,
                  port=excluded.port,username=excluded.username,group_id=excluded.group_id,
                  auth_type=excluded.auth_type,key_id=excluded.key_id,
                  proxy_jump_host_id=excluded.proxy_jump_host_id,startup_command=excluded.startup_command,
                  working_directory=excluded.working_directory,environment=excluded.environment,
-                 tags=excluded.tags,favorite=excluded.favorite,updated_at=excluded.updated_at",
+                 tags=excluded.tags,favorite=excluded.favorite,tab_color=excluded.tab_color,
+                 updated_at=excluded.updated_at",
             )
             .bind(value.id)
             .bind(value.name)
@@ -2020,6 +2026,7 @@ async fn apply_object(
             .bind(value.environment.map(|environment| serde_json::to_string(&environment)).transpose().map_err(|_| LumaError::InvalidInput("host environment is invalid".into()))?)
             .bind(serde_json::to_string(&value.tags).map_err(|_| LumaError::InvalidInput("host tags are invalid".into()))?)
             .bind(value.favorite)
+            .bind(value.tab_color)
             .bind(value.updated_at)
             .execute(&mut **transaction)
             .await?;
@@ -2943,7 +2950,23 @@ mod tests {
             "formatVersion": 1,
             "deviceId": "11111111-1111-4111-8111-111111111111",
             "updatedAt": "2026-07-16T00:00:00Z",
-            "hosts": [],
+            "hosts": [{
+                "id": "host-1",
+                "name": "Legacy",
+                "hostname": "legacy.example.com",
+                "port": 22,
+                "username": null,
+                "groupId": null,
+                "authenticationType": "agent",
+                "keyId": null,
+                "proxyJumpHostId": null,
+                "startupCommand": null,
+                "workingDirectory": null,
+                "environment": null,
+                "tags": [],
+                "favorite": false,
+                "updatedAt": 1
+            }],
             "hostGroups": [],
             "keyReferences": [],
             "terminalProfiles": [],
@@ -2953,6 +2976,7 @@ mod tests {
         });
         let bundle: SyncBundle = serde_json::from_value(value).unwrap();
         assert!(bundle.encrypted_key_secrets.is_empty());
+        assert_eq!(bundle.hosts[0].tab_color, None);
     }
 
     #[test]

@@ -7,6 +7,7 @@ import {
   Play,
   Plus,
   Server,
+  ServerCog,
   SquareCode,
   Trash2,
 } from "lucide-react";
@@ -117,6 +118,7 @@ export function SnippetsScreen() {
                 canRun={hasTerminal}
                 onInsert={() => requestRun(snippet, "insert")}
                 onRun={() => requestRun(snippet, "run")}
+                onRunHosts={() => requestRun(snippet, "hosts")}
                 onEdit={() => openEdit(snippet)}
                 onDelete={() => setDeleting(snippet)}
               />
@@ -162,6 +164,7 @@ function SnippetCard({
   canRun,
   onInsert,
   onRun,
+  onRunHosts,
   onEdit,
   onDelete,
 }: {
@@ -170,12 +173,14 @@ function SnippetCard({
   canRun: boolean;
   onInsert: () => void;
   onRun: () => void;
+  onRunHosts: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const snippetActions: MenuAction[] = [
     { label: "Insert", icon: <ClipboardPaste size={14} />, disabled: !canRun, onSelect: onInsert },
     { label: "Run", icon: <Play size={14} />, disabled: !canRun, onSelect: onRun },
+    { label: "Run on hosts…", icon: <ServerCog size={14} />, onSelect: onRunHosts },
     { label: "Edit", icon: <Pencil size={14} />, onSelect: onEdit },
     { separator: true },
     { label: "Delete", icon: <Trash2 size={14} />, destructive: true, onSelect: onDelete },
@@ -217,6 +222,9 @@ function SnippetCard({
               sideOffset={4}
               className="z-50 min-w-36 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"
             >
+              <MenuItem icon={<ServerCog size={14} />} onSelect={onRunHosts}>
+                Run on hosts…
+              </MenuItem>
               <MenuItem icon={<Pencil size={14} />} onSelect={onEdit}>
                 Edit
               </MenuItem>

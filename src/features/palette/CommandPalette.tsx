@@ -2,12 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   Cable,
+  ChevronUp,
+  ChevronDown,
+  ClipboardCopy,
   ClipboardPaste,
   Columns2,
   Download,
+  FolderInput,
   FolderOpen,
   KeyRound,
   Play,
+  RadioTower,
   Rows2,
   Search,
   Server,
@@ -18,13 +23,19 @@ import {
 } from "lucide-react";
 import { useUiStore } from "../../stores/uiStore";
 import { useSessionStore } from "../../stores/sessionStore";
+import { useKeymapStore } from "../../stores/keymapStore";
+import { terminalManager } from "../terminal/terminalManager";
+import { formatChord } from "../../lib/keymap";
 import { useSftpStore } from "../../stores/sftpStore";
 import { useSnippetRunStore } from "../../stores/snippetRunStore";
 import { useShells, useProfiles } from "../../hooks/useShells";
 import { useHosts } from "../../hooks/useHosts";
 import { useSnippets } from "../../hooks/useSnippets";
 import { useUpdaterStore } from "../../stores/updaterStore";
+import { collectLeaves } from "../terminal/paneTree";
 import { cn } from "../../lib/utils";
+import { looksLikeConnectionString } from "../../lib/connectionString";
+import { parseLumaError, quickConnectPrepare } from "../../lib/hosts";
 
 type Command = {
   id: string;
@@ -59,10 +70,11 @@ export function CommandPalette() {
 function PaletteBody({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const [quickError, setQuickError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const commands = useCommands(onClose);
+  const commands = useCommands(onClose, query, setQuickError);
 
   // Focus the filter input once mounted (Radix focuses the content by default).
   useEffect(() => {
@@ -81,6 +93,7 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     setActive(0);
+    setQuickError(null);
   }, [query]);
 
   useEffect(() => {
@@ -145,6 +158,15 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
+      {quickError && (
+        <p
+          role="alert"
+          className="border-b border-border bg-danger/10 px-3.5 py-2 text-xs text-danger"
+        >
+          {quickError}
+        </p>
+      )}
+
       <div
         ref={listRef}
         id="command-palette-list"
@@ -197,7 +219,11 @@ function PaletteBody({ onClose }: { onClose: () => void }) {
   );
 }
 
-function useCommands(onClose: () => void): Command[] {
+function useCommands(
+  onClose: () => void,
+  query: string,
+  onQuickConnectError: (message: string | null) => void,
+): Command[] {
   const { data: shells } = useShells();
   const { data: profiles } = useProfiles();
   const { data: hosts } = useHosts();
@@ -209,9 +235,12 @@ function useCommands(onClose: () => void): Command[] {
   const closeActivePane = useSessionStore((s) => s.closeActivePane);
   const closeTab = useSessionStore((s) => s.closeTab);
   const moveActivePaneToNext = useSessionStore((s) => s.moveActivePaneToNext);
+  const toggleActiveBroadcast = useSessionStore((s) => s.toggleActiveBroadcast);
+  const tabs = useSessionStore((s) => s.tabs);
   const activeTabId = useSessionStore((s) => s.activeTabId);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
 
+  const keymap = useKeymapStore((s) => s.keymap);
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   const openSerialConnect = useUiStore((s) => s.openSerialConnect);
   const openSettings = useUiStore((s) => s.openSettings);
@@ -227,6 +256,30 @@ function useCommands(onClose: () => void): Command[] {
       fn();
     };
     const commands: Command[] = [];
+
+    // Quick connect: when the query parses as a connection string, offer a
+    // "Connect to <input>" action that prepares an ephemeral host via the
+    // backend and launches it through the normal SSH connect flow. Kept first so
+    // it is the default Enter target. Parse failures surface inline (invalid-input).
+    const trimmedQuery = query.trim();
+    if (looksLikeConnectionString(trimmedQuery)) {
+      commands.push({
+        id: "quick-connect",
+        group: "Quick connect",
+        label: `Connect to ${trimmedQuery}`,
+        keywords: `ssh quick connect ${trimmedQuery}`,
+        icon: <Server size={15} />,
+        run: () => {
+          onQuickConnectError(null);
+          quickConnectPrepare(trimmedQuery)
+            .then((host) => {
+              onClose();
+              void openSshSession(host.id, host.name, host.hostname, true);
+            })
+            .catch((error) => onQuickConnectError(parseLumaError(error).message));
+        },
+      });
+    }
 
     commands.push({
       id: "terminal-new",
@@ -310,6 +363,18 @@ function useCommands(onClose: () => void): Command[] {
           run: wrap(() => activeTabId && closeTab(activeTabId)),
         },
       );
+      const activeTab = tabs.find((t) => t.id === activeTabId);
+      if (activeTab && collectLeaves(activeTab.root).length > 1) {
+        commands.push({
+          id: "toggle-broadcast",
+          group: "Layout",
+          label: "Toggle broadcast input",
+          hint: "Ctrl+Shift+B",
+          keywords: "broadcast input all panes type simultaneously multiplex sync",
+          icon: <RadioTower size={15} />,
+          run: wrap(() => toggleActiveBroadcast()),
+        });
+      }
       if (activeSessionId) {
         commands.push({
           id: "search-terminal",
@@ -319,6 +384,43 @@ function useCommands(onClose: () => void): Command[] {
           icon: <Search size={15} />,
           run: wrap(() => setTerminalSearchOpen(true)),
         });
+        const sessionId = activeSessionId;
+        commands.push(
+          {
+            id: "jump-previous-prompt",
+            group: "Shell integration",
+            label: "Jump to previous prompt",
+            hint: formatChord(keymap["terminal.jumpPreviousPrompt"]),
+            keywords: "prompt mark osc133 shell integration navigate scroll",
+            icon: <ChevronUp size={15} />,
+            run: wrap(() => terminalManager.jumpToPrompt(sessionId, "previous")),
+          },
+          {
+            id: "jump-next-prompt",
+            group: "Shell integration",
+            label: "Jump to next prompt",
+            hint: formatChord(keymap["terminal.jumpNextPrompt"]),
+            keywords: "prompt mark osc133 shell integration navigate scroll",
+            icon: <ChevronDown size={15} />,
+            run: wrap(() => terminalManager.jumpToPrompt(sessionId, "next")),
+          },
+          {
+            id: "copy-last-command-output",
+            group: "Shell integration",
+            label: "Copy last command output",
+            keywords: "copy output command osc133 shell integration clipboard",
+            icon: <ClipboardCopy size={15} />,
+            run: wrap(() => terminalManager.copyLastCommandOutput(sessionId)),
+          },
+          {
+            id: "copy-current-directory",
+            group: "Shell integration",
+            label: "Copy current directory",
+            keywords: "cwd directory pwd copy osc7 osc1337 shell integration",
+            icon: <FolderInput size={15} />,
+            run: wrap(() => terminalManager.copyCwd(sessionId)),
+          },
+        );
       }
     }
 
@@ -330,7 +432,7 @@ function useCommands(onClose: () => void): Command[] {
         hint: host.hostname,
         keywords: `ssh ${host.hostname} ${host.username ?? ""} ${host.tags.join(" ")}`,
         icon: <Server size={15} />,
-        run: wrap(() => void openSshSession(host.id, host.name, host.hostname)),
+        run: wrap(() => void openSshSession(host.id, host.name, host.hostname, false, host.tabColor)),
       });
     }
 
@@ -419,12 +521,16 @@ function useCommands(onClose: () => void): Command[] {
 
     return commands;
   }, [
+    query,
+    onQuickConnectError,
     shells,
     profiles,
     hosts,
     snippets,
+    tabs,
     activeTabId,
     activeSessionId,
+    keymap,
     onClose,
     openLocalSession,
     openSshSession,
@@ -432,6 +538,7 @@ function useCommands(onClose: () => void): Command[] {
     closeActivePane,
     closeTab,
     moveActivePaneToNext,
+    toggleActiveBroadcast,
     setTerminalSearchOpen,
     openSerialConnect,
     openSettings,

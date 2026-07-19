@@ -25,6 +25,9 @@ export type RestoreDescriptor =
       /** Persisted connection target (hostname) for the connecting overlay.
        * Optional for the same backward-compatibility reason as `title`. */
       connectionTarget?: string;
+      /** Per-host tab accent color ("#RRGGBB") so a restored pane shows the same
+       * tab color immediately. Optional; older snapshots simply have no color. */
+      tabColor?: string | null;
     }
   | { kind: "serial"; config: SerialConfig };
 
@@ -39,6 +42,25 @@ export type TerminalSession = {
   serialBaud?: number;
   connectionTarget?: string;
   status: "connecting" | "connected" | "disconnected" | "error";
+  /** SSH auto-reconnect / health state, layered on top of `status`. Undefined
+   * for sessions the reconnect engine has never touched (local/serial, or an
+   * SSH session that never dropped). Metadata only — no terminal bytes. */
+  connectionState?: "connected" | "reconnecting" | "failed" | "disconnected";
+  /** 1-based count of the current auto-reconnect run; reset to 0 on a successful
+   * (re)connection. Only meaningful while `connectionState` is "reconnecting". */
+  reconnectAttempt?: number;
+  /** Epoch-ms timestamp of the next scheduled reconnect attempt (drives the
+   * in-pane countdown). Null/undefined while an attempt is actually in flight. */
+  nextRetryAt?: number | null;
+  /** Latest measured round-trip latency (ms) for a connected SSH session, or
+   * null when the last probe failed. A plain number is fine in React state. */
+  latencyMs?: number | null;
+  /** True when this session's SSH host is an unsaved quick-connect (ephemeral)
+   * host, enabling the "Save host…" affordance. Cleared after saving. */
+  hostEphemeral?: boolean;
+  /** Per-host tab accent color ("#RRGGBB") carried from the host at spawn time,
+   * or null/undefined for no accent. Drives the colored tab strip in TabBar. */
+  tabColor?: string | null;
   activePaneId: string;
   exitCode?: number | null;
   errorMessage?: string;
@@ -105,6 +127,14 @@ export type WorkspaceTab = {
   root: PaneNode;
   /** The focused leaf pane in this tab. */
   activePaneId: string;
+  /** Broadcast input: when true and the tab has more than one pane, keystrokes
+   * typed into the focused pane are fanned out to every non-excluded pane in the
+   * tab. Transient runtime state — never persisted in the workspace snapshot.
+   * Reset to false automatically when the tab drops back to a single pane. */
+  broadcastEnabled?: boolean;
+  /** Session ids opted OUT of this tab's broadcast (per-pane include/exclude).
+   * Only meaningful while `broadcastEnabled` is true. */
+  broadcastExcluded?: string[];
 };
 
 export const SETTING_KEYS = {
@@ -123,4 +153,17 @@ export const SETTING_KEYS = {
   restoreSessions: "workspace.restoreSessions",
   /** Device-local toggle: check for app updates on launch. Never synced. */
   checkOnLaunch: "updates.checkOnLaunch",
+  /** Serialized keymap: actionId -> chord string. Merged with defaults on load
+   * (unknown actions dropped, missing actions get their default chord). */
+  keymap: "keybindings.map",
+  /** Device-local toggle: automatically reconnect dropped SSH sessions
+   * (transient failures only). Default on. */
+  autoReconnect: "ssh.autoReconnect",
+  /** Selected terminal color scheme: a bundled/custom scheme id, or "auto" to
+   * follow the app light/dark mode with Luma's palette. */
+  terminalScheme: "terminal.scheme",
+  /** Custom (imported) terminal color schemes, serialized as a JSON array. */
+  terminalCustomThemes: "terminal.customThemes",
+  /** Terminal font family (CSS font stack); empty falls back to the default. */
+  terminalFontFamily: "terminal.fontFamily",
 } as const;

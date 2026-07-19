@@ -1,4 +1,4 @@
-import { ShieldAlert, X } from "lucide-react";
+import { ShieldAlert, ShieldCheck, X } from "lucide-react";
 import type { HostKeyFingerprint } from "../../lib/ssh";
 
 /*
@@ -14,6 +14,7 @@ export function HostKeyChangedAlert({
   scannedKeys,
   knownKeys,
   onClose,
+  onOpenKnownHosts,
 }: {
   hostTitle: string;
   message: string;
@@ -22,6 +23,8 @@ export function HostKeyChangedAlert({
   /** Previously trusted keys, shown alongside for out-of-band comparison. */
   knownKeys?: HostKeyFingerprint[];
   onClose: () => void;
+  /** Open the known-hosts manager so the user can remove the stale entry. */
+  onOpenKnownHosts?: () => void;
 }) {
   const hasComparison =
     (scannedKeys?.length ?? 0) > 0 || (knownKeys?.length ?? 0) > 0;
@@ -68,7 +71,16 @@ export function HostKeyChangedAlert({
             intercepted.
           </li>
         </ul>
-        <div className="mt-5 flex justify-end">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          {onOpenKnownHosts && (
+            <button
+              type="button"
+              onClick={onOpenKnownHosts}
+              className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:border-accent hover:text-accent"
+            >
+              <ShieldCheck size={14} /> Manage known hosts
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}

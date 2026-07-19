@@ -109,8 +109,9 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
     entries: SftpEntry[],
     targetDir: string,
   ) => {
-    const files = entries.filter((e) => e.kind !== "dir");
-    if (files.length === 0) return;
+    // Files and directories are both transferable (the backend recurses dirs).
+    const items = entries;
+    if (items.length === 0) return;
 
     let destDir = targetDir;
     if (destDir === "__counterpart__") {
@@ -126,15 +127,15 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
     const destListing =
       queryClient.getQueryData<DirectoryListing>(destKey);
     const existing = new Set((destListing?.entries ?? []).map((e) => e.name));
-    const collisions = files.filter((f) => existing.has(f.name)).map((f) => f.name);
+    const collisions = items.filter((f) => existing.has(f.name)).map((f) => f.name);
 
     const run = () => {
-      if (sourceScope === "local") upload(sessionId, files, destDir);
-      else download(sessionId, files, destDir, inferSeparator(destDir));
+      if (sourceScope === "local") upload(sessionId, items, destDir);
+      else download(sessionId, items, destDir, inferSeparator(destDir));
     };
 
     if (collisions.length > 0) {
-      setPendingOverwrite({ collisions, total: files.length, run });
+      setPendingOverwrite({ collisions, total: items.length, run });
     } else {
       run();
     }
@@ -222,7 +223,7 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
           <div className="space-y-2">
             <p>
               {pendingOverwrite?.collisions.length} of {pendingOverwrite?.total}{" "}
-              file{pendingOverwrite?.total === 1 ? "" : "s"} already exist at the
+              item{pendingOverwrite?.total === 1 ? "" : "s"} already exist at the
               destination and will be overwritten:
             </p>
             <ul className="max-h-32 overflow-y-auto rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-xs text-foreground/90">

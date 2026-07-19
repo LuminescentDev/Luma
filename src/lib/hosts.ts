@@ -27,6 +27,13 @@ export type Host = {
   /** Best-effort device-local metadata learned after a successful connection. */
   osId: string | null;
   osPrettyName: string | null;
+  /** Per-host tab accent color as "#RRGGBB", or null for no accent. The backend
+   * only accepts null or a "#RRGGBB" string. */
+  tabColor: string | null;
+  /** True for a throwaway host created by quick-connect that has not been saved
+   * to the host list. Ephemeral hosts are excluded from hosts_list / recents by
+   * the backend; quick_connect_save clears this flag. */
+  isEphemeral: boolean;
 };
 
 export type HostInput = {
@@ -44,6 +51,8 @@ export type HostInput = {
   environment: Record<string, string> | null;
   tags: string[];
   favorite: boolean;
+  /** Per-host tab accent color as "#RRGGBB", or null for no accent. */
+  tabColor: string | null;
 };
 
 export type HostGroup = {
@@ -125,6 +134,7 @@ export function hostToInput(host: Host): HostInput {
     environment: host.environment,
     tags: host.tags,
     favorite: host.favorite,
+    tabColor: host.tabColor,
   };
 }
 
@@ -156,6 +166,26 @@ export function duplicateHost(id: string): Promise<Host> {
 
 export function listRecentHosts(): Promise<Host[]> {
   return invoke<Host[]>("recent_hosts_list", {});
+}
+
+// Quick connect --------------------------------------------------------------
+
+/** Parse a connection string ([ssh://][user@]host[:port], bracketed IPv6, port
+ * default 22) into a throwaway ephemeral Host. The returned hostId flows through
+ * the normal connect pipeline (host-key preflight + ssh_spawn) unchanged.
+ * Rejects with invalid-input / database. */
+export function quickConnectPrepare(input: string): Promise<Host> {
+  return invoke<Host>("quick_connect_prepare", { input });
+}
+
+/** Promote an ephemeral quick-connect host into a saved host (clears
+ * isEphemeral). `name` defaults to the backend-derived label when null.
+ * Rejects with invalid-input / database. */
+export function quickConnectSave(
+  hostId: string,
+  name?: string | null,
+): Promise<Host> {
+  return invoke<Host>("quick_connect_save", { hostId, name: name ?? null });
 }
 
 // Host groups ---------------------------------------------------------------
@@ -218,6 +248,27 @@ export function deleteKeyReference(id: string): Promise<void> {
   return invoke<void>("key_reference_delete", { id });
 }
 export function generateSshKey(name: string, localPath: string, passphrase: string, certificate: string | null): Promise<KeyReference> { return invoke<KeyReference>("ssh_key_generate", { input: { name, localPath, passphrase, certificate } }); }
+
+/** SSH key algorithms Luma can generate into the encrypted vault. */
+export type GeneratedKeyType = "ed25519" | "rsa4096";
+
+/** Generate a new SSH key pair stored in the encrypted vault. The vault must be
+ * configured and unlocked first. Returns a KeyReference with the derived
+ * publicKey + fingerprint (storageMode "encrypted-vault", localPath null).
+ * Rejects with invalid-input / vault-locked / database. */
+export function generateVaultSshKey(input: {
+  keyType: GeneratedKeyType;
+  name: string;
+  passphrase?: string | null;
+  comment?: string | null;
+}): Promise<KeyReference> {
+  return invoke<KeyReference>("ssh_key_generate", {
+    keyType: input.keyType,
+    name: input.name,
+    passphrase: input.passphrase ?? null,
+    comment: input.comment ?? null,
+  });
+}
 
 export const listIdentities = () => invoke<Identity[]>("identities_list", {});
 export const createIdentity = (input: IdentityInput) => invoke<Identity>("identity_create", { input });

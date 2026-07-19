@@ -1,9 +1,18 @@
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal, type IDecoration, type IMarker, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "@xterm/xterm/css/xterm.css";
+
+import {
+  DEFAULT_KEYMAP,
+  hasRequiredModifier,
+  keymapChords,
+  matchesChord,
+  parseChord,
+  type Chord,
+} from "../../lib/keymap";
 
 import {
   killPty,
@@ -79,7 +88,7 @@ export function isSpawnAbandoned(error: unknown): boolean {
  * metadata from the session store; terminal bytes never touch React state.
  */
 
-const DARK_THEME: ITheme = {
+export const DARK_THEME: ITheme = {
   background: "#0b0e14",
   foreground: "#e6eaf2",
   cursor: "#4cc9f0",
@@ -103,7 +112,7 @@ const DARK_THEME: ITheme = {
   brightWhite: "#ffffff",
 };
 
-const LIGHT_THEME: ITheme = {
+export const LIGHT_THEME: ITheme = {
   background: "#ffffff",
   foreground: "#1c2433",
   cursor: "#0e7ea8",
@@ -127,8 +136,56 @@ const LIGHT_THEME: ITheme = {
   brightWhite: "#e2e8f0",
 };
 
-const FONT_FAMILY =
+/** The built-in monospace stack used when the user has not chosen a custom font
+ * family. Exported so the settings UI can show it as the placeholder / reset. */
+export const DEFAULT_TERMINAL_FONT_FAMILY =
   '"Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace';
+
+/*
+ * Shell integration (OSC 133 prompt marks + OSC 7 / OSC 1337 cwd reporting).
+ * Entirely manager-side: React only reads lightweight metadata via getters
+ * (getCwd / getCommandMarks). Prompt-start lines are tracked with xterm markers
+ * (auto-disposed on scrollback trim); failed commands get a cheap gutter
+ * decoration. Sessions that never emit these sequences simply have no marks and
+ * every prompt-jump / copy-output action becomes a no-op.
+ */
+
+/** One command cycle bounded by OSC 133 markers. */
+type CommandMark = {
+  /** Marker at the prompt-start line (OSC 133;A). */
+  prompt: IMarker;
+  /** Marker at the command-output-start line (OSC 133;C), once reported. */
+  output: IMarker | null;
+  /** Marker at the command-finished line (OSC 133;D), once reported. */
+  end: IMarker | null;
+  /** Exit code from OSC 133;D, or null until the command finishes. */
+  exitCode: number | null;
+  /** Gutter decoration for a failed (nonzero-exit) command. */
+  decoration: IDecoration | null;
+};
+
+/** Lightweight metadata copy of a command mark handed to React (never markers). */
+export type CommandMarkInfo = {
+  line: number;
+  exitCode: number | null;
+  failed: boolean;
+};
+
+// Bound the retained marks so a long-lived session can't grow unbounded. xterm
+// disposes markers when their line is trimmed from scrollback; we also drop the
+// oldest here once the cap is exceeded.
+const MAX_COMMAND_MARKS = 500;
+
+// Failed-command gutter bar color (works on both themes; matches the danger red).
+const FAILED_COMMAND_COLOR = "#f87171";
+
+/** Parsed chords currently bound to global app actions. The terminal's custom
+ * key handler swallows these so they bubble to the window handler in Layout.
+ * Seeded from defaults so pass-through is correct before the keymap store loads;
+ * refreshed via terminalManager.setAppChords when the keymap changes. */
+let appChords: Chord[] = keymapChords(DEFAULT_KEYMAP)
+  .map(parseChord)
+  .filter((chord): chord is Chord => chord !== null && hasRequiredModifier(chord));
 
 type SessionCallbacks = {
   onTitle: (title: string) => void;
@@ -149,13 +206,30 @@ type SessionCallbacks = {
 };
 
 type ManagedSession = {
+  /** This session's stable id (the store's session id). Kept on the session so
+   * broadcast fan-out can skip the originating pane without an O(n) reverse
+   * lookup. */
+  id: string;
   term: Terminal;
   fit: FitAddon;
   search: SearchAddon;
   backendId: string | null;
   descriptor: SpawnDescriptor;
   callbacks: SessionCallbacks;
+  /** When this session belongs to a broadcast group, the SHARED set of every
+   * member's session id (including this one). All members reference the same Set
+   * instance so the group can be resized/disbanded in one place. Null when the
+   * session is not broadcasting. Group membership is metadata pushed from React
+   * via setBroadcastGroup/clearBroadcastGroup; the fan-out itself (bytes) happens
+   * entirely in this manager and never touches React. */
+  broadcastPeers: Set<string> | null;
   pendingInput: string[];
+  /** Input is sent through one ordered IPC lane per session. Tauri invokes are
+   * asynchronous, so firing one per key without backpressure can build a large
+   * set of concurrent writes during key repeat. Data arriving while a write is
+   * in flight is joined into the next write. */
+  queuedInput: string[];
+  writeInFlight: boolean;
   exited: boolean;
   /** Monotonic token identifying the current spawn attempt. Bumped on every
    * spawnBackend() call (initial open + each restart). Exit events and spawn
@@ -170,6 +244,11 @@ type ManagedSession = {
   sshIssueReported: boolean;
   sshFinalizing: boolean;
   resizeTimer: ReturnType<typeof window.setTimeout> | null;
+  /** OSC 133 command marks (prompt/output/finished markers + exit codes),
+   * oldest first. Disposed markers (scrollback trim) are filtered lazily. */
+  marks: CommandMark[];
+  /** Last working directory reported via OSC 7 / OSC 1337, or null. */
+  lastReportedCwd: string | null;
 };
 
 // Split-pane and window drags can produce dozens of xterm sizes per second.
@@ -180,6 +259,7 @@ const BACKEND_RESIZE_DEBOUNCE_MS = 100;
 
 type ManagerConfig = {
   fontSize: number;
+  fontFamily: string;
   scrollback: number;
   defaultShell?: ShellRef;
   theme: "dark" | "light";
@@ -193,17 +273,100 @@ const pendingHosts = new Map<string, HTMLElement>();
 
 let config: ManagerConfig = {
   fontSize: 14,
+  fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
   scrollback: 5000,
   defaultShell: undefined,
   theme: "dark",
 };
 
+/** An explicit color-scheme override selected in Appearance settings, or null to
+ * follow the app light/dark mode (see applyTerminalStyle / currentTheme). This is
+ * device-local styling state — never terminal bytes and never React state. */
+let schemeOverride: ITheme | null = null;
+
 function isMac(): boolean {
   return navigator.userAgent.includes("Mac");
 }
 
+/** The theme every terminal should currently use: an explicit scheme override
+ * when one is selected, otherwise Luma's light/dark default for the app mode. */
 function currentTheme(): ITheme {
+  if (schemeOverride) return schemeOverride;
   return config.theme === "light" ? LIGHT_THEME : DARK_THEME;
+}
+
+function pumpInput(session: ManagedSession): void {
+  if (
+    session.writeInFlight ||
+    !session.backendId ||
+    session.queuedInput.length === 0 ||
+    session.disposed ||
+    session.exited
+  ) {
+    return;
+  }
+
+  const backendId = session.backendId;
+  const data = session.queuedInput.join("");
+  session.queuedInput.length = 0;
+  session.writeInFlight = true;
+  void writeBackend(session.descriptor, backendId, data)
+    .catch(() => {
+      // Exit/spawn handling owns user-visible backend errors. A failed write
+      // must still release this lane so later input cannot deadlock.
+    })
+    .finally(() => {
+      session.writeInFlight = false;
+      pumpInput(session);
+    });
+}
+
+function enqueueInput(session: ManagedSession, data: string): void {
+  if (!data || session.disposed || session.exited) return;
+  if (!session.backendId) {
+    session.pendingInput.push(data);
+    return;
+  }
+  session.queuedInput.push(data);
+  pumpInput(session);
+}
+
+/**
+ * Route user input (keystrokes / paste) from the focused terminal: send it to
+ * this session, and — when the session is broadcasting — fan the SAME bytes out
+ * to every other group member through each member's own coalescing lane. Only
+ * the focused pane ever produces onData, so this reliably originates from the
+ * pane the user is typing into; the originating pane receives the data exactly
+ * once (peers are the group minus self). xterm has already turned a paste into a
+ * single onData payload (bracketed-paste wrapper included), so a paste applies
+ * once here and then fans out as one write per peer.
+ */
+function routeUserInput(session: ManagedSession, data: string): void {
+  enqueueInput(session, data);
+  const peers = session.broadcastPeers;
+  if (!peers) return;
+  for (const peerId of peers) {
+    if (peerId === session.id) continue;
+    const peer = sessions.get(peerId);
+    if (peer) enqueueInput(peer, data);
+  }
+}
+
+/** Detach a session from its broadcast group, disbanding the group when fewer
+ * than two members would remain (a lone broadcaster is meaningless). Shared with
+ * dispose() and clearBroadcastGroup so membership never leaks past teardown. */
+function detachFromBroadcast(session: ManagedSession): void {
+  const group = session.broadcastPeers;
+  session.broadcastPeers = null;
+  if (!group) return;
+  group.delete(session.id);
+  if (group.size < 2) {
+    for (const remainingId of group) {
+      const remaining = sessions.get(remainingId);
+      if (remaining) remaining.broadcastPeers = null;
+    }
+    group.clear();
+  }
 }
 
 async function loadWebgl(term: Terminal): Promise<void> {
@@ -245,17 +408,16 @@ function installKeyHandlers(session: ManagedSession): void {
       session.callbacks.onSearchRequested();
       return false;
     }
-    // App-level chords (new tab, split, close pane, command palette) must not
-    // reach the shell. Returning false lets the event bubble to the global
-    // window handler in Layout without inserting anything at the prompt.
-    if (
-      mod &&
-      event.shiftKey &&
-      ["KeyT", "KeyD", "KeyE", "KeyW", "KeyP"].includes(event.code)
-    ) {
+    // App-level chords (new tab, split, close pane, command palette, prompt
+    // jumps, …) must not reach the shell. The set is derived from the keymap
+    // registry (see setAppChords) so rebinding an action keeps this pass-through
+    // correct. Returning false lets the event bubble to the global window
+    // handler in Layout without inserting anything at the prompt.
+    if (appChords.some((chord) => matchesChord(chord, event))) {
       return false;
     }
     // Workspace tab switching, handled by the global window handler in Layout.
+    // These universal tab-cycle accelerators are fixed (not rebindable).
     if (event.ctrlKey && event.code === "Tab") {
       return false;
     }
@@ -264,6 +426,199 @@ function installKeyHandlers(session: ManagedSession): void {
     }
     return true;
   });
+}
+
+/** Register OSC parser handlers for shell integration. Handlers only touch the
+ * manager-side session state; they never route terminal bytes through React. */
+function registerShellIntegration(session: ManagedSession): void {
+  const { term } = session;
+  // OSC 133: prompt/command marks (A prompt start, B command start, C output
+  // start, D;<exit> command finished).
+  term.parser.registerOscHandler(133, (data) => {
+    handleOsc133(session, data);
+    return true;
+  });
+  // OSC 7: file://host/path current-directory reporting.
+  term.parser.registerOscHandler(7, (data) => {
+    const cwd = parseOsc7(data);
+    if (cwd) session.lastReportedCwd = cwd;
+    return true;
+  });
+  // OSC 1337: iTerm2-style "CurrentDir=<path>" (and other subcommands we ignore).
+  term.parser.registerOscHandler(1337, (data) => {
+    const cwd = parseOsc1337(data);
+    if (cwd) session.lastReportedCwd = cwd;
+    return true;
+  });
+}
+
+function handleOsc133(session: ManagedSession, data: string): void {
+  const { term } = session;
+  const semi = data.indexOf(";");
+  const kind = (semi === -1 ? data : data.slice(0, semi)).trim();
+  switch (kind) {
+    case "A": {
+      // Prompt start: begin a new command mark at the current line.
+      const marker = term.registerMarker(0);
+      if (!marker) return;
+      pruneMarks(session);
+      session.marks.push({ prompt: marker, output: null, end: null, exitCode: null, decoration: null });
+      capMarks(session);
+      break;
+    }
+    case "C": {
+      // Command output start: attach an output marker to the current cycle. Some
+      // shells emit C without a preceding A — start a mark in that case.
+      const marker = term.registerMarker(0);
+      if (!marker) return;
+      const current = lastLiveMark(session);
+      if (current && !current.output) {
+        current.output = marker;
+      } else {
+        pruneMarks(session);
+        session.marks.push({ prompt: marker, output: marker, end: null, exitCode: null, decoration: null });
+        capMarks(session);
+      }
+      break;
+    }
+    case "D": {
+      // Command finished: record the exit code and (for failures) a gutter mark.
+      const current = lastLiveMark(session);
+      if (!current) break;
+      const rawCode = semi === -1 ? "" : data.slice(semi + 1).trim();
+      const code = rawCode === "" ? NaN : Number.parseInt(rawCode, 10);
+      current.exitCode = Number.isFinite(code) ? code : null;
+      const endMarker = term.registerMarker(0);
+      if (endMarker) current.end = endMarker;
+      if (Number.isFinite(code) && code !== 0) addFailureDecoration(session, current);
+      break;
+    }
+    // "B" (command start) needs no state for the features we expose.
+    default:
+      break;
+  }
+}
+
+/** Parse an OSC 7 payload (`file://host/path`) into a directory path. Handles the
+ * Windows drive form (`file://host/C:/Users/me`) and POSIX (`file://host/home/me`). */
+export function parseOsc7(data: string): string | null {
+  if (!data.startsWith("file://")) return null;
+  const rest = data.slice("file://".length);
+  const slash = rest.indexOf("/");
+  if (slash === -1) return null;
+  let path = rest.slice(slash); // keep the leading slash
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // Leave percent-encoding intact rather than dropping the report.
+  }
+  // Windows: "/C:/Users/me" -> "C:/Users/me".
+  if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+  return path || null;
+}
+
+/** Parse an OSC 1337 payload, returning the path when it is a `CurrentDir=`. */
+export function parseOsc1337(data: string): string | null {
+  const match = /^CurrentDir=(.*)$/s.exec(data);
+  if (!match) return null;
+  return match[1] || null;
+}
+
+/** The most recent mark whose prompt marker is still live. */
+function lastLiveMark(session: ManagedSession): CommandMark | null {
+  for (let i = session.marks.length - 1; i >= 0; i--) {
+    if (!session.marks[i].prompt.isDisposed) return session.marks[i];
+  }
+  return null;
+}
+
+/** Drop marks whose prompt marker was disposed by a scrollback trim, releasing
+ * any decoration they carried. */
+function pruneMarks(session: ManagedSession): void {
+  session.marks = session.marks.filter((mark) => {
+    if (!mark.prompt.isDisposed) return true;
+    mark.decoration?.dispose();
+    return false;
+  });
+}
+
+/** Enforce MAX_COMMAND_MARKS by dropping the oldest marks. */
+function capMarks(session: ManagedSession): void {
+  const excess = session.marks.length - MAX_COMMAND_MARKS;
+  if (excess <= 0) return;
+  const dropped = session.marks.splice(0, excess);
+  for (const mark of dropped) mark.decoration?.dispose();
+}
+
+/** Add a cheap red gutter bar on the command's start line for a nonzero exit. */
+function addFailureDecoration(session: ManagedSession, mark: CommandMark): void {
+  if (mark.decoration || mark.prompt.isDisposed) return;
+  const decoration = session.term.registerDecoration({
+    marker: mark.prompt,
+    x: 0,
+    width: 1,
+    overviewRulerOptions: { color: FAILED_COMMAND_COLOR, position: "left" },
+  });
+  if (!decoration) return;
+  mark.decoration = decoration;
+  decoration.onRender((element) => {
+    element.style.width = "3px";
+    element.style.marginLeft = "-1px";
+    element.style.backgroundColor = FAILED_COMMAND_COLOR;
+    element.style.borderRadius = "1px";
+    element.style.pointerEvents = "none";
+  });
+}
+
+/** Dispose every mark's markers/decorations and reset the list (restart/reset). */
+function clearMarks(session: ManagedSession): void {
+  for (const mark of session.marks) {
+    mark.decoration?.dispose();
+    mark.prompt.dispose();
+    mark.output?.dispose();
+    mark.end?.dispose();
+  }
+  session.marks = [];
+}
+
+/** Extract the buffer text of the last completed command's output (between its
+ * OSC 133;C marker and its OSC 133;D marker, falling back to the next prompt or
+ * the buffer end), or null when there is no captured output. */
+function lastCommandOutput(session: ManagedSession): string | null {
+  pruneMarks(session);
+  let index = -1;
+  for (let i = session.marks.length - 1; i >= 0; i--) {
+    const output = session.marks[i].output;
+    if (output && !output.isDisposed) {
+      index = i;
+      break;
+    }
+  }
+  if (index === -1) return null;
+  const mark = session.marks[index];
+  const buffer = session.term.buffer.active;
+  const start = mark.output!.line;
+  let end: number;
+  if (mark.end && !mark.end.isDisposed) {
+    end = mark.end.line;
+  } else {
+    end = buffer.baseY + session.term.rows;
+    for (let i = index + 1; i < session.marks.length; i++) {
+      const next = session.marks[i].prompt;
+      if (!next.isDisposed && next.line > start) {
+        end = next.line;
+        break;
+      }
+    }
+  }
+  const lines: string[] = [];
+  for (let y = start; y < end; y++) {
+    const line = buffer.getLine(y);
+    if (line) lines.push(line.translateToString(true));
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length === 0) return null;
+  return lines.join("\n");
 }
 
 async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
@@ -288,6 +643,8 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
     if (session.exited) return;
     session.exited = true;
     session.backendId = null;
+    session.queuedInput.length = 0;
+    session.pendingInput.length = 0;
     session.callbacks.onExit(exit);
   };
 
@@ -330,8 +687,7 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
         session.sshTranscript = "";
         session.lastPromptSignature = "";
         term.clear();
-        if (session.backendId) void writePty(session.backendId, "\r");
-        else session.pendingInput.push("\r");
+        enqueueInput(session, "\r");
         session.callbacks.onSshAuthenticated();
       }, 750);
       return;
@@ -402,9 +758,8 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
     return result;
   }
   session.backendId = result.sessionId;
-  for (const chunk of session.pendingInput.splice(0)) {
-    void writeBackend(descriptor, result.sessionId, chunk);
-  }
+  session.queuedInput.push(...session.pendingInput.splice(0));
+  pumpInput(session);
   return result;
 }
 
@@ -426,8 +781,135 @@ export const terminalManager = {
     }
   },
 
+  /**
+   * Apply Appearance styling (color scheme + font) to every live session and to
+   * the config new sessions inherit. Each key is optional so a single setting can
+   * be changed in isolation:
+   *  - `scheme`: an explicit xterm theme to override the light/dark default, or
+   *    null to follow the app mode (AUTO). Presence of the key is what matters —
+   *    passing `scheme: null` clears an override; omitting it leaves it untouched.
+   *  - `fontFamily`: a CSS font stack; empty/whitespace falls back to the default.
+   *  - `fontSize`: point size (already validated/clamped by the caller).
+   * Terminal bytes never pass through here; only xterm render options change.
+   */
+  applyTerminalStyle(style: {
+    scheme?: ITheme | null;
+    fontFamily?: string;
+    fontSize?: number;
+  }): void {
+    const schemeChanged = Object.prototype.hasOwnProperty.call(style, "scheme");
+    if (schemeChanged) schemeOverride = style.scheme ?? null;
+    if (style.fontFamily !== undefined) {
+      config.fontFamily = style.fontFamily.trim() || DEFAULT_TERMINAL_FONT_FAMILY;
+    }
+    if (style.fontSize !== undefined) config.fontSize = style.fontSize;
+    for (const session of sessions.values()) {
+      if (schemeChanged) session.term.options.theme = currentTheme();
+      if (style.fontFamily !== undefined) {
+        session.term.options.fontFamily = config.fontFamily;
+      }
+      if (style.fontSize !== undefined) session.term.options.fontSize = config.fontSize;
+      // Font changes alter cell metrics, so the grid must be refit; a scheme-only
+      // change does not, but refitting is cheap and safe.
+      if (style.fontFamily !== undefined || style.fontSize !== undefined) {
+        this.fitSession(session.id);
+      }
+    }
+  },
+
   defaultShellRef(): ShellRef | undefined {
     return config.defaultShell;
+  },
+
+  /** Replace the set of global app chords the terminal's custom key handler
+   * swallows (so they bubble to the window handler in Layout). Called by the
+   * keymap store on load and after every rebind. Unbindable chords (missing a
+   * required modifier) are ignored so terminal typing is never shadowed. */
+  setAppChords(chords: string[]): void {
+    appChords = chords
+      .map(parseChord)
+      .filter((chord): chord is Chord => chord !== null && hasRequiredModifier(chord));
+  },
+
+  /** The current BACKEND session id (what pty_spawn / ssh_spawn returned) for a
+   * managed session, or null when it has not spawned, has exited, or is unknown.
+   * This is the id the session-logging commands expect — never the store's
+   * session id. It changes on every restart, so callers must not cache it. */
+  getBackendId(sessionId: string): string | null {
+    return sessions.get(sessionId)?.backendId ?? null;
+  },
+
+  /** The last working directory this session reported via OSC 7 / OSC 1337, or
+   * null when the shell has never reported one (no shell integration). */
+  getCwd(sessionId: string): string | null {
+    return sessions.get(sessionId)?.lastReportedCwd ?? null;
+  },
+
+  /** Lightweight metadata for this session's live command marks (oldest first).
+   * Metadata only — markers/decorations never cross into React. */
+  getCommandMarks(sessionId: string): CommandMarkInfo[] {
+    const session = sessions.get(sessionId);
+    if (!session) return [];
+    pruneMarks(session);
+    return session.marks
+      .filter((mark) => !mark.prompt.isDisposed)
+      .map((mark) => ({
+        line: mark.prompt.line,
+        exitCode: mark.exitCode,
+        failed: mark.exitCode !== null && mark.exitCode !== 0,
+      }));
+  },
+
+  /** Whether this session has any live prompt marks (drives enabled state of the
+   * prompt-jump / copy-output affordances). */
+  hasCommandMarks(sessionId: string): boolean {
+    const session = sessions.get(sessionId);
+    if (!session) return false;
+    pruneMarks(session);
+    return session.marks.some((mark) => !mark.prompt.isDisposed);
+  },
+
+  /** Scroll the viewport to the previous/next prompt-start mark relative to the
+   * current viewport top. No-op when there are no (live) marks. */
+  jumpToPrompt(sessionId: string, direction: "previous" | "next"): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    pruneMarks(session);
+    const lines = session.marks
+      .filter((mark) => !mark.prompt.isDisposed)
+      .map((mark) => mark.prompt.line)
+      .sort((a, b) => a - b);
+    if (lines.length === 0) return;
+    const reference = session.term.buffer.active.viewportY;
+    let target: number | undefined;
+    if (direction === "previous") {
+      for (const line of lines) if (line < reference) target = line;
+    } else {
+      target = lines.find((line) => line > reference);
+    }
+    if (target === undefined) return;
+    session.term.scrollToLine(target);
+  },
+
+  /** Copy the last completed command's output (OSC 133 C..D range) to the
+   * clipboard. Returns whether any output was captured (false becomes a no-op
+   * for the palette/context-menu entries on sessions without shell integration). */
+  copyLastCommandOutput(sessionId: string): boolean {
+    const session = sessions.get(sessionId);
+    if (!session) return false;
+    const text = lastCommandOutput(session);
+    if (text === null) return false;
+    void navigator.clipboard?.writeText(text);
+    return true;
+  },
+
+  /** Copy this session's last reported working directory to the clipboard.
+   * Returns whether a cwd was available. */
+  copyCwd(sessionId: string): boolean {
+    const cwd = sessions.get(sessionId)?.lastReportedCwd ?? null;
+    if (!cwd) return false;
+    void navigator.clipboard?.writeText(cwd);
+    return true;
   },
 
   async createSession(
@@ -444,7 +926,7 @@ export const terminalManager = {
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
-      fontFamily: FONT_FAMILY,
+      fontFamily: config.fontFamily,
       fontSize: config.fontSize,
       scrollback: config.scrollback,
       theme: currentTheme(),
@@ -460,13 +942,17 @@ export const terminalManager = {
     );
 
     const session: ManagedSession = {
+      id: sessionId,
       term,
       fit,
       search,
       backendId: null,
       descriptor: resolved,
       callbacks,
+      broadcastPeers: null,
       pendingInput: [],
+      queuedInput: [],
+      writeInFlight: false,
       exited: false,
       spawnGeneration: 0,
       disposed: false,
@@ -476,16 +962,18 @@ export const terminalManager = {
       sshIssueReported: false,
       sshFinalizing: false,
       resizeTimer: null,
+      marks: [],
+      lastReportedCwd: null,
     };
     sessions.set(sessionId, session);
 
     installKeyHandlers(session);
+    registerShellIntegration(session);
     term.onTitleChange((title) => {
       if (title.trim()) callbacks.onTitle(title);
     });
     term.onData((data) => {
-      if (session.backendId) void writeBackend(session.descriptor, session.backendId, data);
-      else if (!session.exited) session.pendingInput.push(data);
+      routeUserInput(session, data);
     });
     term.onResize(({ cols, rows }) => {
       // Serial has no cols/rows: fit the local xterm but never resize the
@@ -635,8 +1123,7 @@ export const terminalManager = {
   sendInput(sessionId: string, data: string): void {
     const session = sessions.get(sessionId);
     if (!session) return;
-    if (session.backendId) void writeBackend(session.descriptor, session.backendId, data);
-    else if (!session.exited) session.pendingInput.push(data);
+    enqueueInput(session, data);
     session.term.focus();
   },
 
@@ -648,11 +1135,21 @@ export const terminalManager = {
     if (!session || session.descriptor.kind !== "ssh") return;
     session.lastPromptSignature = "";
     session.sshTranscript = "";
-    if (session.backendId) void writePty(session.backendId, `${value}\r`);
-    else session.pendingInput.push(`${value}\r`);
+    enqueueInput(session, `${value}\r`);
   },
 
-  async restart(sessionId: string): Promise<ManagedSpawnResult> {
+  /**
+   * Restart a session's backend, keeping the same xterm instance. By default the
+   * terminal is fully reset (cleared scrollback + marks) — this is the manual
+   * "Reconnect/Restart" path. Pass `{ preserveBuffer: true }` for auto-reconnect:
+   * the existing scrollback is kept and a dim separator line is written so the
+   * user sees continuity across the reconnect, and `reconnectAttempt` labels that
+   * separator (e.g. "— reconnecting (attempt 2) —").
+   */
+  async restart(
+    sessionId: string,
+    options: { preserveBuffer?: boolean; reconnectAttempt?: number } = {},
+  ): Promise<ManagedSpawnResult> {
     const session = sessions.get(sessionId);
     if (!session) throw new Error("unknown session");
     if (session.resizeTimer !== null) {
@@ -664,7 +1161,21 @@ export const terminalManager = {
       session.backendId = null;
       await killBackend(session.descriptor, old).catch(() => {});
     }
-    session.term.reset();
+    session.queuedInput.length = 0;
+    session.pendingInput.length = 0;
+    session.lastReportedCwd = null;
+    if (options.preserveBuffer) {
+      // Keep scrollback + marks; write a dim separator so the reconnect reads as
+      // a continuation of the same pane rather than a wiped terminal.
+      const label =
+        options.reconnectAttempt && options.reconnectAttempt > 0
+          ? `— reconnecting (attempt ${options.reconnectAttempt}) —`
+          : "— reconnecting —";
+      session.term.write(`\r\n\x1b[2m${label}\x1b[0m\r\n`);
+    } else {
+      clearMarks(session);
+      session.term.reset();
+    }
     return spawnBackend(sessionId);
   },
 
@@ -680,11 +1191,52 @@ export const terminalManager = {
     sessions.get(sessionId)?.search.clearDecorations();
   },
 
+  /**
+   * Define (or redefine) the broadcast group for a tab: every listed session
+   * that exists becomes a member, and input typed into any one of them fans out
+   * to the others (see routeUserInput). React is the single source of truth for
+   * membership — it recomputes the member list on toggle, per-pane exclude,
+   * split, and close, then pushes it here. Passing fewer than two live members
+   * disbands the group. Callers pass the COMPLETE desired membership; any session
+   * dropped from a previously larger group is detached automatically.
+   */
+  setBroadcastGroup(sessionIds: string[]): void {
+    const members = sessionIds.filter((id) => sessions.has(id));
+    // Detach everything currently linked to this group (via any member's shared
+    // peer set) first, so members removed from the new list stop broadcasting.
+    for (const id of sessionIds) {
+      const existing = sessions.get(id)?.broadcastPeers;
+      if (!existing) continue;
+      for (const peerId of existing) {
+        const peer = sessions.get(peerId);
+        if (peer) peer.broadcastPeers = null;
+      }
+    }
+    if (members.length < 2) return;
+    const group = new Set(members);
+    for (const id of members) {
+      sessions.get(id)!.broadcastPeers = group;
+    }
+  },
+
+  /** Remove a single session from its broadcast group (per-pane opt-out or
+   * teardown), disbanding the group when it would drop below two members. */
+  clearBroadcastGroup(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (session) detachFromBroadcast(session);
+  },
+
   dispose(sessionId: string): void {
     pendingHosts.delete(sessionId);
     const session = sessions.get(sessionId);
     if (!session) return;
+    // Leave any broadcast group before teardown so a disposed session can never
+    // be a fan-out target and a two-pane group collapses cleanly to none.
+    detachFromBroadcast(session);
     session.disposed = true;
+    session.queuedInput.length = 0;
+    session.pendingInput.length = 0;
+    clearMarks(session);
     if (session.resizeTimer !== null) {
       window.clearTimeout(session.resizeTimer);
       session.resizeTimer = null;
