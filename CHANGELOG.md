@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/LuminescentDev/Luma/compare/v0.5.0...v0.6.0) (2026-07-18)
+
+
+### Features
+
+* update version to 0.5.0 and enhance close handling in session management ([2bde6fe](https://github.com/LuminescentDev/Luma/commit/2bde6fe72827c85b43d6bd8c7bc875ab00c46b66))
+
 ## [0.5.0](https://github.com/LuminescentDev/Luma/compare/v0.4.0...v0.5.0) (2026-07-18)
 
 
