@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/LuminescentDev/Luma/compare/v0.6.0...v0.7.0) (2026-07-19)
+
+
+### Features
+
+* add 12 terminal, SSH, and SFTP productivity features ([32ed9a1](https://github.com/LuminescentDev/Luma/commit/32ed9a11a6216cdeacfee3a48b892a29f5901643))
+* update luma version to 0.6.0 in Cargo.lock and Cargo.toml ([706f853](https://github.com/LuminescentDev/Luma/commit/706f853bd8064b635e8657ca864442e1d282081c))
+
 ## [0.6.0](https://github.com/LuminescentDev/Luma/compare/v0.5.0...v0.6.0) (2026-07-18)
 
 
