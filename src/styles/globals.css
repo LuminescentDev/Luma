@@ -165,3 +165,41 @@ body {
     transition: none;
   }
 }
+@media (max-width: 767px) {
+  .keychain-screen > aside {
+    width: 100%;
+  }
+
+  .keychain-toolbar {
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1rem;
+  }
+
+  .keychain-toolbar > :nth-child(3),
+  .keychain-toolbar > :nth-child(4) {
+    display: none;
+  }
+
+  .keychain-toolbar input[aria-label="Search keychain"] {
+    border: 0;
+    outline: 0;
+    box-shadow: none;
+  }
+
+  .keychain-toolbar button[aria-label="Search keychain"]:hover {
+    background: transparent;
+  }
+
+  .keychain-toolbar > :last-child {
+    width: 11rem;
+    margin-left: auto;
+    text-align: right;
+  }
+
+  .keychain-screen section > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+}

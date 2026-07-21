@@ -4,15 +4,15 @@ import { MobileNav, type MobileTab } from "./MobileNav";
 import { MobileHostsScreen } from "./MobileHostsScreen";
 import { MobileSessionsList } from "./MobileSessionsList";
 import { MobileTerminalView } from "./MobileTerminalView";
-import { MobileSftpScreen } from "./MobileSftpScreen";
 import { MobileSettingsScreen } from "./MobileSettingsScreen";
+import { KeychainScreen } from "../keychain/KeychainScreen";
 import { SnippetsScreen } from "../snippets/SnippetsScreen";
 import { SnippetRunner } from "../snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../snippets/MultiHostRunDialog";
 
 /*
  * Mobile application shell. A bottom-navigation container (Hosts, Sessions,
- * SFTP, Snippets, Settings) with no title bar, sidebar, or window controls.
+ * Keys, Snippets, Settings) with no title bar, sidebar, or window controls.
  * Opening a terminal session shows it full-screen over the nav. Navigation is
  * driven by local state (not the desktop uiStore.mainView), so the desktop
  * layout is untouched; new sessions auto-open full-screen by watching the shared
@@ -77,7 +77,9 @@ export function MobileLayout() {
         Skip to content
       </a>
       <main id="main-content" tabIndex={-1} className="min-h-0 flex-1">
-        {tab === "hosts" && <MobileHostsScreen />}
+        {tab === "hosts" && (
+          <MobileHostsScreen onOpenKeychain={() => setTab("keychain")} />
+        )}
         {tab === "sessions" && (
           <MobileSessionsList
             onGoHosts={goToHosts}
@@ -87,7 +89,7 @@ export function MobileLayout() {
             }}
           />
         )}
-        {tab === "sftp" && <MobileSftpScreen />}
+        {tab === "keychain" && <KeychainScreen />}
         {tab === "snippets" && (
           <div className="h-full overflow-y-auto pt-safe">
             <SnippetsScreen />

@@ -30,6 +30,18 @@ src-tauri/gen/android/app/tauri.build.gradle.kts
 src-tauri/gen/android/app/tauri.properties
 src-tauri/gen/android/app/proguard-tauri.pro
 
+# iOS / Xcode generated files and local machine configuration
+src-tauri/gen/apple/build/
+src-tauri/gen/apple/Externals/
+src-tauri/gen/apple/DerivedData/
+src-tauri/gen/apple/Pods/
+src-tauri/gen/apple/.symlinks/
+src-tauri/gen/apple/**/xcuserdata/
+src-tauri/gen/apple/**/*.xcuserstate
+src-tauri/gen/apple/**/*.xccheckout
+src-tauri/gen/apple/**/*.xcscmblueprint
+src-tauri/gen/apple/**/project.xcworkspace/xcshareddata/swiftpm/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

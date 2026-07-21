@@ -60,7 +60,7 @@ function matchesQuery(host: Host, q: string): boolean {
   );
 }
 
-export function HostsPanel() {
+export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } = {}) {
   const openSshSession = useSessionStore((s) => s.openSshSession);
   const sessions = useSessionStore((s) => s.sessions);
   const invalidate = useInvalidateHosts();
@@ -269,7 +269,7 @@ export function HostsPanel() {
             >
               <MenuItem
                 icon={<KeyRound size={14} />}
-                onSelect={() => setIdentitiesOpen(true)}
+                onSelect={() => onOpenKeychain ? onOpenKeychain() : setIdentitiesOpen(true)}
               >
                 Keychain
               </MenuItem>
@@ -335,10 +335,10 @@ export function HostsPanel() {
         keyReferences={keyReferences ?? []}
         identities={identities ?? []}
         hosts={allHosts}
-        onManageKeys={() => setKeysOpen(true)}
+        onManageKeys={() => onOpenKeychain ? onOpenKeychain() : setKeysOpen(true)}
       />
-      <KeyReferencesDialog open={keysOpen} onOpenChange={setKeysOpen} />
-      <IdentitiesDialog open={identitiesOpen} onOpenChange={setIdentitiesOpen} keys={keyReferences ?? []} onManageKeys={() => { setIdentitiesOpen(false); setKeysOpen(true); }} />
+      {!onOpenKeychain && <KeyReferencesDialog open={keysOpen} onOpenChange={setKeysOpen} />}
+      {!onOpenKeychain && <IdentitiesDialog open={identitiesOpen} onOpenChange={setIdentitiesOpen} keys={keyReferences ?? []} onManageKeys={() => { setIdentitiesOpen(false); setKeysOpen(true); }} />}
       <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
       <PortForwardsDialog
         open={portForwardsHost !== null}
@@ -564,7 +564,7 @@ function HostRow({
   ];
   return (
     <ContextMenu actions={hostActions}>
-    <div draggable onDragStart={(event) => onDragStart(event, host)} onDragEnd={onDragEnd} onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onSelect(host, event.ctrlKey || event.metaKey); }} aria-selected={selected} className={cn("group/row flex min-h-[62px] cursor-grab items-center gap-2 rounded-xl bg-raised px-3 py-2 text-sm text-muted transition-all hover:ring-1 hover:ring-accent hover:text-foreground active:cursor-grabbing", selected && "ring-2 ring-accent bg-accent/10")}>
+    <div draggable onDragStart={(event) => onDragStart(event, host)} onDragEnd={onDragEnd} onClick={(event) => { if ((event.target as HTMLElement).closest("button")) return; onSelect(host, event.ctrlKey || event.metaKey); }} aria-selected={selected} className={cn("group/row flex min-h-15.5 cursor-grab items-center gap-2 rounded-xl bg-raised px-3 py-2 text-sm text-muted transition-all hover:ring-1 hover:ring-accent hover:text-foreground active:cursor-grabbing", selected && "ring-2 ring-accent bg-accent/10")}>
       <button
         type="button"
         onClick={(event) => {
@@ -659,10 +659,10 @@ function MenuItem({
     <DropdownMenu.Item
       onSelect={onSelect}
       className={cn(
-        "flex cursor-default items-center gap-2 rounded-md px-2.5 py-1.5 outline-none data-[highlighted]:bg-surface",
+        "flex cursor-default items-center gap-2 rounded-md px-2.5 py-1.5 outline-none data-highlighted:bg-surface",
         destructive
-          ? "text-danger data-[highlighted]:text-danger"
-          : "data-[highlighted]:text-accent",
+          ? "text-danger data-highlighted:text-danger"
+          : "data-highlighted:text-accent",
       )}
     >
       {icon}

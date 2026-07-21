@@ -1,12 +1,12 @@
-import { FolderOpen, Server, Settings, SquareCode, SquareTerminal } from "lucide-react";
+import { KeyRound, Server, Settings, SquareCode, SquareTerminal } from "lucide-react";
 import { cn } from "../../lib/utils";
 
-export type MobileTab = "hosts" | "sessions" | "sftp" | "snippets" | "settings";
+export type MobileTab = "hosts" | "sessions" | "keychain" | "snippets" | "settings";
 
 const ITEMS: { tab: MobileTab; label: string; icon: typeof Server }[] = [
   { tab: "hosts", label: "Hosts", icon: Server },
   { tab: "sessions", label: "Sessions", icon: SquareTerminal },
-  { tab: "sftp", label: "SFTP", icon: FolderOpen },
+  { tab: "keychain", label: "Keys", icon: KeyRound },
   { tab: "snippets", label: "Snippets", icon: SquareCode },
   { tab: "settings", label: "Settings", icon: Settings },
 ];

@@ -9,12 +9,12 @@ import { HostsPanel } from "../hosts/HostsPanel";
  * capability store. Connecting a host routes into the full-screen mobile
  * terminal via the shared session store + uiStore.showTerminal path.
  */
-export function MobileHostsScreen() {
+export function MobileHostsScreen({ onOpenKeychain }: { onOpenKeychain: () => void }) {
   return (
     <div className="h-full overflow-y-auto bg-background">
       <div className="px-4 py-4 pt-safe">
         <h1 className="mb-4 text-lg font-semibold">Hosts</h1>
-        <HostsPanel />
+        <HostsPanel onOpenKeychain={onOpenKeychain} />
       </div>
     </div>
   );

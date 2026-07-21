@@ -1,4 +1,4 @@
-package dev.luma.app
+package dev.bwmp.luma
 
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge

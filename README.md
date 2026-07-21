@@ -102,6 +102,28 @@ pnpm dev
 
 Backend-dependent features are unavailable in that mode.
 
+### Run on iOS
+
+iOS development requires macOS, Xcode with an iOS platform installed, and the
+Rust iOS targets. Install the targets once:
+
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+```
+
+If `src-tauri/gen/apple` is not present in a fresh checkout, generate the Xcode
+project once with `pnpm tauri ios init`. Then launch Luma on a connected iPhone
+or an installed simulator:
+
+```sh
+pnpm ios:dev
+```
+
+The Tauri CLI prompts for the destination. For a physical device, select your
+Apple development team in the generated Xcode project when prompted by Xcode.
+Create a release archive with `pnpm ios:build`; App Store distribution also
+requires a unique bundle identifier and the corresponding signing profile.
+
 ### Checks and builds
 
 ```sh
