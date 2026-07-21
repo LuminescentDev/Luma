@@ -1,6 +1,6 @@
 [package]
 name = "luma"
-version = "0.6.0"
+version = "0.7.0"
 description = "A lightweight cross-platform terminal and SSH client"
 authors = ["Luma contributors"]
 license = "MIT"
