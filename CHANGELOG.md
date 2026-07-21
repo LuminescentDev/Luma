@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.0](https://github.com/LuminescentDev/Luma/compare/v0.7.0...v0.8.0) (2026-07-21)
+
+
+### Features
+
+* add identity management features including syncing and UI updates ([b6cb523](https://github.com/LuminescentDev/Luma/commit/b6cb523e862e68f6c798cd1cdb105cb3659b1851))
+* add iOS support and update project configuration for Luma ([9fc0924](https://github.com/LuminescentDev/Luma/commit/9fc09247c27fbe2979fd5c0b7c89b55f6bb2cd32))
+* MOBILE SUPPORT???? ([967868e](https://github.com/LuminescentDev/Luma/commit/967868e263a8490fcc8e092aab1b0fa4efaa3596))
+* update luma version to 0.7.0 in Cargo.lock and Cargo.toml ([8732992](https://github.com/LuminescentDev/Luma/commit/8732992e110113c41fe4fbf1fa5fbb8daa808c8c))
+
 ## [0.7.0](https://github.com/LuminescentDev/Luma/compare/v0.6.0...v0.7.0) (2026-07-19)
 
 
