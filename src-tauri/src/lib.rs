@@ -5,6 +5,7 @@ mod logging;
 mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod session_logging;
 mod sftp;
 mod snippet_runs;

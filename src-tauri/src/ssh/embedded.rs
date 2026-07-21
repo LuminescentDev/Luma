@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,6 +15,7 @@ use super::{
     SSH_AUTHENTICATED_MARKER,
 };
 use crate::errors::{LumaError, Result};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::session_logging::{SessionLogManager, SessionLogMode, SessionLogStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +79,7 @@ enum Control {
 #[derive(Default)]
 pub struct EmbeddedSshManager {
     sessions: Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>>,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     logs: SessionLogManager,
 }
 
@@ -171,8 +174,10 @@ impl EmbeddedSshManager {
         let (control_tx, mut control_rx) = mpsc::unbounded_channel();
         let id = uuid::Uuid::new_v4().to_string();
         self.sessions.lock().unwrap().insert(id.clone(), control_tx);
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         self.logs.register(&id, cols, rows);
         let sessions = Arc::clone(&self.sessions);
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let logs = self.logs.clone();
         let task_id = id.clone();
         let _identity = config.ephemeral_identity_file.clone();
@@ -241,6 +246,7 @@ impl EmbeddedSshManager {
                     },
                     message = channel.wait() => match message {
                         Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            #[cfg(not(any(target_os = "android", target_os = "ios")))]
                             logs.write(&task_id, &data);
                             on_data(&data);
                         }
@@ -255,6 +261,7 @@ impl EmbeddedSshManager {
                 }
             }
             sessions.lock().unwrap().remove(&task_id);
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             logs.unregister(&task_id);
             let (error_category, error_message) = if let Some(message) = failure {
                 (Some("connection-lost".into()), Some(message))
@@ -287,15 +294,18 @@ impl EmbeddedSshManager {
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<bool> {
         let sent = self.send(session_id, Control::Resize(cols, rows))?;
         if sent {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             self.logs.update_dimensions(session_id, cols, rows);
         }
         Ok(sent)
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn contains(&self, session_id: &str) -> bool {
         self.logs.contains(session_id)
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn log_start(
         &self,
         session_id: &str,
@@ -306,10 +316,12 @@ impl EmbeddedSshManager {
         self.logs.start(session_id, mode, path, app_data_dir)
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn log_stop(&self, session_id: &str) -> Result<()> {
         self.logs.stop(session_id)
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn log_status(&self, session_id: &str) -> Result<SessionLogStatus> {
         self.logs.status(session_id)
     }

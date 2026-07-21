@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -12,7 +13,9 @@ use russh::client;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::io::{AsyncRead, AsyncReadExt};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -25,9 +28,12 @@ use crate::storage::hosts::{self, Host};
 const PROBE_CONNECT_TIMEOUT_SECONDS: u64 = 10;
 const PROBE_PROCESS_TIMEOUT_SECONDS: u64 = 30;
 const PENDING_SCAN_TTL: Duration = Duration::from_secs(120);
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_PROBE_DIAGNOSTIC_CHARS: usize = 512;
 const MAX_KNOWN_HOSTS_BYTES: u64 = 4 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_HOST_KEYS: usize = 32;
 
 static PENDING_SCANS: LazyLock<Mutex<HashMap<String, PendingScan>>> =
@@ -90,8 +96,10 @@ struct KnownHostEntries {
 }
 
 #[derive(Debug)]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 struct EphemeralKnownHostsFile(PathBuf);
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl EphemeralKnownHostsFile {
     fn create() -> Result<Self> {
         let path = std::env::temp_dir().join(format!(
@@ -114,6 +122,7 @@ impl EphemeralKnownHostsFile {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl Drop for EphemeralKnownHostsFile {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -369,11 +378,13 @@ fn prune_expired_scans(scans: &mut HashMap<String, PendingScan>) {
     scans.retain(|_, scan| scan.created_at.elapsed() <= PENDING_SCAN_TTL);
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 struct CappedOutput {
     bytes: Vec<u8>,
     exceeded: bool,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn read_capped_output<R>(mut reader: R) -> io::Result<CappedOutput>
 where
     R: AsyncRead + Unpin,
@@ -546,6 +557,7 @@ async fn scan_host_key_embedded(config: &SshConnectionConfig) -> Result<Vec<Host
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn read_probe_keys(path: &Path) -> Result<Vec<HostKey>> {
     let metadata = fs::metadata(path)?;
     if metadata.len() > MAX_PROBE_OUTPUT_BYTES as u64 {
@@ -557,6 +569,7 @@ fn read_probe_keys(path: &Path) -> Result<Vec<HostKey>> {
     parse_scanned_keys(&fs::read(path)?)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn short_redacted_diagnostic(stderr: &[u8]) -> String {
     let diagnostic = String::from_utf8_lossy(stderr);
     let redacted = crate::logging::redact(&diagnostic);
@@ -582,6 +595,7 @@ fn short_redacted_diagnostic(stderr: &[u8]) -> String {
     result
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn looks_like_encoded_key_material(token: &str) -> bool {
     let token = token.trim_matches(|character: char| {
         matches!(character, ',' | ';' | '(' | ')' | '[' | ']' | '"' | '\'')
@@ -631,6 +645,7 @@ fn known_host_target(hostname: &str, port: u16) -> String {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn parse_scanned_keys(output: &[u8]) -> Result<Vec<HostKey>> {
     let text = std::str::from_utf8(output).map_err(|_| LumaError::SshConnection {
         category: "host-key-scan-failed",
@@ -672,6 +687,7 @@ fn parse_scanned_keys(output: &[u8]) -> Result<Vec<HostKey>> {
     Ok(keys)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn valid_key_type(key_type: &str) -> bool {
     !key_type.is_empty()
         && key_type.len() <= 128

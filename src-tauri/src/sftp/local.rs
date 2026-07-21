@@ -1,12 +1,13 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::time::UNIX_EPOCH;
 
-use super::{
-    sort_entries, DeleteBudget, DirectoryListing, FileEntry, MAX_DELETE_DEPTH, MAX_DELETE_ENTRIES,
-    MAX_DIRECTORY_ENTRIES, MAX_PATH_BYTES,
-};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use super::{sort_entries, DeleteBudget, DirectoryListing, FileEntry, MAX_DIRECTORY_ENTRIES};
+use super::{MAX_DELETE_DEPTH, MAX_DELETE_ENTRIES, MAX_PATH_BYTES};
 use crate::errors::{LumaError, Result};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::platform::home_dir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,12 +170,14 @@ fn relative_transfer_path(root: &Path, path: &Path) -> Result<String> {
     Ok(components.join("/"))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_list(path: Option<String>) -> Result<DirectoryListing> {
     tokio::task::spawn_blocking(move || list_blocking(path.as_deref()))
         .await
         .map_err(|error| LumaError::SftpFailed(format!("local directory task failed: {error}")))?
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_mkdir(path: String) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         let path = validated_creation_path(&path)?;
@@ -190,6 +193,7 @@ pub async fn local_mkdir(path: String) -> Result<()> {
     .map_err(|error| LumaError::SftpFailed(format!("local directory task failed: {error}")))?
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_rename(from: String, to: String, app_data_dir: PathBuf) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         let from = validated_existing_path(&from)?;
@@ -208,6 +212,7 @@ pub async fn local_rename(from: String, to: String, app_data_dir: PathBuf) -> Re
     .map_err(|error| LumaError::SftpFailed(format!("local rename task failed: {error}")))?
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_delete(path: String, recursive: bool, app_data_dir: PathBuf) -> Result<()> {
     tokio::task::spawn_blocking(move || {
         let path = validated_existing_path(&path)?;
@@ -239,6 +244,7 @@ pub async fn local_delete(path: String, recursive: bool, app_data_dir: PathBuf) 
     .map_err(|error| LumaError::SftpFailed(format!("local delete task failed: {error}")))?
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn list_blocking(path: Option<&str>) -> Result<DirectoryListing> {
     let requested = match path {
         None | Some("") => home_dir().ok_or_else(|| {
@@ -283,6 +289,7 @@ fn list_blocking(path: Option<&str>) -> Result<DirectoryListing> {
     })
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn local_entry(name: String, path: PathBuf, metadata: &fs::Metadata) -> Result<FileEntry> {
     let file_type = metadata.file_type();
     let kind = if file_type.is_dir() {
@@ -311,6 +318,7 @@ fn local_entry(name: String, path: PathBuf, metadata: &fs::Metadata) -> Result<F
 }
 
 #[cfg(unix)]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn local_permissions(metadata: &fs::Metadata) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     Some(format_permissions(metadata.permissions().mode()))
@@ -326,6 +334,7 @@ fn local_permissions(metadata: &fs::Metadata) -> Option<String> {
     Some(format_permissions(mode))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn format_permissions(mode: u32) -> String {
     let flags = [
         0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001,
@@ -366,6 +375,7 @@ pub(super) fn validate_local_path(path: &str) -> Result<PathBuf> {
     normalize_absolute(&path)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn validated_existing_path(path: &str) -> Result<PathBuf> {
     let path = validate_local_path(path)?;
     fs::symlink_metadata(&path)
@@ -475,6 +485,7 @@ fn path_is_within(path: &Path, parent: &Path) -> bool {
     path.starts_with(parent)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn reject_filesystem_root(path: &Path) -> Result<()> {
     if path.parent().is_none() {
         return Err(LumaError::InvalidInput(
@@ -484,6 +495,7 @@ fn reject_filesystem_root(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn path_to_string(path: &Path) -> Result<String> {
     path.to_str()
         .map(str::to_string)
@@ -494,16 +506,19 @@ fn local_io_error(context: &str, error: std::io::Error) -> LumaError {
     LumaError::SftpFailed(format!("{context}: {error}"))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 enum LocalDeleteOperation {
     File(PathBuf),
     Directory(PathBuf),
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 enum PendingLocalDelete {
     Visit { path: PathBuf, depth: usize },
     RemoveDirectory(PathBuf),
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_local_delete_plan(root: PathBuf) -> Result<Vec<LocalDeleteOperation>> {
     let mut stack = vec![PendingLocalDelete::Visit {
         path: root,

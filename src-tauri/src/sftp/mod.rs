@@ -11,7 +11,9 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileType as RemoteFileType, OpenFlags};
 use serde::Serialize;
 use sqlx::SqlitePool;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Child;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::process::Command;
@@ -21,11 +23,13 @@ use crate::errors::{LumaError, Result};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::ssh::{askpass_environment, build_sftp_arguments};
 use crate::ssh::{
-    authenticated_handle, classify_error_output, connection_config, select_backend, EmbeddedClient,
-    SshBackend, CAPTURE_LIMIT_BYTES,
+    authenticated_handle, connection_config, select_backend, EmbeddedClient, SshBackend,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::ssh::{classify_error_output, CAPTURE_LIMIT_BYTES};
 use crate::vault::VaultState;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use local::{local_delete, local_list, local_mkdir, local_rename};
 pub use transfer::{
     sftp_download, sftp_retry, sftp_upload, TransferProgress, TransferStartResponse,
@@ -754,6 +758,7 @@ pub(super) fn remote_error(error: russh_sftp::client::error::Error) -> LumaError
     LumaError::SftpFailed(error.to_string())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn connect_error(stderr: &[u8], protocol_error: &str) -> LumaError {
     let stderr = String::from_utf8_lossy(stderr);
     if let Some((category, message)) = classify_error_output(&stderr) {
@@ -768,6 +773,7 @@ fn connect_error(stderr: &[u8], protocol_error: &str) -> LumaError {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn capture_stderr(mut stderr: tokio::process::ChildStderr) -> Vec<u8> {
     let mut captured = Vec::with_capacity(CAPTURE_LIMIT_BYTES);
     let mut buffer = [0_u8; 4096];

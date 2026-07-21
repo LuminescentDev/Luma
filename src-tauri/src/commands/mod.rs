@@ -1,11 +1,15 @@
 use std::collections::HashMap;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
-use crate::errors::{LumaError, Result};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::errors::LumaError;
+use crate::errors::Result;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::platform::{self as system_platform, DetectedShell};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

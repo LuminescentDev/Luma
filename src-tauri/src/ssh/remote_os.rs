@@ -1,18 +1,29 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::collections::HashMap;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::path::PathBuf;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::Stdio;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::sync::Arc;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::time::Duration;
 
 use serde::Serialize;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::io::AsyncReadExt;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::process::Command;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tokio::time::timeout;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(any(target_os = "android", target_os = "ios"))))]
 const CONTROL_PATH_MAX_BYTES: usize = 90;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DETECTION_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_DETECTION_OUTPUT_BYTES: usize = 64 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const NO_REAUTH_OPTIONS: [&str; 12] = [
     "ControlMaster=no",
     "BatchMode=yes",

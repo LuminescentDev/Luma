@@ -61,6 +61,7 @@ const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
 const HEADER_LEN: usize = 13 + SALT_LEN + NONCE_LEN;
 const FORMAT_VERSION: u8 = 1;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const KEYCHAIN_SERVICE: &str = "luma.sync";
 const KEYCHAIN_PASSPHRASE: &str = "sync-passphrase";
 const KEYCHAIN_WEBDAV_PASSWORD: &str = "webdav-password";
@@ -2746,6 +2747,7 @@ async fn clear_credential(
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
+        let _ = vault_state;
         sqlx::query("DELETE FROM vault_secrets WHERE owner_type='sync-credential' AND owner_id=?1")
             .bind(account)
             .execute(pool)
