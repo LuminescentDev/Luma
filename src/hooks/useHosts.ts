@@ -7,6 +7,7 @@ import {
   listKeyReferences,
   listRecentHosts,
 } from "../lib/hosts";
+import { useCapabilityStore } from "../stores/capabilityStore";
 
 export const HOSTS_KEY = ["hosts"];
 export const RECENT_HOSTS_KEY = ["recent-hosts"];
@@ -45,10 +46,17 @@ export function useKeyReferences() {
 export function useIdentities() { return useQuery({ queryKey: IDENTITIES_KEY, queryFn: listIdentities, staleTime: 30_000 }); }
 
 export function useSshDetect() {
+  // `ssh_detect` backs the system OpenSSH integration and is only registered on
+  // platforms with the systemSsh capability. On mobile the command is absent, so
+  // the query is disabled entirely — no failing invoke fires, and the query stays
+  // in its initial (undefined data) state, keeping the consuming SSH-availability
+  // banner hidden. Desktop keeps systemSsh=true, so behavior is unchanged.
+  const systemSsh = useCapabilityStore((s) => s.capabilities.features.systemSsh);
   return useQuery({
     queryKey: SSH_DETECT_KEY,
     queryFn: detectSsh,
     staleTime: Infinity,
+    enabled: systemSsh,
   });
 }
 

@@ -2,7 +2,14 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover extends content under notches/home indicators (paired
+         with env(safe-area-inset-*) in the mobile shell). maximum-scale=1 +
+         user-scalable=no stop pinch-zoom from disrupting terminal input on
+         touch devices; desktop is unaffected. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
     <title>Luma</title>
     <style>
       /* Avoid a light flash before styles load */

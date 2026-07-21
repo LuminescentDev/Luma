@@ -48,6 +48,7 @@ import { ImportDialog } from "./ImportDialog";
 import { PortForwardsDialog } from "../portForwards/PortForwardsDialog";
 import { useUiStore } from "../../stores/uiStore";
 import { useTunnelStore } from "../../stores/tunnelStore";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 
 function matchesQuery(host: Host, q: string): boolean {
   if (!q) return true;
@@ -111,6 +112,11 @@ export function HostsPanel() {
   const [deletingGroup, setDeletingGroup] = useState<HostGroup | null>(null);
   const [portForwardsHost, setPortForwardsHost] = useState<Host | null>(null);
 
+  // Port forwarding is a desktop-only capability; on mobile the tunnel commands
+  // are not registered, so its per-host action and dialog are hidden entirely.
+  const portForwardingEnabled = useCapabilityStore(
+    (s) => s.capabilities.features.portForwarding,
+  );
   const tunnels = useTunnelStore((s) => s.tunnels);
   const runningByHost = useMemo(() => {
     const counts = new Map<string, number>();
@@ -212,7 +218,9 @@ export function HostsPanel() {
     onDuplicate: (h: Host) => duplicate.mutate(h.id),
     onDelete: (h: Host) => setDeletingHost(h),
     onToggleFavorite: (h: Host) => favoriteToggle.mutate(h),
-    onPortForwards: (h: Host) => setPortForwardsHost(h),
+    onPortForwards: portForwardingEnabled
+      ? (h: Host) => setPortForwardsHost(h)
+      : undefined,
     runningByHost,
     selectedHostIds,
     onSelect: (host: Host, additive: boolean) => setSelectedHostIds((previous) => {
@@ -524,7 +532,7 @@ function HostRow({
   onDuplicate: (host: Host) => void;
   onDelete: (host: Host) => void;
   onToggleFavorite: (host: Host) => void;
-  onPortForwards: (host: Host) => void;
+  onPortForwards?: (host: Host) => void;
   runningByHost: Map<string, number>;
   selectedHostIds: Set<string>;
   onSelect: (host: Host, additive: boolean) => void;
@@ -537,7 +545,15 @@ function HostRow({
     { label: "Connect", icon: <Server size={14} />, onSelect: () => onConnect(host) },
     { label: "Edit", icon: <Pencil size={14} />, onSelect: () => onEdit(host) },
     { label: "Duplicate", icon: <Copy size={14} />, onSelect: () => onDuplicate(host) },
-    { label: "Port forwarding", icon: <Cable size={14} />, onSelect: () => onPortForwards(host) },
+    ...(onPortForwards
+      ? [
+          {
+            label: "Port forwarding",
+            icon: <Cable size={14} />,
+            onSelect: () => onPortForwards(host),
+          } as MenuAction,
+        ]
+      : []),
     {
       label: host.favorite ? "Remove favorite" : "Add favorite",
       icon: <Star size={14} />,

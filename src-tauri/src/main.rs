@@ -1,8 +1,10 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::io::Write;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn run_askpass(identity_id: &std::ffi::OsStr) -> bool {
     let prompt = std::env::args()
         .nth(1)
@@ -45,6 +47,7 @@ fn run_askpass(identity_id: &std::ffi::OsStr) -> bool {
 }
 
 fn main() {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     if let Some(identity_id) = std::env::var_os("LUMA_ASKPASS_ID") {
         if !run_askpass(&identity_id) {
             std::process::exit(1);

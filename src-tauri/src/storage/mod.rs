@@ -1,5 +1,9 @@
 pub mod host_groups;
 pub mod hosts;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod identities;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[path = "identities_mobile.rs"]
 pub mod identities;
 pub mod key_references;
 pub mod port_forwards;

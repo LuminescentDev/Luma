@@ -14,6 +14,22 @@ dist-ssr
 *.local
 .claude/settings.local.json
 
+# Android / Gradle generated files and local machine configuration
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/**/build/
+src-tauri/gen/android/**/.kotlin/
+src-tauri/gen/android/local.properties
+src-tauri/gen/android/**/local.properties
+src-tauri/gen/android/**/key.properties
+src-tauri/gen/android/**/keystore.properties
+src-tauri/gen/android/app/.tauri/
+src-tauri/gen/android/app/src/main/**/generated/
+src-tauri/gen/android/app/src/main/jniLibs/**/*.so
+src-tauri/gen/android/app/src/main/assets/tauri.conf.json
+src-tauri/gen/android/app/tauri.build.gradle.kts
+src-tauri/gen/android/app/tauri.properties
+src-tauri/gen/android/app/proguard-tauri.pro
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

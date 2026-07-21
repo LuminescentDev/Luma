@@ -7,7 +7,7 @@ use super::{
     MAX_DIRECTORY_ENTRIES, MAX_PATH_BYTES,
 };
 use crate::errors::{LumaError, Result};
-use crate::terminal::home_dir;
+use crate::platform::home_dir;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalTransferFile {

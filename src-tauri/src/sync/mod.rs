@@ -36,6 +36,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use chrono::{SecondsFormat, Utc};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use keyring::Entry;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -365,7 +366,11 @@ struct PreparedRemoteSecrets {
     skipped_locked: usize,
 }
 
-pub async fn initialize(pool: &SqlitePool, runtime: &SyncRuntimeState) -> Result<()> {
+pub async fn initialize(
+    pool: &SqlitePool,
+    runtime: &SyncRuntimeState,
+    vault_state: &VaultState,
+) -> Result<()> {
     sqlx::query(
         "INSERT INTO sync_state (id, device_id, provider, last_synced_at, state)
          VALUES (1, ?1, NULL, NULL, NULL)
@@ -375,7 +380,7 @@ pub async fn initialize(pool: &SqlitePool, runtime: &SyncRuntimeState) -> Result
     .execute(pool)
     .await?;
 
-    if let Ok(passphrase) = keychain_get(KEYCHAIN_PASSPHRASE) {
+    if let Ok(passphrase) = credential_get(pool, vault_state, KEYCHAIN_PASSPHRASE).await {
         *runtime.passphrase.lock().unwrap() = Some(Zeroizing::new(passphrase));
     }
     Ok(())
@@ -451,7 +456,7 @@ pub async fn import_apply(
     })
 }
 
-pub async fn get_config(pool: &SqlitePool) -> Result<SyncConfig> {
+pub async fn get_config(pool: &SqlitePool, vault_state: &VaultState) -> Result<SyncConfig> {
     let row = sqlx::query("SELECT provider, last_synced_at, state FROM sync_state WHERE id = 1")
         .fetch_one(pool)
         .await?;
@@ -466,13 +471,16 @@ pub async fn get_config(pool: &SqlitePool) -> Result<SyncConfig> {
         gist_id: stored.gist_id,
         last_sync_at: row.get("last_synced_at"),
         last_remote_version: stored.last_remote_version,
-        passphrase_remembered: keychain_get(KEYCHAIN_PASSPHRASE).is_ok(),
+        passphrase_remembered: credential_get(pool, vault_state, KEYCHAIN_PASSPHRASE)
+            .await
+            .is_ok(),
     })
 }
 
 pub async fn configure(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
+    vault_state: &VaultState,
     app_data_dir: &Path,
     mut input: SyncConfigureInput,
 ) -> Result<()> {
@@ -485,23 +493,23 @@ pub async fn configure(
             providers::validate_local_folder(&folder_path)?;
             reject_app_data_path(&folder_path, app_data_dir)?;
             stored.folder_path = Some(folder);
-            clear_keychain(KEYCHAIN_WEBDAV_PASSWORD);
-            clear_keychain(KEYCHAIN_GIST_TOKEN);
+            clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
+            clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
         }
         "webdav" => {
             let url = required_trimmed(input.url.take(), "url")?;
             providers::validate_https_url(&url)?;
             let username = required_trimmed(input.username.take(), "username")?;
             let password = required_secret(input.password.take(), "password")?;
-            keychain_set(KEYCHAIN_WEBDAV_PASSWORD, &password)?;
-            clear_keychain(KEYCHAIN_GIST_TOKEN);
+            credential_set(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD, &password).await?;
+            clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
             stored.url = Some(url);
             stored.username = Some(username);
         }
         "github-gist" => {
             let token = required_secret(input.token.take(), "token")?;
-            keychain_set(KEYCHAIN_GIST_TOKEN, &token)?;
-            clear_keychain(KEYCHAIN_WEBDAV_PASSWORD);
+            credential_set(pool, vault_state, KEYCHAIN_GIST_TOKEN, &token).await?;
+            clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
             stored.gist_id = optional_identifier(input.gist_id.take(), "gistId")?;
         }
         _ => {
@@ -524,30 +532,36 @@ pub async fn configure(
     Ok(())
 }
 
-pub fn set_passphrase(
+pub async fn set_passphrase(
+    pool: &SqlitePool,
     runtime: &SyncRuntimeState,
+    vault_state: &VaultState,
     passphrase: String,
     remember: bool,
 ) -> Result<()> {
     validate_passphrase(&passphrase)?;
     if remember {
-        keychain_set(KEYCHAIN_PASSPHRASE, &passphrase)?;
+        credential_set(pool, vault_state, KEYCHAIN_PASSPHRASE, &passphrase).await?;
     } else {
-        clear_keychain(KEYCHAIN_PASSPHRASE);
+        clear_credential(pool, vault_state, KEYCHAIN_PASSPHRASE).await?;
     }
     *runtime.passphrase.lock().unwrap() = Some(Zeroizing::new(passphrase));
     Ok(())
 }
 
-pub async fn disable(pool: &SqlitePool, runtime: &SyncRuntimeState) -> Result<()> {
+pub async fn disable(
+    pool: &SqlitePool,
+    runtime: &SyncRuntimeState,
+    vault_state: &VaultState,
+) -> Result<()> {
     sqlx::query(
         "UPDATE sync_state SET provider = NULL, last_synced_at = NULL, state = NULL WHERE id = 1",
     )
     .execute(pool)
     .await?;
-    clear_keychain(KEYCHAIN_WEBDAV_PASSWORD);
-    clear_keychain(KEYCHAIN_GIST_TOKEN);
-    clear_keychain(KEYCHAIN_PASSPHRASE);
+    clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
+    clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
+    clear_credential(pool, vault_state, KEYCHAIN_PASSPHRASE).await?;
     *runtime.passphrase.lock().unwrap() = None;
     *runtime.pending.lock().unwrap() = None;
     Ok(())
@@ -561,7 +575,8 @@ pub async fn sync_now(
 ) -> Result<SyncReport> {
     let (provider_name, mut stored) = load_enabled_config(pool).await?;
     let passphrase = current_passphrase(runtime)?;
-    let provider = create_provider(&provider_name, &stored, app_data_dir)?;
+    let provider =
+        create_provider(pool, vault_state, &provider_name, &stored, app_data_dir).await?;
     let remote = provider.download().await?;
     let local = assemble_bundle(pool, vault_state, &passphrase).await?;
 
@@ -712,7 +727,8 @@ pub async fn sync_resolve(
     let private_keys = apply_prepared_secrets(pool, vault_state, &passphrase, prepared).await?;
     pulled |= private_keys.applied > 0;
 
-    let provider = create_provider(&provider_name, &stored, app_data_dir)?;
+    let provider =
+        create_provider(pool, vault_state, &provider_name, &stored, app_data_dir).await?;
     let merged = assemble_bundle(pool, vault_state, &passphrase).await?;
     let blob = encrypt_bundle(&merged, &passphrase)?;
     let uploaded = provider
@@ -2314,26 +2330,96 @@ fn optional_identifier(value: Option<String>, field: &str) -> Result<Option<Stri
     Ok(Some(value.to_string()))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn keychain_entry(account: &str) -> Result<Entry> {
     Entry::new(KEYCHAIN_SERVICE, account)
         .map_err(|_| LumaError::SyncUnavailable("OS credential store is unavailable".into()))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn keychain_set(account: &str, secret: &str) -> Result<()> {
     keychain_entry(account)?
         .set_password(secret)
         .map_err(|_| LumaError::SyncUnavailable("could not store sync credential".into()))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn keychain_get(account: &str) -> Result<String> {
     keychain_entry(account)?
         .get_password()
         .map_err(|_| LumaError::SyncAuthFailed("required sync credential is not available".into()))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn clear_keychain(account: &str) {
     if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, account) {
         let _ = entry.delete_credential();
+    }
+}
+
+async fn credential_set(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    account: &str,
+    secret: &str,
+) -> Result<()> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (pool, vault_state);
+        keychain_set(account, secret)
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        vault::store(
+            pool,
+            vault_state,
+            "sync-credential",
+            account,
+            "secret",
+            secret,
+        )
+        .await
+    }
+}
+
+async fn credential_get(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    account: &str,
+) -> Result<String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (pool, vault_state);
+        keychain_get(account)
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        vault::load(pool, vault_state, "sync-credential", account, "secret")
+            .await?
+            .ok_or_else(|| {
+                LumaError::SyncAuthFailed("required sync credential is not available".into())
+            })
+    }
+}
+
+async fn clear_credential(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    account: &str,
+) -> Result<()> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = (pool, vault_state);
+        clear_keychain(account);
+        Ok(())
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        sqlx::query("DELETE FROM vault_secrets WHERE owner_type='sync-credential' AND owner_id=?1")
+            .bind(account)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -2371,7 +2457,9 @@ fn parse_stored_state(raw: Option<String>) -> Result<StoredSyncState> {
     .map(Option::unwrap_or_default)
 }
 
-fn create_provider(
+async fn create_provider(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
     provider: &str,
     stored: &StoredSyncState,
     app_data_dir: &Path,
@@ -2394,10 +2482,10 @@ fn create_provider(
             stored.username.clone().ok_or_else(|| {
                 LumaError::SyncUnavailable("WebDAV username is not configured".into())
             })?,
-            keychain_get(KEYCHAIN_WEBDAV_PASSWORD)?,
+            credential_get(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?,
         )?)),
         "github-gist" => Ok(Box::new(GitHubGistProvider::new(
-            keychain_get(KEYCHAIN_GIST_TOKEN)?,
+            credential_get(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?,
             stored.gist_id.clone(),
         )?)),
         _ => Err(LumaError::SyncUnavailable(
@@ -2696,14 +2784,14 @@ mod tests {
     async fn private_key_sync_opt_in_off_assembles_no_encrypted_secrets() {
         let pool = crate::storage::init_in_memory().await.unwrap();
         let runtime = SyncRuntimeState::default();
-        initialize(&pool, &runtime).await.unwrap();
+        let vault_state = VaultState::default();
+        initialize(&pool, &runtime, &vault_state).await.unwrap();
         sqlx::query(
             "INSERT INTO key_references(id,name,storage_mode,has_private_key,updated_at)\n             VALUES('key-1','Local key','encrypted-vault',1,42)",
         )
         .execute(&pool)
         .await
         .unwrap();
-        let vault_state = VaultState::default();
         vault::setup(&pool, &vault_state, "vault password", false)
             .await
             .unwrap();

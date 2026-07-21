@@ -155,6 +155,33 @@ export function sshKeyInstall(
   });
 }
 
+/*
+ * Embedded-SSH session I/O. These commands are registered on EVERY platform and
+ * operate on the BACKEND session id returned by ssh_spawn. On mobile the desktop
+ * pty_* commands are not registered, so an embedded SSH session's writes /
+ * resizes / disconnects are routed here instead. Bytes still never pass through
+ * React — terminalManager calls these directly.
+ */
+
+/** Write keyboard input to an embedded SSH session. */
+export function sshWrite(sessionId: string, data: string): Promise<void> {
+  return invoke<void>("ssh_write", { sessionId, data });
+}
+
+/** Resize an embedded SSH session's PTY (cols/rows must be > 0). */
+export function sshResize(
+  sessionId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  return invoke<void>("ssh_resize", { sessionId, cols, rows });
+}
+
+/** Disconnect / tear down an embedded SSH session. */
+export function sshDisconnect(sessionId: string): Promise<void> {
+  return invoke<void>("ssh_disconnect", { sessionId });
+}
+
 export async function spawnSsh(
   request: { hostId: string; cols: number; rows: number },
   onData: (data: Uint8Array | string) => void,

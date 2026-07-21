@@ -78,6 +78,14 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Identity>> {
     Ok(value.as_ref().map(row))
 }
 
+pub async fn password(
+    _pool: &SqlitePool,
+    _vault_state: &crate::vault::VaultState,
+    id: &str,
+) -> Result<Option<Zeroizing<String>>> {
+    OsCredentialStore.get(id)
+}
+
 async fn check_key<'e, E>(executor: E, key_id: &Option<String>) -> Result<()>
 where
     E: Executor<'e, Database = Sqlite>,

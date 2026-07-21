@@ -19,6 +19,7 @@ import {
   type ImportedHostAuthHint,
 } from "../../lib/hosts";
 import { useInvalidateHosts } from "../../hooks/useHosts";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 import { cn } from "../../lib/utils";
 
 /*
@@ -85,7 +86,18 @@ export function ImportDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const invalidate = useInvalidateHosts();
-  const [source, setSource] = useState<ImportKind>("ssh-config");
+  // The "SSH config" source calls ssh_config_preview/ssh_config_import, which are
+  // only registered on platforms with the systemSsh capability (desktop). On
+  // mobile that source is hidden entirely so the user can never trigger a
+  // failing command; the file-picker sources (Tabby / Electerm) remain available.
+  const systemSsh = useCapabilityStore((s) => s.capabilities.features.systemSsh);
+  const sources = useMemo(
+    () => (systemSsh ? SOURCES : SOURCES.filter((s) => s.id !== "ssh-config")),
+    [systemSsh],
+  );
+  const defaultSource: ImportKind = systemSsh ? "ssh-config" : "tabby";
+
+  const [source, setSource] = useState<ImportKind>(defaultSource);
   const [filePath, setFilePath] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<NormalizedResult | null>(null);
@@ -94,13 +106,13 @@ export function ImportDialog({
   // Reset transient state each time the dialog opens.
   useEffect(() => {
     if (open) {
-      setSource("ssh-config");
+      setSource(defaultSource);
       setFilePath(null);
       setSelected(new Set());
       setResult(null);
       setPickError(null);
     }
-  }, [open]);
+  }, [open, defaultSource]);
 
   const needsFile = source !== "ssh-config";
   const previewReady = source === "ssh-config" || filePath !== null;
@@ -295,7 +307,7 @@ export function ImportDialog({
             aria-label="Import source"
             className="flex gap-1 rounded-lg border border-border bg-background p-1"
           >
-            {SOURCES.map((s) => (
+            {sources.map((s) => (
               <button
                 key={s.id}
                 type="button"

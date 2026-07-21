@@ -7,10 +7,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::{Row, SqlitePool};
 
 use crate::errors::{LumaError, Result};
+use crate::platform::home_dir;
 use crate::storage::host_groups;
 use crate::storage::hosts::{self, Host, HostInput};
 use crate::storage::key_references::{self, KeyReferenceInput};
-use crate::terminal::home_dir;
 
 const MAX_IMPORT_ENTRIES: usize = 500;
 const MAX_IMPORT_FILE_BYTES: u64 = 16 * 1024 * 1024;

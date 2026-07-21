@@ -1,5 +1,3 @@
-pub(crate) mod logging;
-
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -8,9 +6,8 @@ use std::sync::{Arc, Mutex};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 
 use crate::errors::{LumaError, Result};
-
-use logging::SessionLogManager;
-pub use logging::{SessionLogMode, SessionLogStatus};
+use crate::platform::home_dir;
+use crate::session_logging::{SessionLogManager, SessionLogMode, SessionLogStatus};
 
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
@@ -250,14 +247,6 @@ impl PtyManager {
             .cloned()
             .ok_or_else(|| LumaError::InvalidInput("unknown terminal session".into()))
     }
-}
-
-pub fn home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let var = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
-    let var = std::env::var_os("HOME");
-    var.map(PathBuf::from).filter(|p| p.is_dir())
 }
 
 #[cfg(test)]

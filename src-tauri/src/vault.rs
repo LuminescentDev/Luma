@@ -4,17 +4,39 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use keyring::Entry;
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
 use sqlx::{Executor, Row, Sqlite, SqlitePool};
+use std::path::Path;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use std::path::PathBuf;
 use std::sync::Mutex;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const SERVICE: &str = "luma.encrypted-vault";
-pub struct VaultState(pub Mutex<Option<[u8; 32]>>);
+#[cfg(any(target_os = "android", target_os = "ios"))]
+const DEVICE_SECRET_FILE: &str = "vault-device-secret";
+pub struct VaultState {
+    key: Mutex<Option<[u8; 32]>>,
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    device_secret_path: PathBuf,
+}
+impl VaultState {
+    pub fn new(app_data_dir: &Path) -> Self {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        let _ = app_data_dir;
+        Self {
+            key: Mutex::new(None),
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            device_secret_path: app_data_dir.join(DEVICE_SECRET_FILE),
+        }
+    }
+}
 impl Default for VaultState {
     fn default() -> Self {
-        Self(Mutex::new(None))
+        Self::new(&std::env::temp_dir().join("luma"))
     }
 }
 
@@ -47,7 +69,8 @@ fn decrypt(key: &[u8; 32], nonce: &[u8], value: &[u8]) -> Result<Vec<u8>> {
         .decrypt(XNonce::from_slice(nonce), value)
         .map_err(|_| LumaError::InvalidInput("incorrect master password or corrupted vault".into()))
 }
-fn remember(key: &[u8; 32]) -> Result<()> {
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn remember(_state: &VaultState, key: &[u8; 32]) -> Result<()> {
     use base64::Engine;
     Entry::new(SERVICE, "unlock-key")
         .map_err(|e| LumaError::InvalidInput(e.to_string()))?
@@ -55,10 +78,55 @@ fn remember(key: &[u8; 32]) -> Result<()> {
         .map_err(|e| LumaError::InvalidInput(format!("could not remember vault on device: {e}")))?;
     Ok(())
 }
-fn forget() {
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn remember(state: &VaultState, key: &[u8; 32]) -> Result<()> {
+    use base64::Engine;
+    // TODO(mobile-keystore): replace this app-sandbox fallback with a native
+    // Android Keystore / iOS Keychain bridge. The file contains only the same
+    // device unlock key stored by desktop keyring; all vault payloads remain
+    // encrypted through the existing XChaCha20-Poly1305 vault format.
+    if let Some(parent) = state.device_secret_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(key);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write;
+    let mut file = options.open(&state.device_secret_path)?;
+    file.write_all(encoded.as_bytes())?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn forget(_state: &VaultState) {
     if let Ok(e) = Entry::new(SERVICE, "unlock-key") {
         let _ = e.delete_credential();
     }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn forget(state: &VaultState) {
+    let _ = std::fs::remove_file(&state.device_secret_path);
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn remembered_key(_state: &VaultState) -> Option<String> {
+    Entry::new(SERVICE, "unlock-key")
+        .and_then(|entry| entry.get_password())
+        .ok()
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn remembered_key(state: &VaultState) -> Option<String> {
+    std::fs::read_to_string(&state.device_secret_path).ok()
 }
 
 pub async fn status(pool: &SqlitePool, state: &VaultState) -> Result<VaultStatus> {
@@ -67,7 +135,7 @@ pub async fn status(pool: &SqlitePool, state: &VaultState) -> Result<VaultStatus
         .await?;
     Ok(VaultStatus {
         configured: row.is_some(),
-        unlocked: state.0.lock().unwrap().is_some(),
+        unlocked: state.key.lock().unwrap().is_some(),
         remember_on_device: row.map(|r| r.get::<i64, _>(0) != 0).unwrap_or(false),
     })
 }
@@ -88,9 +156,9 @@ pub async fn setup(
     let (nonce, ciphertext) = encrypt(&key, b"luma-vault-v1")?;
     sqlx::query("INSERT INTO vault_config(id,salt,verifier_nonce,verifier_ciphertext,remember_on_device) VALUES(1,?1,?2,?3,?4)").bind(salt.to_vec()).bind(nonce).bind(ciphertext).bind(remember_device).execute(pool).await?;
     if remember_device {
-        remember(&key)?;
+        remember(state, &key)?;
     }
-    *state.0.lock().unwrap() = Some(key);
+    *state.key.lock().unwrap() = Some(key);
     Ok(())
 }
 pub async fn unlock(pool: &SqlitePool, state: &VaultState, password: &str) -> Result<()> {
@@ -103,20 +171,20 @@ pub async fn unlock(pool: &SqlitePool, state: &VaultState, password: &str) -> Re
     let ciphertext: Vec<u8> = row.get(2);
     let key = derive(password, &salt)?;
     decrypt(&key, &nonce, &ciphertext)?;
-    *state.0.lock().unwrap() = Some(key);
+    *state.key.lock().unwrap() = Some(key);
     Ok(())
 }
 pub async fn try_device_unlock(pool: &SqlitePool, state: &VaultState) {
     use base64::Engine;
     let row=sqlx::query("SELECT verifier_nonce,verifier_ciphertext FROM vault_config WHERE id=1 AND remember_on_device=1").fetch_optional(pool).await.ok().flatten();
     let Some(row) = row else { return };
-    if let Ok(raw) = Entry::new(SERVICE, "unlock-key").and_then(|e| e.get_password()) {
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) {
+    if let Some(raw) = remembered_key(state) {
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw.trim()) {
             if let Ok(key) = <[u8; 32]>::try_from(bytes) {
                 let nonce: Vec<u8> = row.get(0);
                 let ciphertext: Vec<u8> = row.get(1);
                 if decrypt(&key, &nonce, &ciphertext).is_ok() {
-                    *state.0.lock().unwrap() = Some(key)
+                    *state.key.lock().unwrap() = Some(key)
                 }
             }
         }
@@ -133,22 +201,22 @@ pub async fn set_policy(
         .await?;
     if remember_device {
         let key = state
-            .0
+            .key
             .lock()
             .unwrap()
             .ok_or_else(|| LumaError::InvalidInput("vault is locked".into()))?;
-        remember(&key)?
+        remember(state, &key)?
     } else {
-        forget()
+        forget(state)
     }
     Ok(())
 }
 pub fn lock(state: &VaultState) {
-    *state.0.lock().unwrap() = None
+    *state.key.lock().unwrap() = None
 }
 
 pub fn is_unlocked(state: &VaultState) -> bool {
-    state.0.lock().unwrap().is_some()
+    state.key.lock().unwrap().is_some()
 }
 
 pub async fn store<'e, E>(
@@ -162,7 +230,7 @@ pub async fn store<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    let key = state.0.lock().unwrap().ok_or_else(|| {
+    let key = state.key.lock().unwrap().ok_or_else(|| {
         LumaError::InvalidInput("vault is locked; unlock it before saving secrets".into())
     })?;
     let (nonce, ciphertext) = encrypt(&key, value.as_bytes())?;
@@ -176,7 +244,7 @@ pub async fn load(
     id: &str,
     kind: &str,
 ) -> Result<Option<String>> {
-    let key = state.0.lock().unwrap().ok_or_else(|| {
+    let key = state.key.lock().unwrap().ok_or_else(|| {
         LumaError::InvalidInput("vault is locked; unlock it before viewing secrets".into())
     })?;
     let row = sqlx::query("SELECT nonce,ciphertext FROM vault_secrets WHERE owner_type=?1 AND owner_id=?2 AND secret_type=?3")

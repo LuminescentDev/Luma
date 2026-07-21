@@ -29,6 +29,12 @@ pub enum LumaError {
     SshUnavailable(String),
 
     #[error("{message}")]
+    CapabilityUnavailable {
+        feature: &'static str,
+        message: String,
+    },
+
+    #[error("{message}")]
     SshConnection {
         category: &'static str,
         message: String,
@@ -63,6 +69,7 @@ impl LumaError {
             LumaError::Pty(_) => "pty",
             LumaError::Serial(_) => "serial",
             LumaError::SshUnavailable(_) => "ssh-unavailable",
+            LumaError::CapabilityUnavailable { .. } => "capability-unavailable",
             LumaError::SshConnection { category, .. } => category,
             LumaError::SftpFailed(_) => "sftp-failed",
             LumaError::KeyUnavailable(_) => "key-unavailable",

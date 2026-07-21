@@ -2,6 +2,7 @@ mod local;
 mod transfer;
 
 use std::collections::HashMap;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 
@@ -11,13 +12,17 @@ use russh_sftp::protocol::{FileType as RemoteFileType, OpenFlags};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tokio::process::Command;
 use tokio::sync::watch;
 
 use crate::errors::{LumaError, Result};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::ssh::{askpass_environment, build_sftp_arguments};
 use crate::ssh::{
-    askpass_environment, authenticated_handle, build_sftp_arguments, classify_error_output,
-    connection_config, select_backend, EmbeddedClient, SshBackend, CAPTURE_LIMIT_BYTES,
+    authenticated_handle, classify_error_output, connection_config, select_backend, EmbeddedClient,
+    SshBackend, CAPTURE_LIMIT_BYTES,
 };
 use crate::vault::VaultState;
 
@@ -145,7 +150,7 @@ impl SftpManager {
         validate_identifier(host_id, "hostId")?;
         let (mut config, _) = connection_config(pool, vault_state, host_id).await?;
         config.startup_command = None;
-        if select_backend(&config) == SshBackend::Embedded {
+        if select_backend(&config)? == SshBackend::Embedded {
             match connect_embedded_sftp(&config).await {
                 Ok((client, embedded, initial_path)) => {
                     let session_id = uuid::Uuid::new_v4().to_string();
@@ -165,88 +170,101 @@ impl SftpManager {
                         initial_path,
                     });
                 }
-                Err(error) if embedded_fallback_allowed(&error) => {
-                    tracing::warn!(host_id = %host_id, reason = %error, "embedded SFTP unavailable; falling back to OpenSSH");
+                Err(error) => {
+                    #[cfg(any(target_os = "android", target_os = "ios"))]
+                    return Err(error);
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    if embedded_fallback_allowed(&error) {
+                        tracing::warn!(host_id = %host_id, reason = %error, "embedded SFTP unavailable; falling back to OpenSSH");
+                    } else {
+                        return Err(error);
+                    }
                 }
-                Err(error) => return Err(error),
             }
         }
-        if config.executable.is_empty() {
-            return Err(LumaError::SshUnavailable(
-                "embedded SFTP failed and system OpenSSH is unavailable".into(),
-            ));
-        }
-        let arguments = build_sftp_arguments(&config);
-        let environment = askpass_environment(&config)?;
-
-        let mut command = Command::new(&config.executable);
-        crate::platform::hide_background_tokio_command(&mut command);
-        command
-            .args(&arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        for (key, value) in environment {
-            command.env(key, value);
-        }
-
-        let mut child = command.spawn().map_err(|error| {
-            LumaError::SshUnavailable(format!("failed to start system OpenSSH for SFTP: {error}"))
-        })?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| LumaError::SftpFailed("OpenSSH stdin was unavailable".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| LumaError::SftpFailed("OpenSSH stdout was unavailable".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| LumaError::SftpFailed("OpenSSH stderr was unavailable".into()))?;
-        let stderr_task = tokio::spawn(capture_stderr(stderr));
-
-        let stream = tokio::io::join(stdout, stdin);
-        let client = match SftpSession::new(stream).await {
-            Ok(client) => Arc::new(client),
-            Err(error) => {
-                let _ = child.kill().await;
-                let captured = stderr_task.await.unwrap_or_default();
-                return Err(connect_error(&captured, &error.to_string()));
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            if config.executable.is_empty() {
+                return Err(LumaError::SshUnavailable(
+                    "embedded SFTP failed and system OpenSSH is unavailable".into(),
+                ));
             }
-        };
+            let arguments = build_sftp_arguments(&config);
+            let environment = askpass_environment(&config)?;
 
-        let initial_path = match client.canonicalize(".").await {
-            Ok(path) => path,
-            Err(error) => {
-                let _ = client.close().await;
-                let _ = child.kill().await;
-                let captured = stderr_task.await.unwrap_or_default();
-                return Err(connect_error(&captured, &error.to_string()));
+            let mut command = Command::new(&config.executable);
+            crate::platform::hide_background_tokio_command(&mut command);
+            command
+                .args(&arguments)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            for (key, value) in environment {
+                command.env(key, value);
             }
-        };
-        validate_remote_path(&initial_path)?;
-        drop(stderr_task);
 
-        let session_id = uuid::Uuid::new_v4().to_string();
-        self.sessions.lock().unwrap().insert(
-            session_id.clone(),
-            host_id.to_string(),
-            Arc::new(ActiveSession {
-                client,
-                child: Mutex::new(Some(child)),
-                embedded: None,
-                _connection_config: config,
-            }),
-        );
-        tracing::info!(sftp_session_id = %session_id, host_id = %host_id, "opened SFTP session");
+            let mut child = command.spawn().map_err(|error| {
+                LumaError::SshUnavailable(format!(
+                    "failed to start system OpenSSH for SFTP: {error}"
+                ))
+            })?;
+            let stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| LumaError::SftpFailed("OpenSSH stdin was unavailable".into()))?;
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| LumaError::SftpFailed("OpenSSH stdout was unavailable".into()))?;
+            let stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| LumaError::SftpFailed("OpenSSH stderr was unavailable".into()))?;
+            let stderr_task = tokio::spawn(capture_stderr(stderr));
 
-        Ok(SftpConnectResponse {
-            sftp_session_id: session_id,
-            initial_path,
-        })
+            let stream = tokio::io::join(stdout, stdin);
+            let client = match SftpSession::new(stream).await {
+                Ok(client) => Arc::new(client),
+                Err(error) => {
+                    let _ = child.kill().await;
+                    let captured = stderr_task.await.unwrap_or_default();
+                    return Err(connect_error(&captured, &error.to_string()));
+                }
+            };
+
+            let initial_path = match client.canonicalize(".").await {
+                Ok(path) => path,
+                Err(error) => {
+                    let _ = client.close().await;
+                    let _ = child.kill().await;
+                    let captured = stderr_task.await.unwrap_or_default();
+                    return Err(connect_error(&captured, &error.to_string()));
+                }
+            };
+            validate_remote_path(&initial_path)?;
+            drop(stderr_task);
+
+            let session_id = uuid::Uuid::new_v4().to_string();
+            self.sessions.lock().unwrap().insert(
+                session_id.clone(),
+                host_id.to_string(),
+                Arc::new(ActiveSession {
+                    client,
+                    child: Mutex::new(Some(child)),
+                    embedded: None,
+                    _connection_config: config,
+                }),
+            );
+            tracing::info!(sftp_session_id = %session_id, host_id = %host_id, "opened SFTP session");
+
+            Ok(SftpConnectResponse {
+                sftp_session_id: session_id,
+                initial_path,
+            })
+        }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        unreachable!("mobile backend selection only permits embedded SFTP")
     }
 
     pub async fn disconnect(&self, session_id: &str) -> Result<()> {
@@ -331,23 +349,46 @@ async fn connect_embedded_sftp(
     String,
 )> {
     let handle = authenticated_handle(config).await?;
-    let channel = handle.channel_open_session().await.map_err(|error| {
+    let channel = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        handle.channel_open_session(),
+    )
+    .await
+    .map_err(|_| LumaError::SshConnection {
+        category: "timeout",
+        message: "SFTP SSH channel open timed out".into(),
+    })?
+    .map_err(|error| {
         LumaError::SftpFailed(format!("could not open embedded SSH channel: {error}"))
     })?;
-    channel
-        .request_subsystem(true, "sftp")
-        .await
-        .map_err(|error| LumaError::SftpFailed(format!("SFTP subsystem failed: {error}")))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        channel.request_subsystem(true, "sftp"),
+    )
+    .await
+    .map_err(|_| LumaError::SshConnection {
+        category: "timeout",
+        message: "SFTP subsystem request timed out".into(),
+    })?
+    .map_err(|error| LumaError::SftpFailed(format!("SFTP subsystem failed: {error}")))?;
     let client = Arc::new(
-        SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|error| LumaError::SftpFailed(format!("SFTP handshake failed: {error}")))?,
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            SftpSession::new(channel.into_stream()),
+        )
+        .await
+        .map_err(|_| LumaError::SshConnection {
+            category: "timeout",
+            message: "SFTP protocol handshake timed out".into(),
+        })?
+        .map_err(|error| LumaError::SftpFailed(format!("SFTP handshake failed: {error}")))?,
     );
     let initial_path = client.canonicalize(".").await.map_err(remote_error)?;
     validate_remote_path(&initial_path)?;
     Ok((client, handle, initial_path))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn embedded_fallback_allowed(error: &LumaError) -> bool {
     !matches!(
         error.category(),

@@ -45,6 +45,7 @@ impl SshRemoteOs {
 }
 
 #[derive(Debug, Clone)]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(super) struct RemoteOsTarget {
     executable: String,
     hostname: String,
@@ -54,6 +55,7 @@ pub(super) struct RemoteOsTarget {
     environment: HashMap<String, String>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl RemoteOsTarget {
     pub(super) fn new(
         executable: String,
@@ -75,11 +77,13 @@ impl RemoteOsTarget {
 }
 
 #[derive(Debug)]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(super) struct MultiplexControl {
     path: PathBuf,
     directory: PathBuf,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl MultiplexControl {
     pub(super) fn master_arguments(&self) -> Vec<String> {
         vec![
@@ -93,6 +97,7 @@ impl MultiplexControl {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl Drop for MultiplexControl {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
@@ -101,6 +106,7 @@ impl Drop for MultiplexControl {
 }
 
 #[cfg(unix)]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(super) fn prepare_multiplex_control() -> Option<Arc<MultiplexControl>> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::DirBuilderExt;
@@ -125,10 +131,12 @@ pub(super) fn prepare_multiplex_control() -> Option<Arc<MultiplexControl>> {
 }
 
 #[cfg(not(unix))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(super) fn prepare_multiplex_control() -> Option<Arc<MultiplexControl>> {
     None
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(super) async fn detect_remote_os(
     target: RemoteOsTarget,
     control: Option<Arc<MultiplexControl>>,
@@ -148,6 +156,7 @@ pub(super) async fn detect_remote_os(
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn detect_without_multiplexing(target: &RemoteOsTarget) -> SshRemoteOs {
     match run_direct_remote_command(target, &["cat", "/etc/os-release"]).await {
         Some((true, output)) => parse_os_release(&String::from_utf8_lossy(&output)),
@@ -159,6 +168,7 @@ async fn detect_without_multiplexing(target: &RemoteOsTarget) -> SshRemoteOs {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn run_direct_remote_command(
     target: &RemoteOsTarget,
     remote_command: &[&str],
@@ -173,6 +183,7 @@ async fn run_direct_remote_command(
     run_ssh(&target.executable, arguments, &target.environment).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn detect_from_uname(target: &RemoteOsTarget, control: &MultiplexControl) -> SshRemoteOs {
     match run_remote_command(target, control, &["uname", "-s"]).await {
         Some((true, output)) => normalize_uname(&String::from_utf8_lossy(&output)),
@@ -180,6 +191,7 @@ async fn detect_from_uname(target: &RemoteOsTarget, control: &MultiplexControl) 
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn multiplex_master_is_available(
     target: &RemoteOsTarget,
     control: &MultiplexControl,
@@ -193,6 +205,7 @@ async fn multiplex_master_is_available(
         .is_some_and(|(success, _)| success)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn run_remote_command(
     target: &RemoteOsTarget,
     control: &MultiplexControl,
@@ -206,6 +219,7 @@ async fn run_remote_command(
     .await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn remote_command_arguments(
     target: &RemoteOsTarget,
     control: &MultiplexControl,
@@ -229,6 +243,7 @@ fn remote_command_arguments(
     arguments
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn control_arguments(target: &RemoteOsTarget, control: &MultiplexControl) -> Vec<String> {
     let mut arguments = vec![
         "-S".into(),
@@ -243,6 +258,7 @@ fn control_arguments(target: &RemoteOsTarget, control: &MultiplexControl) -> Vec
     arguments
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn run_ssh(
     executable: &str,
     arguments: Vec<String>,

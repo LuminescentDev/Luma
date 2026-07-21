@@ -1,26 +1,37 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod config;
 mod embedded;
 mod known_hosts;
 mod remote_os;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tunnels;
 
-use std::collections::{HashMap, HashSet};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::Command;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::sync::Mutex;
 
 use serde::Serialize;
 use sqlx::SqlitePool;
 use zeroize::Zeroizing;
 
 use crate::errors::{LumaError, Result};
+use crate::platform::home_dir;
 use crate::storage::hosts::{self, Host};
 use crate::storage::identities;
 use crate::storage::key_references;
-use crate::terminal::{home_dir, PtyManager, ResolvedShell};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::terminal::{PtyManager, ResolvedShell};
 use crate::vault::{self, VaultState};
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use config::{
     import_config, preview_config, SshConfigCandidate, SshConfigImportRequest,
     SshConfigImportResult,
@@ -36,7 +47,9 @@ pub use known_hosts::{
     SshHostKeyStatus,
 };
 pub use remote_os::SshRemoteOs;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use remote_os::{detect_remote_os, prepare_multiplex_control, MultiplexControl, RemoteOsTarget};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use tunnels::{
     tunnel_connection_config, TunnelExit, TunnelInfo, TunnelManager, TunnelStartResponse,
 };
@@ -49,6 +62,7 @@ type DataCallback = Box<dyn FnMut(&[u8]) + Send + 'static>;
 type ExitCallback = Box<dyn FnOnce(SshExit) + Send + 'static>;
 type RemoteOsCallback = Box<dyn FnOnce(SshRemoteOs) + Send + 'static>;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshDetection {
@@ -72,7 +86,7 @@ pub(crate) struct ProxyTarget {
     username: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct SshConnectionConfig {
     pub(crate) executable: String,
     pub(crate) hostname: String,
@@ -86,19 +100,42 @@ pub(crate) struct SshConnectionConfig {
     askpass_service: Option<String>,
     askpass_prompt: Option<String>,
     fallback_password_identity_id: Option<String>,
+    password: Option<Arc<Zeroizing<String>>>,
+    key_passphrase: Option<Arc<Zeroizing<String>>>,
+    fallback_password: Option<Arc<Zeroizing<String>>>,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     ephemeral_credential: Option<Arc<EphemeralCredential>>,
     ephemeral_identity_file: Option<Arc<EphemeralIdentityFile>>,
+}
+
+impl std::fmt::Debug for SshConnectionConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SshConnectionConfig")
+            .field("hostname", &self.hostname)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("has_identity_file", &self.identity_file.is_some())
+            .field("proxy_jump_count", &self.proxy_jumps.len())
+            .field("has_startup_command", &self.startup_command.is_some())
+            .field("has_password", &self.password.is_some())
+            .field("has_key_passphrase", &self.key_passphrase.is_some())
+            .field("has_fallback_password", &self.fallback_password.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
 struct EphemeralIdentityFile(PathBuf);
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug)]
 struct EphemeralCredential {
     service: String,
     account: String,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl Drop for EphemeralCredential {
     fn drop(&mut self) {
         if let Ok(entry) = keyring::Entry::new(&self.service, &self.account) {
@@ -113,6 +150,7 @@ impl Drop for EphemeralIdentityFile {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[allow(dead_code)]
 pub trait SshEngine {
     fn connect(
@@ -130,21 +168,25 @@ pub trait SshEngine {
     fn write(&self, session_id: &str, data: &str) -> Result<()>;
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub struct OpenSshEngine<'a> {
     pty: &'a PtyManager,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl<'a> OpenSshEngine<'a> {
     pub fn new(pty: &'a PtyManager) -> Self {
         Self { pty }
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Default)]
 struct AuthenticationObserver {
     tail: Vec<u8>,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl AuthenticationObserver {
     fn observe(&mut self, bytes: &[u8]) -> bool {
         const MAX_TAIL_BYTES: usize = 128;
@@ -161,6 +203,7 @@ impl AuthenticationObserver {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn askpass_environment(config: &SshConnectionConfig) -> Result<HashMap<String, String>> {
     let mut environment = HashMap::new();
     if let Some(identity_id) = &config.askpass_identity_id {
@@ -187,6 +230,7 @@ pub(crate) fn askpass_environment(config: &SshConnectionConfig) -> Result<HashMa
     Ok(environment)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl SshEngine for OpenSshEngine<'_> {
     fn connect(
         &self,
@@ -292,6 +336,7 @@ impl SshEngine for OpenSshEngine<'_> {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn detect() -> SshDetection {
     let Some(path) = find_ssh_executable() else {
         return SshDetection {
@@ -320,6 +365,7 @@ pub fn detect() -> SshDetection {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn find_in_path(executable: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
@@ -327,6 +373,7 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn find_ssh_executable() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -346,6 +393,7 @@ fn find_ssh_executable() -> Option<PathBuf> {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn proxy_destination(target: &ProxyTarget) -> String {
     let hostname = if target.hostname.contains(':') && !target.hostname.starts_with('[') {
         format!("[{}]", target.hostname)
@@ -360,6 +408,7 @@ fn proxy_destination(target: &ProxyTarget) -> String {
     format!("{user}{hostname}:{}", target.port)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 struct ConnectionOptionPolicy<'a> {
     batch_mode: bool,
     known_hosts_file: &'a Path,
@@ -369,6 +418,7 @@ struct ConnectionOptionPolicy<'a> {
     probe_safety_options: bool,
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_connection_options_with_policy(
     config: &SshConnectionConfig,
     policy: ConnectionOptionPolicy<'_>,
@@ -442,6 +492,7 @@ fn build_connection_options_with_policy(
     arguments
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_connection_options(
     config: &SshConnectionConfig,
     disable_password_prompts: bool,
@@ -459,6 +510,7 @@ fn build_connection_options(
     )
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn build_host_key_probe_arguments(
     config: &SshConnectionConfig,
     temporary_known_hosts_file: &Path,
@@ -481,6 +533,7 @@ pub(crate) fn build_host_key_probe_arguments(
     arguments
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_interactive_arguments(
     config: &SshConnectionConfig,
     multiplex_control: Option<&MultiplexControl>,
@@ -510,6 +563,7 @@ fn build_interactive_arguments(
 /// does not support ControlMaster (notably Windows). It may reuse public-key or
 /// agent authentication, including Luma's askpass key-passphrase helper, but
 /// can never fall back to password or keyboard-interactive authentication.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn build_remote_os_probe_arguments(config: &SshConnectionConfig) -> Vec<String> {
     let mut arguments = build_connection_options(config, true);
     arguments.insert(0, "-T".into());
@@ -528,11 +582,12 @@ fn build_remote_os_probe_arguments(config: &SshConnectionConfig) -> Vec<String> 
     arguments
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 pub(crate) fn build_arguments(config: &SshConnectionConfig) -> Vec<String> {
     build_interactive_arguments(config, None)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn build_sftp_arguments(config: &SshConnectionConfig) -> Vec<String> {
     let mut arguments = build_connection_options(config, false);
     arguments.push("-s".into());
@@ -699,13 +754,20 @@ async fn resolve_connection_route(
     })
 }
 
+fn system_ssh_executable() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return detect().path.unwrap_or_default();
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return String::new();
+}
+
 pub(crate) async fn host_key_connection_config(
     pool: &SqlitePool,
     host_id: &str,
     known_hosts_file: PathBuf,
 ) -> Result<SshConnectionConfig> {
     let route = resolve_connection_route(pool, host_id).await?;
-    let executable = detect().path.unwrap_or_default();
+    let executable = system_ssh_executable();
 
     Ok(SshConnectionConfig {
         executable,
@@ -720,6 +782,10 @@ pub(crate) async fn host_key_connection_config(
         askpass_service: None,
         askpass_prompt: None,
         fallback_password_identity_id: None,
+        password: None,
+        key_passphrase: None,
+        fallback_password: None,
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         ephemeral_credential: None,
         ephemeral_identity_file: None,
     })
@@ -735,6 +801,7 @@ pub async fn connection_config(
     let mut askpass_identity_id = None;
     let mut askpass_service = None;
     let mut askpass_prompt = None;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let mut ephemeral_credential = None;
     let fallback_password_identity_id = route
         .identity
@@ -748,9 +815,32 @@ pub async fn connection_config(
             askpass_prompt = Some("password".into());
         }
     }
-    let executable = detect().path.unwrap_or_default();
+    let password = if let Some(identity) = route
+        .identity
+        .as_ref()
+        .filter(|identity| identity.key_id.is_none() && identity.has_password)
+    {
+        identities::password(pool, vault_state, &identity.id)
+            .await?
+            .map(Arc::new)
+    } else {
+        None
+    };
+    let fallback_password = if let Some(identity) = route
+        .identity
+        .as_ref()
+        .filter(|identity| identity.key_id.is_some() && identity.has_password)
+    {
+        identities::password(pool, vault_state, &identity.id)
+            .await?
+            .map(Arc::new)
+    } else {
+        None
+    };
+    let executable = system_ssh_executable();
     let known_hosts_file = known_hosts::file_path_for_pool(pool).await?;
     let (identity_file, ephemeral_identity_file) = identity_file(pool, vault_state, &host).await?;
+    let mut key_passphrase = None;
     if host.authentication_type == "key" {
         if let Some(key_id) = host.key_id.as_deref() {
             let has_saved_passphrase = sqlx::query_scalar::<_, i64>(
@@ -761,23 +851,30 @@ pub async fn connection_config(
             .await?
                 != 0;
             if has_saved_passphrase {
-                let passphrase = vault::load(pool, vault_state, "key", key_id, "passphrase")
-                    .await?
-                    .unwrap_or_default();
+                let passphrase = Zeroizing::new(
+                    vault::load(pool, vault_state, "key", key_id, "passphrase")
+                        .await?
+                        .unwrap_or_default(),
+                );
                 if !passphrase.is_empty() {
-                    let service = "luma.ssh.key-passphrase".to_string();
-                    let account = uuid::Uuid::new_v4().to_string();
-                    keyring::Entry::new(&service, &account)
-                        .and_then(|entry| entry.set_password(&passphrase))
-                        .map_err(|error| {
-                            LumaError::KeyUnavailable(format!(
-                                "could not prepare saved key passphrase: {error}"
-                            ))
-                        })?;
-                    askpass_identity_id = Some(account.clone());
-                    askpass_service = Some(service.clone());
-                    askpass_prompt = Some("passphrase".into());
-                    ephemeral_credential = Some(Arc::new(EphemeralCredential { service, account }));
+                    key_passphrase = Some(Arc::new(passphrase.clone()));
+                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                    {
+                        let service = "luma.ssh.key-passphrase".to_string();
+                        let account = uuid::Uuid::new_v4().to_string();
+                        keyring::Entry::new(&service, &account)
+                            .and_then(|entry| entry.set_password(&passphrase))
+                            .map_err(|error| {
+                                LumaError::KeyUnavailable(format!(
+                                    "could not prepare saved key passphrase: {error}"
+                                ))
+                            })?;
+                        askpass_identity_id = Some(account.clone());
+                        askpass_service = Some(service.clone());
+                        askpass_prompt = Some("passphrase".into());
+                        ephemeral_credential =
+                            Some(Arc::new(EphemeralCredential { service, account }));
+                    }
                 }
             }
         }
@@ -797,6 +894,10 @@ pub async fn connection_config(
             askpass_service,
             askpass_prompt,
             fallback_password_identity_id,
+            password,
+            key_passphrase,
+            fallback_password,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             ephemeral_credential,
             ephemeral_identity_file,
         },
@@ -904,6 +1005,9 @@ mod tests {
             askpass_service: None,
             askpass_prompt: None,
             fallback_password_identity_id: None,
+            password: None,
+            key_passphrase: None,
+            fallback_password: None,
             ephemeral_credential: None,
             ephemeral_identity_file: None,
         }

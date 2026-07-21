@@ -29,6 +29,7 @@ import {
 } from "../../hooks/useSync";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
 import { useSyncStore } from "../../stores/syncStore";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 import { cn } from "../../lib/utils";
 
 type ProviderChoice = SyncProvider | "none";
@@ -56,6 +57,15 @@ export function SyncSection() {
 }
 
 function SyncSectionBody({ config }: { config: SyncConfig }) {
+  // The folder-based provider needs arbitrary filesystem access, which mobile
+  // does not grant; hide it there. WebDAV and GitHub Gist remain on every
+  // platform. Desktop keeps all providers (folderSync=true).
+  const folderSyncEnabled = useCapabilityStore(
+    (s) => s.capabilities.features.folderSync,
+  );
+  const providerOptions = folderSyncEnabled
+    ? PROVIDER_OPTIONS
+    : PROVIDER_OPTIONS.filter((option) => option.value !== "local-folder");
   const configure = useConfigureSync();
   const disable = useDisableSync();
   const setPassphrase = useSetSyncPassphrase();
@@ -200,7 +210,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
         <div>
           <span className="mb-1.5 block text-sm font-medium">Provider</span>
           <div className="flex flex-wrap gap-1 rounded-lg border border-border bg-surface p-1">
-            {PROVIDER_OPTIONS.map((option) => (
+            {providerOptions.map((option) => (
               <button
                 key={option.value}
                 type="button"

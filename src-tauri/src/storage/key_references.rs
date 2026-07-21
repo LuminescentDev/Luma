@@ -1,3 +1,4 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use keyring::Entry;
 use pkcs8::der::pem::PemLabel;
 use pkcs8::der::SecretDocument;
@@ -543,10 +544,14 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn purge_secrets(id: &str) {
     delete_chunked_secret("luma.ssh.key.private", id);
     let _ = Entry::new("luma.ssh.key.passphrase", id).and_then(|entry| entry.delete_credential());
 }
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) fn purge_secrets(_id: &str) {}
 
 #[cfg(test)]
 fn store_secret(service: &str, id: &str, value: Option<&str>) -> Result<bool> {
@@ -602,6 +607,7 @@ fn store_chunked_secret(service: &str, id: &str, value: Option<&str>) -> Result<
     Ok(true)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn delete_chunked_secret(service: &str, id: &str) {
     let count = Entry::new(service, id)
         .ok()

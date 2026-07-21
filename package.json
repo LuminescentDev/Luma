@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vp test run",
     "lint": "vp lint --deny-warnings",
+    "android:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/android-dev.ps1",
     "tauri": "tauri"
   },
   "dependencies": {

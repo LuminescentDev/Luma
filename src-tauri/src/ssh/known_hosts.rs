@@ -16,7 +16,9 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-use super::{build_host_key_probe_arguments, classify_error_output, SshConnectionConfig};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use super::build_host_key_probe_arguments;
+use super::{classify_error_output, SshConnectionConfig};
 use crate::errors::{LumaError, Result};
 use crate::storage::hosts::{self, Host};
 
@@ -395,65 +397,75 @@ async fn scan_host_keys(config: &SshConnectionConfig) -> Result<Vec<HostKey>> {
     if config.proxy_jumps.is_empty() {
         return scan_host_key_embedded(config).await;
     }
-    let temporary_known_hosts = EphemeralKnownHostsFile::create()?;
-    let arguments = build_host_key_probe_arguments(
-        config,
-        temporary_known_hosts.path(),
-        PROBE_CONNECT_TIMEOUT_SECONDS,
-    );
-    let mut command = Command::new(&config.executable);
-    crate::platform::hide_background_tokio_command(&mut command);
-    command
-        .args(arguments)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    let mut child = command.spawn().map_err(|error| {
-        LumaError::SshUnavailable(format!("failed to start system OpenSSH probe: {error}"))
-    })?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        LumaError::SshUnavailable("failed to capture system OpenSSH probe output".into())
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        LumaError::SshUnavailable("failed to capture system OpenSSH probe diagnostics".into())
-    })?;
-    let capture = async move {
-        let (stdout, stderr, status) = tokio::join!(
-            read_capped_output(stdout),
-            read_capped_output(stderr),
-            child.wait()
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return Err(LumaError::CapabilityUnavailable {
+        feature: "systemSsh",
+        message:
+            "ProxyJump host-key scanning requires system OpenSSH, which is unavailable on mobile"
+                .into(),
+    });
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let temporary_known_hosts = EphemeralKnownHostsFile::create()?;
+        let arguments = build_host_key_probe_arguments(
+            config,
+            temporary_known_hosts.path(),
+            PROBE_CONNECT_TIMEOUT_SECONDS,
         );
-        status?;
-        Ok::<_, io::Error>((stdout?, stderr?))
-    };
-    let (stdout, stderr) = timeout(Duration::from_secs(PROBE_PROCESS_TIMEOUT_SECONDS), capture)
-        .await
-        .map_err(|_| LumaError::SshConnection {
-            category: "timeout",
-            message: format!(
+        let mut command = Command::new(&config.executable);
+        crate::platform::hide_background_tokio_command(&mut command);
+        command
+            .args(arguments)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = command.spawn().map_err(|error| {
+            LumaError::SshUnavailable(format!("failed to start system OpenSSH probe: {error}"))
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            LumaError::SshUnavailable("failed to capture system OpenSSH probe output".into())
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            LumaError::SshUnavailable("failed to capture system OpenSSH probe diagnostics".into())
+        })?;
+        let capture = async move {
+            let (stdout, stderr, status) = tokio::join!(
+                read_capped_output(stdout),
+                read_capped_output(stderr),
+                child.wait()
+            );
+            status?;
+            Ok::<_, io::Error>((stdout?, stderr?))
+        };
+        let (stdout, stderr) = timeout(Duration::from_secs(PROBE_PROCESS_TIMEOUT_SECONDS), capture)
+            .await
+            .map_err(|_| LumaError::SshConnection {
+                category: "timeout",
+                message: format!(
                 "The SSH host-key probe timed out after {PROBE_PROCESS_TIMEOUT_SECONDS} seconds."
             ),
-        })??;
+            })??;
 
-    if stdout.exceeded || stderr.exceeded {
-        return Err(LumaError::SshConnection {
-            category: "host-key-scan-failed",
-            message: "The SSH host-key probe returned too much diagnostic data.".into(),
-        });
-    }
+        if stdout.exceeded || stderr.exceeded {
+            return Err(LumaError::SshConnection {
+                category: "host-key-scan-failed",
+                message: "The SSH host-key probe returned too much diagnostic data.".into(),
+            });
+        }
 
-    let keys = read_probe_keys(temporary_known_hosts.path())?;
-    if !keys.is_empty() {
-        return Ok(keys);
-    }
+        let keys = read_probe_keys(temporary_known_hosts.path())?;
+        if !keys.is_empty() {
+            return Ok(keys);
+        }
 
-    let diagnostic = short_redacted_diagnostic(&stderr.bytes);
-    if !diagnostic.is_empty() {
-        tracing::warn!(reason = %diagnostic, "SSH host-key probe did not record a target key");
+        let diagnostic = short_redacted_diagnostic(&stderr.bytes);
+        if !diagnostic.is_empty() {
+            tracing::warn!(reason = %diagnostic, "SSH host-key probe did not record a target key");
+        }
+        Err(probe_failure_error(&diagnostic))
     }
-    Err(probe_failure_error(&diagnostic))
 }
 
 #[derive(Clone)]

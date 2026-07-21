@@ -2,6 +2,7 @@
 identifier = "allow-existing-commands"
 description = "Allows the main window to invoke Luma's existing application commands."
 commands.allow = [
+  "platform_capabilities",
   "settings_get_all",
   "settings_set",
   "settings_delete",
@@ -35,6 +36,9 @@ commands.allow = [
   "quick_connect_prepare",
   "quick_connect_save",
   "ssh_ping",
+  "ssh_write",
+  "ssh_resize",
+  "ssh_disconnect",
   "ssh_probe",
   "ssh_key_install",
   "ssh_host_key_status",

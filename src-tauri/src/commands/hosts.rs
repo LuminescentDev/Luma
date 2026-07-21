@@ -605,19 +605,38 @@ pub async fn identities_list(state: State<'_, AppState>) -> Result<Vec<Identity>
     identities::list(&state.pool).await
 }
 #[tauri::command]
-pub async fn identity_create(state: State<'_, AppState>, input: IdentityInput) -> Result<Identity> {
-    identities::create(&state.pool, input).await
+pub async fn identity_create(
+    state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
+    input: IdentityInput,
+) -> Result<Identity> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let _ = &vault_state;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return identities::create(&state.pool, input).await;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return identities::create(&state.pool, &vault_state, input).await;
 }
 #[tauri::command]
 pub async fn identity_update(
     state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
     id: String,
     input: IdentityInput,
 ) -> Result<Identity> {
-    identities::update(&state.pool, &id, input).await
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let _ = &vault_state;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    return identities::update(&state.pool, &id, input).await;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    return identities::update(&state.pool, &vault_state, &id, input).await;
 }
 #[tauri::command]
-pub async fn identity_delete(state: State<'_, AppState>, id: String) -> Result<()> {
+pub async fn identity_delete(
+    state: State<'_, AppState>,
+    _vault_state: State<'_, VaultState>,
+    id: String,
+) -> Result<()> {
     identities::delete(&state.pool, &id).await
 }
 

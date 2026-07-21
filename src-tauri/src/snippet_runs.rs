@@ -260,7 +260,7 @@ async fn run_host(
         let vault = app.state::<VaultState>();
         let (mut config, _) = ssh::connection_config(&state.pool, &vault, host_id).await?;
         config.startup_command = None;
-        if ssh::select_backend(&config) != SshBackend::Embedded {
+        if ssh::select_backend(&config)? != SshBackend::Embedded {
             return Err(LumaError::SshConnection {
                 category: "unsupported",
                 message: "Non-interactive snippet execution is unavailable for hosts that require system OpenSSH".into(),
@@ -268,10 +268,14 @@ async fn run_host(
         }
 
         let handle = ssh::authenticated_handle(&config).await?;
-        let mut channel = handle
-            .channel_open_session()
-            .await
-            .map_err(ssh::embedded_connect_error)?;
+        let mut channel =
+            tokio::time::timeout(Duration::from_secs(15), handle.channel_open_session())
+                .await
+                .map_err(|_| LumaError::SshConnection {
+                    category: "timeout",
+                    message: "SSH snippet channel open timed out".into(),
+                })?
+                .map_err(ssh::embedded_connect_error)?;
         channel
             .exec(true, command.as_bytes())
             .await

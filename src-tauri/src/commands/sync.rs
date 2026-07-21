@@ -54,34 +54,48 @@ pub async fn import_apply(
 }
 
 #[tauri::command]
-pub async fn sync_get_config(state: State<'_, AppState>) -> Result<SyncConfig> {
-    sync::get_config(&state.pool).await
+pub async fn sync_get_config(
+    state: State<'_, AppState>,
+    vault_state: State<'_, VaultState>,
+) -> Result<SyncConfig> {
+    sync::get_config(&state.pool, &vault_state).await
 }
 
 #[tauri::command]
 pub async fn sync_configure(
     state: State<'_, AppState>,
     runtime: State<'_, SyncRuntimeState>,
+    vault_state: State<'_, VaultState>,
     input: SyncConfigureInput,
 ) -> Result<()> {
-    sync::configure(&state.pool, &runtime, &state.app_data_dir, input).await
+    sync::configure(
+        &state.pool,
+        &runtime,
+        &vault_state,
+        &state.app_data_dir,
+        input,
+    )
+    .await
 }
 
 #[tauri::command]
-pub fn sync_set_passphrase(
+pub async fn sync_set_passphrase(
+    state: State<'_, AppState>,
     runtime: State<'_, SyncRuntimeState>,
+    vault_state: State<'_, VaultState>,
     passphrase: String,
     remember: bool,
 ) -> Result<()> {
-    sync::set_passphrase(&runtime, passphrase, remember)
+    sync::set_passphrase(&state.pool, &runtime, &vault_state, passphrase, remember).await
 }
 
 #[tauri::command]
 pub async fn sync_disable(
     state: State<'_, AppState>,
     runtime: State<'_, SyncRuntimeState>,
+    vault_state: State<'_, VaultState>,
 ) -> Result<()> {
-    sync::disable(&state.pool, &runtime).await
+    sync::disable(&state.pool, &runtime, &vault_state).await
 }
 
 #[tauri::command]

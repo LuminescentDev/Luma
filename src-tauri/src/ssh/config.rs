@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 
 use crate::errors::{LumaError, Result};
+use crate::platform::home_dir;
 use crate::storage::hosts::{self, Host, HostInput};
-use crate::terminal::home_dir;
 
 const MAX_IMPORT_ENTRIES: usize = 500;
 const MAX_PROXY_DEPTH: usize = 8;

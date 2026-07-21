@@ -112,6 +112,42 @@ body {
 }
 
 /*
+ * Mobile safe-area helpers (notches / home indicator). Used by the mobile shell
+ * only; desktop never applies these classes, so the desktop layout is unchanged.
+ * env() resolves to 0 when there is no inset, so these are inert on non-notched
+ * displays too.
+ */
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+.pr-safe {
+  padding-right: env(safe-area-inset-right);
+}
+/* Bottom navigation / accessory bars add their content padding ON TOP of the
+   home-indicator inset. */
+.mb-safe {
+  margin-bottom: env(safe-area-inset-bottom);
+}
+
+/*
+ * Touch devices have no hover, so Luma's hover-revealed row/folder controls
+ * (kebab menus, favorite stars) would be unreachable. On a coarse pointer make
+ * them permanently visible. Scoped to (pointer: coarse) so desktop is untouched.
+ */
+@media (pointer: coarse) {
+  .group\/row .group-hover\/row\:visible,
+  .group\/folder .group-hover\/folder\:visible {
+    visibility: visible;
+  }
+}
+
+/*
  * Respect the user's reduced-motion preference. The app deliberately avoids
  * heavy animation libraries, so neutralizing CSS transitions/animations here is
  * enough (spinners collapse to a static state, which is acceptable).

@@ -2,9 +2,18 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let var = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let var = std::env::var_os("HOME");
+    var.map(PathBuf::from).filter(|path| path.is_dir())
+}
+
 /// Prevent background console programs from creating visible windows when
 /// Luma is built as a Windows GUI application. Interactive shells are spawned
 /// through ConPTY and must not use this helper.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn hide_background_std_command(command: &mut std::process::Command) {
     #[cfg(windows)]
     {
@@ -17,6 +26,7 @@ pub fn hide_background_std_command(command: &mut std::process::Command) {
     let _ = command;
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn hide_background_tokio_command(command: &mut tokio::process::Command) {
     hide_background_std_command(command.as_std_mut());
 }

@@ -21,13 +21,21 @@ import {
   writePty,
   type ShellRef,
 } from "../../lib/terminal";
-import { spawnSsh, type SshExitPayload, type SshRemoteOsId } from "../../lib/ssh";
+import {
+  spawnSsh,
+  sshDisconnect,
+  sshResize,
+  sshWrite,
+  type SshExitPayload,
+  type SshRemoteOsId,
+} from "../../lib/ssh";
 import {
   killSerial,
   spawnSerial,
   writeSerial,
   type SerialConfig,
 } from "../../lib/serial";
+import { isMobilePlatform } from "../../stores/capabilityStore";
 
 /** What a managed session should launch. Local shells resolve a ShellRef;
  * SSH sessions send only a hostId (the backend owns the connection details);
@@ -38,26 +46,52 @@ export type SpawnDescriptor =
   | { kind: "ssh"; hostId: string }
   | { kind: "serial"; config: SerialConfig };
 
+/** Whether this session's backend I/O must go through the embedded-SSH commands
+ * (ssh_write / ssh_resize / ssh_disconnect) instead of the desktop pty_* ones.
+ * On mobile the pty_* commands are not registered and every terminal is an
+ * embedded SSH session, so SSH descriptors are routed to the SSH commands. On
+ * desktop SSH sessions keep using pty_* (they may be system-OpenSSH-backed, for
+ * which ssh_* would report "unknown SSH session"), so desktop behavior is
+ * byte-for-byte unchanged. */
+function usesEmbeddedSshIo(descriptor: SpawnDescriptor): boolean {
+  return descriptor.kind === "ssh" && isMobilePlatform();
+}
+
 /** Write keyboard input to a backend session, routing serial sessions to the
- * serial command and everything else (local + ssh) to the shared PTY command. */
+ * serial command, embedded-SSH-on-mobile to ssh_write, and everything else
+ * (local + desktop ssh) to the shared PTY command. */
 function writeBackend(
   descriptor: SpawnDescriptor,
   backendId: string,
   data: string,
 ): Promise<void> {
-  return descriptor.kind === "serial"
-    ? writeSerial(backendId, data)
-    : writePty(backendId, data);
+  if (descriptor.kind === "serial") return writeSerial(backendId, data);
+  if (usesEmbeddedSshIo(descriptor)) return sshWrite(backendId, data);
+  return writePty(backendId, data);
 }
 
-/** Kill a backend session, routing serial sessions to the serial command. */
+/** Resize a backend session, routing embedded-SSH-on-mobile to ssh_resize and
+ * everything else (local + desktop ssh) to the shared PTY command. Serial has no
+ * resize command and is never passed here. */
+function resizeBackend(
+  descriptor: SpawnDescriptor,
+  backendId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  if (usesEmbeddedSshIo(descriptor)) return sshResize(backendId, cols, rows);
+  return resizePty(backendId, cols, rows);
+}
+
+/** Kill a backend session, routing serial sessions to the serial command and
+ * embedded-SSH-on-mobile to ssh_disconnect. */
 function killBackend(
   descriptor: SpawnDescriptor,
   backendId: string,
 ): Promise<void> {
-  return descriptor.kind === "serial"
-    ? killSerial(backendId)
-    : killPty(backendId);
+  if (descriptor.kind === "serial") return killSerial(backendId);
+  if (usesEmbeddedSshIo(descriptor)) return sshDisconnect(backendId);
+  return killPty(backendId);
 }
 
 /** Normalized exit info delivered to the session store. `errorCategory` is only
@@ -249,6 +283,14 @@ type ManagedSession = {
   marks: CommandMark[];
   /** Last working directory reported via OSC 7 / OSC 1337, or null. */
   lastReportedCwd: string | null;
+  /** A one-shot sticky modifier armed from the mobile accessory bar (Ctrl/Alt).
+   * The NEXT user-typed chunk is transformed into the matching control/meta
+   * sequence and the modifier releases. Null when no modifier is armed. Metadata
+   * only — the transform runs on the byte path but never crosses into React. */
+  pendingModifier: "ctrl" | "alt" | null;
+  /** Notified (once) when an armed pendingModifier is consumed by typed input, so
+   * the accessory bar can drop its visual "sticky" highlight. */
+  onModifierConsumed: (() => void) | null;
 };
 
 // Split-pane and window drags can produce dozens of xterm sizes per second.
@@ -341,7 +383,33 @@ function enqueueInput(session: ManagedSession, data: string): void {
  * single onData payload (bracketed-paste wrapper included), so a paste applies
  * once here and then fans out as one write per peer.
  */
+/** Apply a one-shot sticky modifier (from the mobile accessory bar) to the first
+ * character of a typed chunk, returning the transformed data. Ctrl maps a letter
+ * to its control code (a→\x01 … z→\x1a, plus the common @[\]^_ range); Alt/Meta
+ * prefixes ESC. Non-mappable keys under Ctrl pass through unchanged. */
+export function applyModifier(mod: "ctrl" | "alt", data: string): string {
+  if (!data) return data;
+  const first = data[0];
+  const rest = data.slice(1);
+  if (mod === "alt") return `\x1b${data}`;
+  const code = first.toUpperCase().charCodeAt(0);
+  // Ctrl+@ (0) .. Ctrl+_ (31): letters A-Z and the @ [ \ ] ^ _ block.
+  if (code >= 64 && code <= 95) {
+    return `${String.fromCharCode(code - 64)}${rest}`;
+  }
+  return data;
+}
+
 function routeUserInput(session: ManagedSession, data: string): void {
+  // Consume a one-shot Ctrl/Alt armed from the mobile accessory bar. It applies
+  // to the first character of the next typed chunk, then releases.
+  if (session.pendingModifier && data) {
+    data = applyModifier(session.pendingModifier, data);
+    session.pendingModifier = null;
+    const notify = session.onModifierConsumed;
+    session.onModifierConsumed = null;
+    notify?.();
+  }
   enqueueInput(session, data);
   const peers = session.broadcastPeers;
   if (!peers) return;
@@ -964,6 +1032,8 @@ export const terminalManager = {
       resizeTimer: null,
       marks: [],
       lastReportedCwd: null,
+      pendingModifier: null,
+      onModifierConsumed: null,
     };
     sessions.set(sessionId, session);
 
@@ -983,7 +1053,7 @@ export const terminalManager = {
         session.resizeTimer = window.setTimeout(() => {
           session.resizeTimer = null;
           if (session.disposed || session.exited || !session.backendId) return;
-          void resizePty(session.backendId, cols, rows);
+          void resizeBackend(session.descriptor, session.backendId, cols, rows);
         }, BACKEND_RESIZE_DEBOUNCE_MS);
       }
     });
@@ -1018,7 +1088,11 @@ export const terminalManager = {
     const reattaching = existing !== undefined;
     if (!existing) {
       session.term.open(host);
-      void loadWebgl(session.term);
+      // Skip WebGL on mobile: mobile WebViews frequently lose/park the GL
+      // context (backgrounding, low-memory), which blanks the terminal. The
+      // DOM/canvas renderer is the reliable default there. loadWebgl itself also
+      // try/catches into the canvas fallback on desktop if the addon fails.
+      if (!isMobilePlatform()) void loadWebgl(session.term);
     } else {
       host.appendChild(existing);
     }
@@ -1124,6 +1198,46 @@ export const terminalManager = {
     const session = sessions.get(sessionId);
     if (!session) return;
     enqueueInput(session, data);
+    session.term.focus();
+  },
+
+  /** Arm a one-shot sticky modifier (mobile accessory bar). The next character
+   * the user types is sent as the matching Ctrl/Alt sequence, then the modifier
+   * releases. Arming the same modifier again, or passing null, clears it.
+   * `onConsumed` fires when typed input consumes the modifier so the bar can drop
+   * its highlight. */
+  setPendingModifier(
+    sessionId: string,
+    modifier: "ctrl" | "alt" | null,
+    onConsumed?: () => void,
+  ): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    session.pendingModifier = modifier;
+    session.onModifierConsumed = modifier ? (onConsumed ?? null) : null;
+  },
+
+  /** Which one-shot modifier is currently armed for a session, or null. */
+  pendingModifier(sessionId: string): "ctrl" | "alt" | null {
+    return sessions.get(sessionId)?.pendingModifier ?? null;
+  },
+
+  /** Send a key/sequence from the mobile accessory row, applying any armed
+   * one-shot modifier to it first (e.g. Ctrl then a tapped "c"). Explicit escape
+   * sequences (arrows, Esc, Tab) are passed through with the modifier applied to
+   * their first byte, matching how a hardware modifier would combine. */
+  sendAccessoryKey(sessionId: string, data: string): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    let out = data;
+    if (session.pendingModifier) {
+      out = applyModifier(session.pendingModifier, data);
+      session.pendingModifier = null;
+      const notify = session.onModifierConsumed;
+      session.onModifierConsumed = null;
+      notify?.();
+    }
+    enqueueInput(session, out);
     session.term.focus();
   },
 

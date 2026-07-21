@@ -7,12 +7,14 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::errors::{LumaError, Result};
 use crate::sftp::{self, SftpManager};
+use crate::ssh::{self, EmbeddedSshManager, SshBackend, SshExit, SshHostKeyStatus, SshRemoteOs};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::ssh::{
-    self, EmbeddedSshManager, OpenSshEngine, SshBackend, SshConfigCandidate,
-    SshConfigImportRequest, SshConfigImportResult, SshDetection, SshEngine, SshExit,
-    SshHostKeyStatus, SshRemoteOs,
+    OpenSshEngine, SshConfigCandidate, SshConfigImportRequest, SshConfigImportResult, SshDetection,
+    SshEngine,
 };
 use crate::storage::{hosts, key_references};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::terminal::PtyManager;
 use crate::vault::VaultState;
 use crate::AppState;
@@ -94,6 +96,7 @@ fn take_remote_os_event(state: &Arc<Mutex<PendingRemoteOsEvent>>) -> Option<SshR
     })
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn ssh_detect() -> Result<SshDetection> {
     Ok(ssh::detect())
@@ -117,6 +120,7 @@ pub async fn quick_connect_save(
     hosts::save_ephemeral(&state.pool, &host_id, name.as_deref()).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn ssh_ping(
     pty: State<'_, PtyManager>,
@@ -133,6 +137,60 @@ pub async fn ssh_ping(
         });
     }
     Err(LumaError::InvalidInput("unknown SSH session".into()))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+pub async fn ssh_ping(
+    embedded: State<'_, EmbeddedSshManager>,
+    session_id: String,
+) -> Result<SshLatencyResponse> {
+    embedded
+        .ping(&session_id)
+        .await?
+        .map(|latency_ms| SshLatencyResponse { latency_ms })
+        .ok_or_else(|| LumaError::InvalidInput("unknown SSH session".into()))
+}
+
+#[tauri::command]
+pub fn ssh_write(
+    embedded: State<'_, EmbeddedSshManager>,
+    session_id: String,
+    data: String,
+) -> Result<()> {
+    if embedded.write(&session_id, data)? {
+        Ok(())
+    } else {
+        Err(LumaError::InvalidInput("unknown SSH session".into()))
+    }
+}
+
+#[tauri::command]
+pub fn ssh_resize(
+    embedded: State<'_, EmbeddedSshManager>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<()> {
+    if cols == 0 || rows == 0 {
+        return Err(LumaError::InvalidInput(
+            "terminal dimensions must be greater than zero".into(),
+        ));
+    }
+    if embedded.resize(&session_id, cols, rows)? {
+        Ok(())
+    } else {
+        Err(LumaError::InvalidInput("unknown SSH session".into()))
+    }
+}
+
+#[tauri::command]
+pub fn ssh_disconnect(embedded: State<'_, EmbeddedSshManager>, session_id: String) -> Result<()> {
+    if embedded.disconnect(&session_id)? {
+        Ok(())
+    } else {
+        Err(LumaError::InvalidInput("unknown SSH session".into()))
+    }
 }
 
 #[tauri::command]
@@ -257,12 +315,51 @@ pub async fn ssh_host_key_trust(
     ssh::trust_host_key(&request.host_id, &host, &known_hosts_file)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn ssh_spawn(
     app: AppHandle,
     state: State<'_, AppState>,
     pty: State<'_, PtyManager>,
+    embedded: State<'_, EmbeddedSshManager>,
+    vault_state: State<'_, VaultState>,
+    request: SshSpawnRequest,
+    on_data: Channel<InvokeResponseBody>,
+    on_exit: Channel<SshExit>,
+) -> Result<SshSpawnResponse> {
+    ssh_spawn_impl(
+        app,
+        state,
+        pty,
+        embedded,
+        vault_state,
+        request,
+        on_data,
+        on_exit,
+    )
+    .await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+pub async fn ssh_spawn(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    embedded: State<'_, EmbeddedSshManager>,
+    vault_state: State<'_, VaultState>,
+    request: SshSpawnRequest,
+    on_data: Channel<InvokeResponseBody>,
+    on_exit: Channel<SshExit>,
+) -> Result<SshSpawnResponse> {
+    ssh_spawn_impl(app, state, embedded, vault_state, request, on_data, on_exit).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn ssh_spawn_impl(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))] pty: State<'_, PtyManager>,
     embedded: State<'_, EmbeddedSshManager>,
     vault_state: State<'_, VaultState>,
     request: SshSpawnRequest,
@@ -277,7 +374,7 @@ pub async fn ssh_spawn(
     }
     let (config, title) =
         ssh::connection_config(&state.pool, &vault_state, &request.host_id).await?;
-    let backend = ssh::select_backend(&config);
+    let backend = ssh::select_backend(&config)?;
     tracing::debug!(?backend, host_id = %request.host_id, "selected SSH backend");
     let pending_remote_os = Arc::new(Mutex::new(PendingRemoteOsEvent {
         host_id: request.host_id.clone(),
@@ -327,21 +424,31 @@ pub async fn ssh_spawn(
                 )
                 .await?
         }
-        SshBackend::OpenSsh => OpenSshEngine::new(&pty).connect(
+        SshBackend::OpenSsh => {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
-                if config.executable.is_empty() {
-                    return Err(LumaError::SshUnavailable(
-                        "system OpenSSH is required for this host's authentication or proxy configuration".into(),
-                    ));
-                }
-                config
-            },
-            request.cols,
-            request.rows,
-            data_callback,
-            exit_callback,
-            remote_os_callback,
-        )?,
+                OpenSshEngine::new(&pty).connect(
+                    {
+                        if config.executable.is_empty() {
+                            return Err(LumaError::SshUnavailable(
+                                "system OpenSSH is required for this host's authentication or proxy configuration".into(),
+                            ));
+                        }
+                        config
+                    },
+                    request.cols,
+                    request.rows,
+                    data_callback,
+                    exit_callback,
+                    remote_os_callback,
+                )?
+            }
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            return Err(LumaError::CapabilityUnavailable {
+                feature: "systemSsh",
+                message: "system OpenSSH is unavailable on mobile".into(),
+            });
+        }
     };
 
     {
@@ -350,6 +457,7 @@ pub async fn ssh_spawn(
 
     if let Err(error) = hosts::record_recent_connection(&state.pool, &request.host_id).await {
         if !embedded.disconnect(&session_id).unwrap_or(false) {
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             let _ = pty.kill(&session_id);
         }
         return Err(error);
@@ -365,11 +473,13 @@ pub async fn ssh_spawn(
     Ok(SshSpawnResponse { session_id, title })
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn ssh_config_preview(state: State<'_, AppState>) -> Result<Vec<SshConfigCandidate>> {
     ssh::preview_config(&state.pool).await
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn ssh_config_import(
     state: State<'_, AppState>,
