@@ -46,7 +46,7 @@ use sqlx::{Row, SqlitePool};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::errors::{LumaError, Result};
-use crate::storage::{host_groups, hosts, key_references, settings, snippets};
+use crate::storage::{host_groups, hosts, identities, key_references, settings, snippets};
 use crate::vault::{self, VaultState};
 
 use providers::{
@@ -71,6 +71,7 @@ const MAX_SYNC_SECRET_BYTES: usize = 1024 * 1024;
 const VAULT_KEY_OWNER_TYPE: &str = "key";
 const PRIVATE_KEY_SECRET_TYPE: &str = "private-key";
 const PASSPHRASE_SECRET_TYPE: &str = "passphrase";
+const IDENTITY_PASSWORD_SECRET_TYPE: &str = "password";
 pub(crate) const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct SyncRuntimeState {
@@ -97,7 +98,11 @@ pub struct SyncBundle {
     pub host_groups: Vec<SyncHostGroup>,
     pub key_references: Vec<SyncKeyReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identities: Vec<SyncIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub encrypted_key_secrets: Vec<SyncEncryptedSecret>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub encrypted_identity_secrets: Vec<SyncEncryptedSecret>,
     pub terminal_profiles: Vec<SyncTerminalProfile>,
     pub snippets: Vec<SyncSnippet>,
     pub settings: BTreeMap<String, SyncSetting>,
@@ -115,6 +120,8 @@ pub struct SyncHost {
     pub group_id: Option<String>,
     pub authentication_type: String,
     pub key_id: Option<String>,
+    #[serde(default)]
+    pub identity_id: Option<String>,
     pub proxy_jump_host_id: Option<String>,
     pub startup_command: Option<String>,
     pub working_directory: Option<String>,
@@ -123,6 +130,17 @@ pub struct SyncHost {
     pub favorite: bool,
     #[serde(default)]
     pub tab_color: Option<String>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SyncIdentity {
+    pub id: String,
+    pub name: String,
+    pub username: String,
+    pub key_id: Option<String>,
+    pub has_password: bool,
     pub updated_at: i64,
 }
 
@@ -209,6 +227,7 @@ pub struct ObjectCounts {
     pub hosts: usize,
     pub host_groups: usize,
     pub key_references: usize,
+    pub identities: usize,
     pub terminal_profiles: usize,
     pub snippets: usize,
     pub settings: usize,
@@ -319,6 +338,7 @@ struct PendingSync {
     remote_version: String,
     remote_states: BTreeMap<String, MergeItem>,
     remote_encrypted_key_secrets: Vec<SyncEncryptedSecret>,
+    remote_encrypted_identity_secrets: Vec<SyncEncryptedSecret>,
     conflicts: Vec<Conflict>,
 }
 
@@ -353,6 +373,7 @@ struct MergeOutcome {
     applied_remote: ObjectCounts,
     kept_local: ObjectCounts,
     remote_key_references: HashSet<String>,
+    remote_identities: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -445,8 +466,16 @@ pub async fn import_apply(
         &outcome.states,
         &outcome.remote_key_references,
     )?;
+    let prepared_identities = prepare_remote_identity_secrets(
+        vault_state,
+        passphrase,
+        &bundle.encrypted_identity_secrets,
+        &outcome.states,
+        &outcome.remote_identities,
+    )?;
     apply_states(pool, &outcome.states).await?;
     let private_keys = apply_prepared_secrets(pool, vault_state, passphrase, prepared).await?;
+    apply_prepared_identity_secrets(pool, vault_state, passphrase, prepared_identities).await?;
     Ok(ImportSummary {
         applied: outcome.applied_remote,
         kept_local: outcome.kept_local,
@@ -606,9 +635,20 @@ pub async fn sync_now(
         &outcome.states,
         &outcome.remote_key_references,
     )?;
+    let prepared_identities = prepare_remote_identity_secrets(
+        vault_state,
+        &passphrase,
+        &remote_bundle.encrypted_identity_secrets,
+        &outcome.states,
+        &outcome.remote_identities,
+    )?;
     apply_states(pool, &outcome.states).await?;
     let private_keys = apply_prepared_secrets(pool, vault_state, &passphrase, prepared).await?;
-    let pulled = !outcome.applied_remote.is_empty() || private_keys.applied > 0;
+    let identity_passwords =
+        apply_prepared_identity_secrets(pool, vault_state, &passphrase, prepared_identities)
+            .await?;
+    let pulled =
+        !outcome.applied_remote.is_empty() || private_keys.applied > 0 || identity_passwords > 0;
 
     if !outcome.conflicts.is_empty() {
         *runtime.pending.lock().unwrap() = Some(PendingSync {
@@ -616,6 +656,7 @@ pub async fn sync_now(
             remote_version: remote.version,
             remote_states: remote_bundle.states()?,
             remote_encrypted_key_secrets: remote_bundle.encrypted_key_secrets.clone(),
+            remote_encrypted_identity_secrets: remote_bundle.encrypted_identity_secrets.clone(),
             conflicts: outcome.conflicts.clone(),
         });
         return Ok(SyncReport {
@@ -698,6 +739,7 @@ pub async fn sync_resolve(
     let mut states = local.states()?;
     let mut pulled = false;
     let mut remote_key_references = HashSet::new();
+    let mut remote_identities = HashSet::new();
     for conflict in &pending.conflicts {
         let key = object_key(&conflict.object_type, &conflict.object_id);
         if resolution_map[&key] == ResolutionChoice::TakeRemote {
@@ -706,6 +748,9 @@ pub async fn sync_resolve(
                     states.insert(key, remote.clone());
                     if remote.object_type == "key_reference" && remote.payload.is_some() {
                         remote_key_references.insert(remote.object_id.clone());
+                    }
+                    if remote.object_type == "identity" && remote.payload.is_some() {
+                        remote_identities.insert(remote.object_id.clone());
                     }
                 }
                 None => {
@@ -723,9 +768,19 @@ pub async fn sync_resolve(
         &states,
         &remote_key_references,
     )?;
+    let prepared_identities = prepare_remote_identity_secrets(
+        vault_state,
+        &passphrase,
+        &pending.remote_encrypted_identity_secrets,
+        &states,
+        &remote_identities,
+    )?;
     apply_states(pool, &states).await?;
     let private_keys = apply_prepared_secrets(pool, vault_state, &passphrase, prepared).await?;
-    pulled |= private_keys.applied > 0;
+    let identity_passwords =
+        apply_prepared_identity_secrets(pool, vault_state, &passphrase, prepared_identities)
+            .await?;
+    pulled |= private_keys.applied > 0 || identity_passwords > 0;
 
     let provider =
         create_provider(pool, vault_state, &provider_name, &stored, app_data_dir).await?;
@@ -919,7 +974,17 @@ fn encrypt_sync_secret(
 }
 
 fn decode_sync_secret_parts(secret: &SyncEncryptedSecret) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    validate_encrypted_secret_metadata(secret)?;
+    if secret.key_reference_id.is_empty()
+        || secret.key_reference_id.len() > 512
+        || secret.key_reference_id.contains('\0')
+        || secret.kdf_id != KDF_ARGON2ID
+        || secret.cipher_id != CIPHER_XCHACHA20_POLY1305
+        || secret.updated_at < 0
+    {
+        return Err(LumaError::InvalidInput(
+            "encrypted secret metadata is invalid or unsupported".into(),
+        ));
+    }
     let base64 = base64::engine::general_purpose::STANDARD;
     let salt = base64
         .decode(&secret.salt)
@@ -1008,7 +1073,7 @@ async fn assemble_bundle_inner(
         .await?;
 
     let hosts = sqlx::query(
-        "SELECT id,name,hostname,port,username,group_id,auth_type,key_id,proxy_jump_host_id,
+        "SELECT id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,proxy_jump_host_id,
                 startup_command,working_directory,environment,tags,favorite,tab_color,updated_at FROM hosts
          WHERE is_ephemeral = 0",
     )
@@ -1028,6 +1093,7 @@ async fn assemble_bundle_inner(
             group_id: row.get("group_id"),
             authentication_type: row.get("auth_type"),
             key_id: row.get("key_id"),
+            identity_id: row.get("identity_id"),
             proxy_jump_host_id: row.get("proxy_jump_host_id"),
             startup_command: row.get("startup_command"),
             working_directory: row.get("working_directory"),
@@ -1121,6 +1187,41 @@ async fn assemble_bundle_inner(
                 if !vault::is_unlocked(vault_state) {
                     encrypted_key_secrets.clear();
                     break;
+                }
+            }
+        }
+    }
+
+    let mut identities_sync = Vec::new();
+    let mut encrypted_identity_secrets = Vec::new();
+    for row in sqlx::query("SELECT id,name,username,key_id,has_password,updated_at FROM identities")
+        .fetch_all(pool)
+        .await?
+    {
+        let id: String = row.get("id");
+        let has_password = row.get::<i64, _>("has_password") != 0;
+        let updated_at: i64 = row.get("updated_at");
+        identities_sync.push(SyncIdentity {
+            id: id.clone(),
+            name: row.get("name"),
+            username: row.get("username"),
+            key_id: row.get("key_id"),
+            has_password,
+            updated_at,
+        });
+        if has_password {
+            if let Some((vault_state, passphrase)) = private_key_sync {
+                match identities::password(pool, vault_state, &id).await {
+                    Ok(Some(password)) => encrypted_identity_secrets.push(encrypt_sync_secret(
+                        &id,
+                        IDENTITY_PASSWORD_SECRET_TYPE,
+                        &password,
+                        updated_at,
+                        passphrase,
+                    )?),
+                    Ok(None) => {}
+                    Err(_error) if !vault::is_unlocked(vault_state) => {}
+                    Err(error) => return Err(error),
                 }
             }
         }
@@ -1223,7 +1324,9 @@ async fn assemble_bundle_inner(
         hosts,
         host_groups,
         key_references,
+        identities: identities_sync,
         encrypted_key_secrets,
+        encrypted_identity_secrets,
         terminal_profiles,
         snippets,
         settings: settings_map,
@@ -1239,6 +1342,7 @@ impl SyncBundle {
             hosts: self.hosts.len(),
             host_groups: self.host_groups.len(),
             key_references: self.key_references.len(),
+            identities: self.identities.len(),
             terminal_profiles: self.terminal_profiles.len(),
             snippets: self.snippets.len(),
             settings: self.settings.len(),
@@ -1276,6 +1380,16 @@ impl SyncBundle {
                 &key.name,
                 key.updated_at,
                 key,
+            )?;
+        }
+        for identity in &self.identities {
+            insert_object(
+                &mut states,
+                "identity",
+                &identity.id,
+                &identity.name,
+                identity.updated_at,
+                identity,
             )?;
         }
         for profile in &self.terminal_profiles {
@@ -1399,6 +1513,7 @@ fn merge_states(
     let mut applied_remote = ObjectCounts::default();
     let mut kept_local = ObjectCounts::default();
     let mut remote_key_references = HashSet::new();
+    let mut remote_identities = HashSet::new();
     let mut used_resolutions = HashSet::new();
 
     for key in keys {
@@ -1407,7 +1522,11 @@ fn merge_states(
         match (local_item, remote_item) {
             (Some(local_item), Some(remote_item)) if local_item.hash() == remote_item.hash() => {
                 let selected = if remote_item.updated_at > local_item.updated_at {
-                    mark_remote_key_reference(remote_item, &mut remote_key_references);
+                    mark_remote_object(
+                        remote_item,
+                        &mut remote_key_references,
+                        &mut remote_identities,
+                    );
                     remote_item
                 } else {
                     local_item
@@ -1425,7 +1544,11 @@ fn merge_states(
                         ResolutionChoice::TakeRemote => {
                             states.insert(key, remote_item.clone());
                             applied_remote.increment_item(remote_item);
-                            mark_remote_key_reference(remote_item, &mut remote_key_references);
+                            mark_remote_object(
+                                remote_item,
+                                &mut remote_key_references,
+                                &mut remote_identities,
+                            );
                         }
                     }
                     continue;
@@ -1451,7 +1574,11 @@ fn merge_states(
                     Some(true) => {
                         states.insert(key, remote_item.clone());
                         applied_remote.increment_item(remote_item);
-                        mark_remote_key_reference(remote_item, &mut remote_key_references);
+                        mark_remote_object(
+                            remote_item,
+                            &mut remote_key_references,
+                            &mut remote_identities,
+                        );
                     }
                     Some(false) => {
                         states.insert(key, local_item.clone());
@@ -1470,7 +1597,11 @@ fn merge_states(
             (None, Some(remote_item)) => {
                 states.insert(key, remote_item.clone());
                 applied_remote.increment_item(remote_item);
-                mark_remote_key_reference(remote_item, &mut remote_key_references);
+                mark_remote_object(
+                    remote_item,
+                    &mut remote_key_references,
+                    &mut remote_identities,
+                );
             }
             (None, None) => unreachable!(),
         }
@@ -1490,12 +1621,20 @@ fn merge_states(
         applied_remote,
         kept_local,
         remote_key_references,
+        remote_identities,
     })
 }
 
-fn mark_remote_key_reference(item: &MergeItem, ids: &mut HashSet<String>) {
+fn mark_remote_object(
+    item: &MergeItem,
+    key_ids: &mut HashSet<String>,
+    identity_ids: &mut HashSet<String>,
+) {
     if item.object_type == "key_reference" && item.payload.is_some() {
-        ids.insert(item.object_id.clone());
+        key_ids.insert(item.object_id.clone());
+    }
+    if item.object_type == "identity" && item.payload.is_some() {
+        identity_ids.insert(item.object_id.clone());
     }
 }
 
@@ -1536,6 +1675,7 @@ fn validate_bundle(bundle: &SyncBundle) -> Result<()> {
         ("hosts", bundle.hosts.len()),
         ("hostGroups", bundle.host_groups.len()),
         ("keyReferences", bundle.key_references.len()),
+        ("identities", bundle.identities.len()),
         ("terminalProfiles", bundle.terminal_profiles.len()),
         ("snippets", bundle.snippets.len()),
         ("settings", bundle.settings.len()),
@@ -1552,9 +1692,15 @@ fn validate_bundle(bundle: &SyncBundle) -> Result<()> {
             "sync bundle contains too many encryptedKeySecrets".into(),
         ));
     }
+    if bundle.encrypted_identity_secrets.len() > MAX_OBJECTS_PER_TYPE {
+        return Err(LumaError::InvalidInput(
+            "sync bundle contains too many encryptedIdentitySecrets".into(),
+        ));
+    }
     let mut secret_ids = HashSet::new();
     let mut salt_nonces = HashSet::new();
     for secret in &bundle.encrypted_key_secrets {
+        validate_encrypted_secret_metadata(secret)?;
         let (salt, nonce, _) = decode_sync_secret_parts(secret)?;
         if !secret_ids.insert((secret.key_reference_id.clone(), secret.secret_type.clone())) {
             return Err(LumaError::InvalidInput(
@@ -1564,6 +1710,23 @@ fn validate_bundle(bundle: &SyncBundle) -> Result<()> {
         if !salt_nonces.insert((salt, nonce)) {
             return Err(LumaError::InvalidInput(
                 "sync bundle reuses encrypted key secret salt and nonce values".into(),
+            ));
+        }
+    }
+    for secret in &bundle.encrypted_identity_secrets {
+        validate_encrypted_identity_secret_metadata(secret)?;
+        let (salt, nonce, _) = decode_sync_secret_parts(secret)?;
+        if !secret_ids.insert((
+            format!("identity:{}", secret.key_reference_id),
+            secret.secret_type.clone(),
+        )) {
+            return Err(LumaError::InvalidInput(
+                "sync bundle contains duplicate encrypted identity secrets".into(),
+            ));
+        }
+        if !salt_nonces.insert((salt, nonce)) {
+            return Err(LumaError::InvalidInput(
+                "sync bundle reuses encrypted secret salt and nonce values".into(),
             ));
         }
     }
@@ -1590,11 +1753,29 @@ fn validate_encrypted_secret_metadata(secret: &SyncEncryptedSecret) -> Result<()
     Ok(())
 }
 
+fn validate_encrypted_identity_secret_metadata(secret: &SyncEncryptedSecret) -> Result<()> {
+    if secret.key_reference_id.is_empty()
+        || secret.key_reference_id.len() > 512
+        || secret.key_reference_id.contains('\0')
+        || secret.secret_type != IDENTITY_PASSWORD_SECRET_TYPE
+        || secret.kdf_id != KDF_ARGON2ID
+        || secret.cipher_id != CIPHER_XCHACHA20_POLY1305
+        || secret.updated_at < 0
+    {
+        return Err(LumaError::InvalidInput(
+            "encrypted identity secret metadata is invalid or unsupported".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
     let mut group_parents = HashMap::new();
     let mut host_proxies = HashMap::new();
     let mut group_ids = HashSet::new();
     let mut key_ids = HashSet::new();
+    let mut identity_ids = HashSet::new();
+    let mut identity_keys = HashMap::new();
     let mut host_ids = HashSet::new();
 
     for item in states.values() {
@@ -1642,7 +1823,7 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
                     group_id: host.group_id.clone(),
                     authentication_type: host.authentication_type,
                     key_id: host.key_id.clone(),
-                    identity_id: None,
+                    identity_id: host.identity_id.clone(),
                     proxy_jump_host_id: host.proxy_jump_host_id.clone(),
                     startup_command: host.startup_command,
                     working_directory: host.working_directory,
@@ -1654,8 +1835,28 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
                 host_ids.insert(host.id.clone());
                 host_proxies.insert(
                     host.id,
-                    (host.group_id, host.key_id, host.proxy_jump_host_id),
+                    (
+                        host.group_id,
+                        host.key_id,
+                        host.identity_id,
+                        host.proxy_jump_host_id,
+                    ),
                 );
+            }
+            "identity" => {
+                let identity: SyncIdentity = payload_as(item)?;
+                let username = identity.username.trim();
+                if identity.name.trim().is_empty()
+                    || identity.name.len() > 128
+                    || username.is_empty()
+                    || username.len() > 255
+                    || username.chars().any(char::is_whitespace)
+                    || username.starts_with('-')
+                {
+                    return Err(LumaError::InvalidInput("synced identity is invalid".into()));
+                }
+                identity_ids.insert(identity.id.clone());
+                identity_keys.insert(identity.id, identity.key_id);
             }
             "terminal_profile" => validate_sync_profile(&payload_as::<SyncTerminalProfile>(item)?)?,
             "snippet" => {
@@ -1706,7 +1907,14 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
             detect_cycle(group_id, &group_parents, "host group parent", 64)?;
         }
     }
-    for (host_id, (group_id, key_id, proxy_id)) in &host_proxies {
+    for key_id in identity_keys.values().flatten() {
+        if !key_ids.contains(key_id) {
+            return Err(LumaError::InvalidInput(
+                "synced identity references an unknown key".into(),
+            ));
+        }
+    }
+    for (host_id, (group_id, key_id, identity_id, proxy_id)) in &host_proxies {
         if group_id.as_ref().is_some_and(|id| !group_ids.contains(id)) {
             return Err(LumaError::InvalidInput(
                 "synced host references an unknown group".into(),
@@ -1717,6 +1925,14 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
                 "synced host references an unknown key".into(),
             ));
         }
+        if identity_id
+            .as_ref()
+            .is_some_and(|id| !identity_ids.contains(id))
+        {
+            return Err(LumaError::InvalidInput(
+                "synced host references an unknown identity".into(),
+            ));
+        }
         if proxy_id.as_ref().is_some_and(|id| !host_ids.contains(id)) {
             return Err(LumaError::InvalidInput(
                 "synced host references an unknown proxy jump host".into(),
@@ -1724,7 +1940,7 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
         }
         let proxy_map: HashMap<String, Option<String>> = host_proxies
             .iter()
-            .map(|(id, (_, _, proxy))| (id.clone(), proxy.clone()))
+            .map(|(id, (_, _, _, proxy))| (id.clone(), proxy.clone()))
             .collect();
         // The existing host validator permits eight proxy hops plus the host itself.
         detect_cycle(host_id, &proxy_map, "proxy jump", 9)?;
@@ -1858,6 +2074,42 @@ fn prepare_remote_secrets(
     })
 }
 
+fn prepare_remote_identity_secrets(
+    vault_state: &VaultState,
+    passphrase: &str,
+    incoming: &[SyncEncryptedSecret],
+    merged_states: &BTreeMap<String, MergeItem>,
+    remote_identities: &HashSet<String>,
+) -> Result<Vec<SyncEncryptedSecret>> {
+    if !identity_secret_store_available(vault_state) {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<_> = incoming
+        .iter()
+        .filter(|secret| {
+            remote_identities.contains(&secret.key_reference_id)
+                && merged_states
+                    .get(&object_key("identity", &secret.key_reference_id))
+                    .is_some_and(|item| item.payload.is_some())
+        })
+        .cloned()
+        .collect();
+    for secret in &entries {
+        drop(decrypt_sync_secret(secret, passphrase)?);
+    }
+    Ok(entries)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn identity_secret_store_available(_vault_state: &VaultState) -> bool {
+    true
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn identity_secret_store_available(vault_state: &VaultState) -> bool {
+    vault::is_unlocked(vault_state)
+}
+
 async fn apply_prepared_secrets(
     pool: &SqlitePool,
     vault_state: &VaultState,
@@ -1918,8 +2170,28 @@ async fn apply_prepared_secrets(
     Ok(summary)
 }
 
+async fn apply_prepared_identity_secrets(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    passphrase: &str,
+    prepared: Vec<SyncEncryptedSecret>,
+) -> Result<usize> {
+    let mut applied = 0;
+    for secret in prepared {
+        if !identity_secret_store_available(vault_state) {
+            break;
+        }
+        let plaintext = decrypt_sync_secret(&secret, passphrase)?;
+        identities::set_synced_password(pool, vault_state, &secret.key_reference_id, &plaintext)
+            .await?;
+        applied += 1;
+    }
+    Ok(applied)
+}
+
 async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -> Result<()> {
     let mut deleted_key_references = Vec::new();
+    let mut deleted_identities = Vec::new();
     let mut transaction = pool.begin().await?;
     sqlx::query("PRAGMA defer_foreign_keys = ON")
         .execute(&mut *transaction)
@@ -1930,10 +2202,20 @@ async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -
                 if item.object_type == "key_reference" {
                     deleted_key_references.push(item.object_id.clone());
                 }
+                if item.object_type == "identity" {
+                    deleted_identities.push(item.object_id.clone());
+                    sqlx::query(
+                        "DELETE FROM vault_secrets WHERE owner_type='identity' AND owner_id=?1",
+                    )
+                    .bind(&item.object_id)
+                    .execute(&mut *transaction)
+                    .await?;
+                }
                 let query = match item.object_type.as_str() {
                     "host" => "DELETE FROM hosts WHERE id = ?1",
                     "host_group" => "DELETE FROM host_groups WHERE id = ?1",
                     "key_reference" => "DELETE FROM key_references WHERE id = ?1",
+                    "identity" => "DELETE FROM identities WHERE id = ?1",
                     "terminal_profile" => "DELETE FROM terminal_profiles WHERE id = ?1",
                     "snippet" => "DELETE FROM snippets WHERE id = ?1",
                     "setting" => "DELETE FROM settings WHERE key = ?1",
@@ -1966,6 +2248,9 @@ async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -
     transaction.commit().await?;
     for id in deleted_key_references {
         key_references::purge_secrets(&id);
+    }
+    for id in deleted_identities {
+        identities::purge_synced_password(&id);
     }
     Ok(())
 }
@@ -2013,16 +2298,32 @@ async fn apply_object(
             .execute(&mut **transaction)
             .await?;
         }
+        "identity" => {
+            let value: SyncIdentity = payload_as(item)?;
+            sqlx::query(
+                "INSERT INTO identities(id,name,username,key_id,has_password,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,0,?5,?5)
+                 ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username,
+                 key_id=excluded.key_id,updated_at=excluded.updated_at",
+            )
+            .bind(value.id)
+            .bind(value.name)
+            .bind(value.username)
+            .bind(value.key_id)
+            .bind(value.updated_at)
+            .execute(&mut **transaction)
+            .await?;
+        }
         "host" => {
             let value: SyncHost = payload_as(item)?;
             sqlx::query(
                 "INSERT INTO hosts(id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,
                  proxy_jump_host_id,startup_command,working_directory,environment,tags,favorite,tab_color,
                  created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,NULL,?9,?10,?11,?12,?13,?14,?15,?16,?16)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,hostname=excluded.hostname,
                  port=excluded.port,username=excluded.username,group_id=excluded.group_id,
-                 auth_type=excluded.auth_type,key_id=excluded.key_id,
+                 auth_type=excluded.auth_type,key_id=excluded.key_id,identity_id=excluded.identity_id,
                  proxy_jump_host_id=excluded.proxy_jump_host_id,startup_command=excluded.startup_command,
                  working_directory=excluded.working_directory,environment=excluded.environment,
                  tags=excluded.tags,favorite=excluded.favorite,tab_color=excluded.tab_color,
@@ -2036,6 +2337,7 @@ async fn apply_object(
             .bind(value.group_id)
             .bind(value.authentication_type)
             .bind(value.key_id)
+            .bind(value.identity_id)
             .bind(value.proxy_jump_host_id)
             .bind(value.startup_command)
             .bind(value.working_directory)
@@ -2207,7 +2509,13 @@ fn is_safe_setting_key(key: &str) -> bool {
 fn validate_object_type(object_type: &str) -> Result<()> {
     if matches!(
         object_type,
-        "host" | "host_group" | "key_reference" | "terminal_profile" | "snippet" | "setting"
+        "host"
+            | "host_group"
+            | "key_reference"
+            | "identity"
+            | "terminal_profile"
+            | "snippet"
+            | "setting"
     ) {
         Ok(())
     } else {
@@ -2227,6 +2535,7 @@ impl ObjectCounts {
             "host" => self.hosts += 1,
             "host_group" => self.host_groups += 1,
             "key_reference" => self.key_references += 1,
+            "identity" => self.identities += 1,
             "terminal_profile" => self.terminal_profiles += 1,
             "snippet" => self.snippets += 1,
             "setting" => self.settings += 1,
@@ -2241,6 +2550,7 @@ impl ObjectCounts {
         self.hosts == 0
             && self.host_groups == 0
             && self.key_references == 0
+            && self.identities == 0
             && self.terminal_profiles == 0
             && self.snippets == 0
             && self.settings == 0
@@ -2265,10 +2575,31 @@ fn bundles_have_same_content(
     if baseline_for_bundle(left)? != baseline_for_bundle(right)? {
         return Ok(false);
     }
+    if identity_secret_content_hashes(left, passphrase)?
+        != identity_secret_content_hashes(right, passphrase)?
+    {
+        return Ok(false);
+    }
     if !compare_private_keys {
         return Ok(true);
     }
     Ok(secret_content_hashes(left, passphrase)? == secret_content_hashes(right, passphrase)?)
+}
+
+fn identity_secret_content_hashes(
+    bundle: &SyncBundle,
+    passphrase: &str,
+) -> Result<BTreeMap<String, [u8; 32]>> {
+    let mut hashes = BTreeMap::new();
+    for secret in &bundle.encrypted_identity_secrets {
+        let plaintext = decrypt_sync_secret(secret, passphrase)?;
+        let mut hasher = Sha256::new();
+        hasher.update(secret.key_reference_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(plaintext.as_bytes());
+        hashes.insert(secret.key_reference_id.clone(), hasher.finalize().into());
+    }
+    Ok(hashes)
 }
 
 fn secret_content_hashes(
@@ -2570,7 +2901,9 @@ mod tests {
             hosts: Vec::new(),
             host_groups: Vec::new(),
             key_references: Vec::new(),
+            identities: Vec::new(),
             encrypted_key_secrets: Vec::new(),
+            encrypted_identity_secrets: Vec::new(),
             terminal_profiles: Vec::new(),
             snippets: Vec::new(),
             settings: BTreeMap::new(),
@@ -3064,7 +3397,92 @@ mod tests {
         });
         let bundle: SyncBundle = serde_json::from_value(value).unwrap();
         assert!(bundle.encrypted_key_secrets.is_empty());
+        assert!(bundle.identities.is_empty());
+        assert!(bundle.encrypted_identity_secrets.is_empty());
+        assert_eq!(bundle.hosts[0].identity_id, None);
         assert_eq!(bundle.hosts[0].tab_color, None);
+    }
+
+    #[tokio::test]
+    async fn identity_metadata_and_host_assignment_merge_and_apply() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let local = empty_bundle("11111111-1111-4111-8111-111111111111");
+        let mut remote = empty_bundle("22222222-2222-4222-8222-222222222222");
+        remote.identities.push(SyncIdentity {
+            id: "identity-1".into(),
+            name: "Production".into(),
+            username: "deploy".into(),
+            key_id: None,
+            has_password: true,
+            updated_at: 10,
+        });
+        remote.hosts.push(SyncHost {
+            id: "host-1".into(),
+            name: "Server".into(),
+            hostname: "server.example.com".into(),
+            port: 22,
+            username: None,
+            group_id: None,
+            authentication_type: "password".into(),
+            key_id: None,
+            identity_id: Some("identity-1".into()),
+            proxy_jump_host_id: None,
+            startup_command: None,
+            working_directory: None,
+            environment: None,
+            tags: Vec::new(),
+            favorite: false,
+            tab_color: None,
+            updated_at: 10,
+        });
+
+        let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
+        assert!(outcome.remote_identities.contains("identity-1"));
+        validate_states(&outcome.states).unwrap();
+        apply_states(&pool, &outcome.states).await.unwrap();
+
+        let identity: (String, String, i64) = sqlx::query_as(
+            "SELECT name,username,has_password FROM identities WHERE id='identity-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(identity, ("Production".into(), "deploy".into(), 0));
+        let identity_id: Option<String> =
+            sqlx::query_scalar("SELECT identity_id FROM hosts WHERE id='host-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(identity_id.as_deref(), Some("identity-1"));
+    }
+
+    #[test]
+    fn encrypted_identity_password_roundtrip_and_validation() {
+        let passphrase = "correct horse battery staple";
+        let secret = encrypt_sync_secret(
+            "identity-1",
+            IDENTITY_PASSWORD_SECRET_TYPE,
+            "super secret password",
+            42,
+            passphrase,
+        )
+        .unwrap();
+        validate_encrypted_identity_secret_metadata(&secret).unwrap();
+        assert_eq!(
+            decrypt_sync_secret(&secret, passphrase).unwrap().as_str(),
+            "super secret password"
+        );
+        let mut bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
+        bundle.identities.push(SyncIdentity {
+            id: "identity-1".into(),
+            name: "Identity".into(),
+            username: "alice".into(),
+            key_id: None,
+            has_password: true,
+            updated_at: 42,
+        });
+        bundle.encrypted_identity_secrets.push(secret);
+        validate_bundle(&bundle).unwrap();
     }
 
     #[test]

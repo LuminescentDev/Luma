@@ -22,6 +22,7 @@ const TYPE_ICONS: Record<ConflictObjectType, typeof Server> = {
   host: Server,
   host_group: FolderTree,
   key_reference: KeyRound,
+  identity: KeyRound,
   terminal_profile: SquareTerminal,
   snippet: ScrollText,
   setting: SlidersHorizontal,

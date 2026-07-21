@@ -86,6 +86,24 @@ pub async fn password(
     OsCredentialStore.get(id)
 }
 
+pub async fn set_synced_password(
+    pool: &SqlitePool,
+    _vault_state: &crate::vault::VaultState,
+    id: &str,
+    password: &str,
+) -> Result<()> {
+    OsCredentialStore.set(id, password)?;
+    sqlx::query("UPDATE identities SET has_password=1 WHERE id=?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub fn purge_synced_password(id: &str) {
+    let _ = OsCredentialStore.delete(id);
+}
+
 async fn check_key<'e, E>(executor: E, key_id: &Option<String>) -> Result<()>
 where
     E: Executor<'e, Database = Sqlite>,

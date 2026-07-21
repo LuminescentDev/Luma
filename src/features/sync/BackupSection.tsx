@@ -24,6 +24,7 @@ const COUNT_LABELS: { key: keyof ObjectCounts; label: string }[] = [
   { key: "hosts", label: "Hosts" },
   { key: "hostGroups", label: "Host groups" },
   { key: "keyReferences", label: "Key references" },
+  { key: "identities", label: "Identities" },
   { key: "terminalProfiles", label: "Terminal profiles" },
   { key: "snippets", label: "Snippets" },
   { key: "settings", label: "Settings" },

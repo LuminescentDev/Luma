@@ -100,6 +100,30 @@ pub async fn password(
         .map(|value| value.map(Zeroizing::new))
 }
 
+pub async fn set_synced_password(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    id: &str,
+    password: &str,
+) -> Result<()> {
+    vault::store(
+        pool,
+        vault_state,
+        "identity",
+        id,
+        PASSWORD_SECRET_TYPE,
+        password,
+    )
+    .await?;
+    sqlx::query("UPDATE identities SET has_password=1 WHERE id=?1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub fn purge_synced_password(_id: &str) {}
+
 pub async fn create(
     pool: &SqlitePool,
     vault_state: &VaultState,

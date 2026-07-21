@@ -21,6 +21,7 @@ export type ObjectCounts = {
   hosts: number;
   hostGroups: number;
   keyReferences: number;
+  identities: number;
   terminalProfiles: number;
   snippets: number;
   settings: number;
@@ -31,6 +32,7 @@ export type ConflictObjectType =
   | "host"
   | "host_group"
   | "key_reference"
+  | "identity"
   | "terminal_profile"
   | "snippet"
   | "setting";
@@ -154,6 +156,7 @@ export function totalObjectCount(counts: ObjectCounts): number {
     counts.hosts +
     counts.hostGroups +
     counts.keyReferences +
+    counts.identities +
     counts.terminalProfiles +
     counts.snippets +
     counts.settings +
@@ -189,11 +192,12 @@ export function truncateVersion(version: string | null | undefined, max = 12): s
   return version.length > max ? `${version.slice(0, max)}…` : version;
 }
 
-/** Human labels for the six conflict object types (singular). */
+/** Human labels for sync conflict object types (singular). */
 export const CONFLICT_TYPE_LABELS: Record<ConflictObjectType, string> = {
   host: "Host",
   host_group: "Host group",
   key_reference: "Key reference",
+  identity: "Identity",
   terminal_profile: "Terminal profile",
   snippet: "Snippet",
   setting: "Setting",
