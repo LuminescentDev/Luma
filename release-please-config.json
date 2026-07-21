@@ -8,6 +8,9 @@
   "packages": {
     ".": {
       "package-name": "luma",
+      "exclude-paths": [
+        "website"
+      ],
       "extra-files": [
         {
           "type": "json",
@@ -28,4 +31,3 @@
     }
   }
 }
-

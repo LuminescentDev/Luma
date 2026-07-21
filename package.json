@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vp dev",
     "build": "tsc && vp build",
+    "website:dev": "pnpm --dir website dev",
+    "website:build": "pnpm --dir website build",
+    "website:preview": "pnpm --dir website preview",
     "preview": "vp preview",
     "typecheck": "tsc --noEmit",
     "test": "vp test run",

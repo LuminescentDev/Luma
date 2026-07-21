@@ -3,6 +3,8 @@ name: Release Please
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "website/**"
 
 permissions:
   contents: write
@@ -139,4 +141,3 @@ jobs:
         run: |
           gh release upload "${RELEASE_TAG}" SHA256SUMS --clobber
           gh release edit "${RELEASE_TAG}" --draft=false --latest
-
