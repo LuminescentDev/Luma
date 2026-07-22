@@ -1,6 +1,6 @@
 import { ExternalLink, LifeBuoy, MessageSquareWarning, ShieldCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { GITHUB_ISSUES_URL, GITHUB_REPO_URL } from '../config';
+import { GITHUB_ISSUES_URL, GITHUB_REPO_URL, SUPPORT_EMAIL } from '../config';
 import { Footer } from './Footer';
 
 const troubleshooting = [
@@ -57,11 +57,16 @@ export function Support() {
             <MessageSquareWarning className='mb-4 h-6 w-6 text-accent' aria-hidden='true' />
             <h2 id='contact-heading' className='text-xl font-semibold'>Contact support</h2>
             <p className='mt-3 leading-7 text-muted'>
-              Open a support request on GitHub. Include your device, operating system version, Luma version, and the steps that caused the problem. Do not include passwords, private keys, or other secrets.
+              Email us for help with Luma. Include your device, operating system version, Luma version, and the steps that caused the problem. Do not include passwords, private keys, or other secrets.
             </p>
-            <a href={GITHUB_ISSUES_URL} target='_blank' rel='noreferrer noopener' className='mt-5 inline-flex items-center gap-2 font-medium text-accent hover:text-accent-strong'>
-              Create a support request <ExternalLink className='h-4 w-4' aria-hidden='true' />
-            </a>
+            <div className='mt-5 flex flex-col items-start gap-3'>
+              <a href={`mailto:${SUPPORT_EMAIL}`} className='font-medium text-accent hover:text-accent-strong'>
+                {SUPPORT_EMAIL}
+              </a>
+              <a href={GITHUB_ISSUES_URL} target='_blank' rel='noreferrer noopener' className='inline-flex items-center gap-2 text-sm text-muted hover:text-foreground'>
+                Report a bug on GitHub <ExternalLink className='h-4 w-4' aria-hidden='true' />
+              </a>
+            </div>
           </div>
 
           <div className='rounded-2xl border border-border bg-surface p-6'>

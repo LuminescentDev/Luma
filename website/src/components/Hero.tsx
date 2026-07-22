@@ -1,4 +1,4 @@
-import { ArrowRight, Sparkles } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { GITHUB_REPO_URL } from '../config';
 import { GithubIcon } from './GithubIcon';
 import { NightSky } from './NightSky';
