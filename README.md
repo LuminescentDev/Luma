@@ -1,15 +1,36 @@
-# Luma
+<div align="center">
+  <img src=".github/assets/logo.png" alt="Luma" width="96" />
+  <h1>Luma</h1>
+</div>
 
-A lightweight, cross-platform terminal and SSH client for Windows, macOS, and
-Linux, built with Tauri instead of Electron.
+A lightweight, cross-platform terminal and SSH client for Windows, macOS,
+Linux, iOS, and Android, built with Tauri instead of Electron.
 
 Luma combines local and serial terminals, saved SSH connections, SFTP, and
-encrypted configuration sync in a modern desktop interface. It requires no
-Luma account or paid cloud service.
+encrypted configuration sync in a modern interface. It requires no Luma
+account or paid cloud service.
 
 > **Status: early development.** Most core workflows are implemented, but the
 > project has not reached a stable release. Expect rough edges and breaking
 > changes.
+
+## Screenshots
+
+*Screenshots coming soon.*
+
+<!--
+  Drop PNGs into .github/assets/ with the names below, delete the
+  "coming soon" line above, and uncomment the block below.
+-->
+<!--
+<img src=".github/assets/terminal.png" alt="Local terminal with split panes and tabs" width="800" />
+
+<img src=".github/assets/hosts.png" alt="Saved hosts and connection manager" width="800" />
+
+<img src=".github/assets/sftp.png" alt="Dual-pane SFTP browser" width="800" />
+
+<img src=".github/assets/sync.png" alt="Settings and encrypted sync" width="800" />
+-->
 
 ## Features
 
@@ -27,8 +48,11 @@ Luma account or paid cloud service.
 ### SSH and host management
 
 - Saved hosts, groups, favorites, tags, search, and recent connections
-- System OpenSSH integration with agent, password, interactive, and private-key
-  authentication
+- Embedded SSH via russh for saved password and private-key connections,
+  including supported mobile connections; system OpenSSH handles ProxyJump,
+  agent, hardware-token, and fully interactive authentication
+- Reusable named identities with usernames and optional key references;
+  passwords use the OS credential store on desktop and support encrypted sync
 - Encrypted and passphrase-protected private keys, public-key derivation, and
   SSH certificates
 - ProxyJump, agent forwarding, keepalive, startup commands, working
@@ -63,11 +87,11 @@ Luma account or paid cloud service.
 
 ## Stack
 
-- **Desktop:** Tauri 2, Rust, Tokio
+- **Application:** Tauri 2, Rust, Tokio
 - **Frontend:** React 19, TypeScript, Vite, Zustand, TanStack Query, Tailwind
   CSS, Radix UI, xterm.js
-- **Backend:** portable-pty, system OpenSSH, SQLite via SQLx, russh-sftp,
-  serialport
+- **Backend:** portable-pty, embedded SSH via russh, system OpenSSH, SQLite via
+  SQLx, russh-sftp, serialport
 - **Security:** keyring, Argon2id, XChaCha20-Poly1305
 
 Terminal byte streams flow directly between the Rust backend and xterm.js
@@ -82,7 +106,8 @@ through Tauri channels. React stores session metadata, not terminal output.
 - [pnpm](https://pnpm.io)
 - The [Tauri platform prerequisites](https://tauri.app/start/prerequisites/)
   for your operating system
-- A system OpenSSH client for SSH connections
+- A system OpenSSH client for ProxyJump, agent, hardware-token, or fully
+  interactive SSH authentication on desktop
 
 On Linux, serial support also requires the libudev development package (for
 example, `libudev-dev` on Ubuntu).
@@ -124,10 +149,29 @@ Apple development team in the generated Xcode project when prompted by Xcode.
 Create a release archive with `pnpm ios:build`; App Store distribution also
 requires a unique bundle identifier and the corresponding signing profile.
 
+### Run on Android
+
+The checked-in Android project is in `src-tauri/gen/android`. The repository's
+Android workflow is a PowerShell helper for Windows hosts. Install Android
+Studio with the Android SDK and NDK, JDK 21, and the Rust Android targets needed
+by the connected device or emulator. Android Studio's bundled Java runtime is
+supported.
+
+Start an emulator or connect an Android device, then run:
+
+```sh
+pnpm android:dev
+```
+
+The helper selects Java 21 from `JAVA_HOME`, Android Studio, or common JDK
+install locations before starting `pnpm tauri android dev`.
+
 ### Checks and builds
 
 ```sh
 pnpm typecheck
+pnpm lint
+pnpm test
 pnpm build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
@@ -135,31 +179,28 @@ cargo test --manifest-path src-tauri/Cargo.toml
 pnpm tauri build
 ```
 
-CI runs the frontend build, formatting, Clippy, Rust tests, and native bundle
-builds on Windows, macOS, and Linux.
+CI runs frontend linting, tests, and builds, plus Rust formatting, Clippy,
+tests, and native bundle builds on Windows, macOS, and Linux.
 
 ## Project layout
 
 ```text
 src/                    React application
-  features/             Terminal, SSH, SFTP, sync, settings, and other UI
+  features/             Terminal, SSH, SFTP, sync, mobile, and other UI
   lib/                  Typed frontend/backend command adapters
   stores/               Zustand application state
 src-tauri/
   src/commands/         Tauri command boundary
   src/storage/          SQLite repositories
   src/terminal/         PTY lifecycle and streaming
-  src/ssh/              OpenSSH, known-host, and tunnel support
+  src/ssh/              Embedded/system SSH, known-host, and tunnel support
   src/sftp/             File operations and transfers
   src/sync/             Encryption, merge logic, and sync providers
   migrations/           Versioned SQLite schema
-docs/                   Build and release documentation
-scripts/                Benchmark and Termius export helpers
+scripts/                Benchmark, Termius export, and Android dev helpers
 ```
 
-See [the build plan](docs/BUILD_PLAN.md) for the product architecture and
-[the release guide](docs/RELEASING.md) for signing and automated release
-details. The Termius export helper is documented in
+The Termius export and benchmark helpers are documented in
 [scripts/README.md](scripts/README.md).
 
 ## Releases
@@ -171,7 +212,7 @@ release after verification.
 
 The updater values in the checked-in Tauri configuration are CI placeholders.
 A local production bundle must provide its own valid updater endpoint and
-public key; see [the release guide](docs/RELEASING.md).
+public key.
 
 ## License
 

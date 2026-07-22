@@ -9,6 +9,7 @@ lerna-debug.log*
 
 node_modules
 dist
+dist-showcase
 termius-vault-export*.json
 dist-ssr
 *.local

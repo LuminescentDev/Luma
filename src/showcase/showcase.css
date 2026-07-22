@@ -1,0 +1,10 @@
+.xterm .xterm-cursor-blink,
+.xterm .xterm-cursor-blink-block,
+.xterm-cursor.xterm-cursor-blink {
+  animation: none !important;
+}
+
+html,
+body {
+  overflow: hidden;
+}
