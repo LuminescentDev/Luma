@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.9.0](https://github.com/LuminescentDev/Luma/compare/v0.8.0...v0.9.0) (2026-07-22)
+
+
+### Features
+
+* enhance mobile support and add troubleshooting page ([437f0c3](https://github.com/LuminescentDev/Luma/commit/437f0c351f0dd733997bba4ff13b4e11c6d00c36))
+* update iOS version to 0.8.0 and improve shell script for build process ([5db7209](https://github.com/LuminescentDev/Luma/commit/5db7209c56948c55e7bffc3a2715332df28acf1c))
+* update luma version to 0.8.0 and conditionally include modules for non-iOS/Android platforms ([94c6515](https://github.com/LuminescentDev/Luma/commit/94c651539326ebd823f07c909b7ce4a6549870b2))
+* **website:** initial commit ([9fbfa7e](https://github.com/LuminescentDev/Luma/commit/9fbfa7e1654160af7127c1c9e1b1e1985f4c56bb))
+
 ## [0.8.0](https://github.com/LuminescentDev/Luma/compare/v0.7.0...v0.8.0) (2026-07-21)
 
 
