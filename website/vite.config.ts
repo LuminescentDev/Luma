@@ -14,6 +14,7 @@ export default defineConfig(async () => ({
       input: {
         main: resolve(import.meta.dirname, "index.html"),
         support: resolve(import.meta.dirname, "support/index.html"),
+        privacy: resolve(import.meta.dirname, "privacy/index.html"),
       },
     },
   },

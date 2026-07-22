@@ -5,6 +5,7 @@ import { Features } from './components/Features';
 import { Footer } from './components/Footer';
 import { Header } from './components/Header';
 import { Hero } from './components/Hero';
+import { Privacy } from './components/Privacy';
 import { Screenshots } from './components/Screenshots';
 import { Stack } from './components/Stack';
 import { Support } from './components/Support';
@@ -14,6 +15,7 @@ export function App() {
     <Routes>
       <Route path='/' element={<Home />} />
       <Route path='/support' element={<Support />} />
+      <Route path='/privacy' element={<Privacy />} />
     </Routes>
   );
 }

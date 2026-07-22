@@ -34,6 +34,12 @@ export function Footer() {
             >
               Support
             </Link>
+            <Link
+              to='/privacy'
+              className='rounded-sm transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent'
+            >
+              Privacy
+            </Link>
             <a
               href={GITHUB_REPO_URL}
               target='_blank'
