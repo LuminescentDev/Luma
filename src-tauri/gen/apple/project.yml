@@ -54,8 +54,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.7.0
-        CFBundleVersion: "0.7.0"
+        CFBundleShortVersionString: 0.8.0
+        CFBundleVersion: "0.8.0"
     entitlements:
       path: luma_iOS/luma_iOS.entitlements
     scheme:
@@ -83,7 +83,13 @@ targets:
       - sdk: UIKit.framework
       - sdk: WebKit.framework
     preBuildScripts:
-      - script: pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
+      - script: |
+          export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+          if [ -s "$NVM_DIR/nvm.sh" ]; then
+            . "$NVM_DIR/nvm.sh"
+            nvm use --silent default
+          fi
+          pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
         name: Build Rust Code
         basedOnDependencyAnalysis: false
         outputFiles:
