@@ -27,9 +27,25 @@ export function settleMs(view: ShowcaseView): number {
 const frame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-async function setupTerminal(): Promise<void> {
+async function waitForMobileNavButton(label: string): Promise<HTMLButtonElement> {
+  const selector = `nav[aria-label="Primary"] button[aria-label="${label}"]`;
+  const deadline = performance.now() + 10_000;
+  let button: HTMLButtonElement | null = null;
+  while (!button && performance.now() < deadline) {
+    button = document.querySelector<HTMLButtonElement>(selector);
+    if (!button) await frame();
+  }
+  if (!button) throw new Error(`[showcase] mobile navigation did not render: ${label}`);
+  return button;
+}
+
+async function setupTerminal(singleSession = false): Promise<void> {
   const store = useSessionStore.getState();
   await store.openSshSession("h-web-01", "vps-0cd97c22", "158.69.198.249", false, "#4ade80");
+  if (singleSession) {
+    await frame();
+    return;
+  }
   const primaryTabId = useSessionStore.getState().activeTabId;
 
   await store.splitActivePaneWith("row", {
@@ -47,7 +63,24 @@ async function setupTerminal(): Promise<void> {
   await frame();
 }
 
-export async function applyScenario(view: ShowcaseView): Promise<void> {
+export async function applyScenario(
+  view: ShowcaseView,
+  platform: "desktop" | "ios" = "desktop",
+): Promise<void> {
+  if (platform === "ios") {
+    await waitForMobileNavButton("Hosts");
+    if (view === "terminal") {
+      await setupTerminal(true);
+      return;
+    }
+    if (view === "snippets" || view === "settings") {
+      const label = view === "snippets" ? "Snippets" : "Settings";
+      const button = await waitForMobileNavButton(label);
+      button.click();
+      await frame();
+    }
+    return;
+  }
   const ui = useUiStore.getState();
   switch (view) {
     case "terminal":

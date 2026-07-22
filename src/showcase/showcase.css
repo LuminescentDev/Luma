@@ -8,3 +8,10 @@ html,
 body {
   overflow: hidden;
 }
+
+/* Headless Chromium reports zero for iOS safe-area env() values. Emulate the
+ * iPhone 14/15 Pro Max insets used by the 428 x 926 screenshot viewport. */
+html[data-platform="ios"] {
+  --emulated-safe-area-top: 32px;
+  --emulated-safe-area-bottom: 34px;
+}

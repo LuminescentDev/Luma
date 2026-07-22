@@ -1,3 +1,4 @@
+import { Route, Routes } from 'react-router-dom';
 import { CrossPlatform } from './components/CrossPlatform';
 import { Download } from './components/Download';
 import { Features } from './components/Features';
@@ -6,8 +7,18 @@ import { Header } from './components/Header';
 import { Hero } from './components/Hero';
 import { Screenshots } from './components/Screenshots';
 import { Stack } from './components/Stack';
+import { Support } from './components/Support';
 
 export function App() {
+  return (
+    <Routes>
+      <Route path='/' element={<Home />} />
+      <Route path='/support' element={<Support />} />
+    </Routes>
+  );
+}
+
+function Home() {
   return (
     <>
       <a

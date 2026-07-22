@@ -61,13 +61,22 @@ function driveLocal(channel: ByteChannel): void {
 
 export function createInvokeHandler(
   theme: ThemeMode,
+  platform: "desktop" | "ios" = "desktop",
 ): (cmd: string, args: InvokeArgs) => unknown {
   const settings = buildSettings(theme);
 
   return (cmd, args) => {
     switch (cmd) {
       case "platform_capabilities":
-        return {
+        return platform === "ios" ? {
+          os: "ios",
+          isMobile: true,
+          features: {
+            localTerminal: false, serial: false, systemSsh: false, sftp: true,
+            portForwarding: false, updater: false, biometrics: true,
+            windowControls: false, folderSync: false, dragAndDrop: false,
+          },
+        } : {
           os: "linux",
           isMobile: false,
           features: {

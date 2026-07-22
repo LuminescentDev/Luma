@@ -21,9 +21,17 @@ const repoRoot = resolve(__dirname, "..");
 
 const VIEWS = ["terminal", "hosts", "snippets", "settings", "palette"];
 const THEMES = ["dark", "light"];
-const VIEWPORT = { width: 1440, height: 900 };
+const VIEWPORTS = [
+  {
+    name: "desktop",
+    dimensions: { width: 1440, height: 900 },
+  },
+  {
+    name: "mobile",
+    dimensions: { width: 1284, height: 2778 }
+  },
+];
 const SCALES = [1, 2];
-
 async function waitForReady(page, view) {
   await page.waitForSelector('html[data-showcase-ready="true"]', {
     timeout: 45000,
@@ -56,29 +64,31 @@ async function main() {
   const browser = await chromium.launch();
   const results = [];
   try {
-    for (const scale of SCALES) {
-      const context = await browser.newContext({
-        viewport: VIEWPORT,
-        deviceScaleFactor: scale,
-        reducedMotion: "reduce",
-      });
-      const page = await context.newPage();
-      page.setDefaultNavigationTimeout(90000);
-      for (const theme of THEMES) {
-        const outDir = resolve(repoRoot, "branding", "screenshots", theme);
-        await mkdir(outDir, { recursive: true });
-        for (const view of VIEWS) {
-          const url = `${base}showcase.html?view=${view}&theme=${theme}`;
-          await page.goto(url, { waitUntil: "domcontentloaded" });
-          await waitForReady(page, view);
-          const suffix = scale === 1 ? "" : "@2x";
-          const path = resolve(outDir, `${view}${suffix}.png`);
-          await page.screenshot({ path, animations: "disabled" });
-          results.push(path);
-          console.log(`[capture] ${theme}/${view} @${scale}x -> ${path}`);
+    for (const VIEWPORT of VIEWPORTS) {
+      for (const scale of SCALES) {
+        const context = await browser.newContext({
+          viewport: VIEWPORT.dimensions,
+          deviceScaleFactor: scale,
+          reducedMotion: "reduce",
+        });
+        const page = await context.newPage();
+        page.setDefaultNavigationTimeout(90000);
+        for (const theme of THEMES) {
+          const outDir = resolve(repoRoot, "branding", "screenshots", theme, VIEWPORT.name);
+          await mkdir(outDir, { recursive: true });
+          for (const view of VIEWS) {
+            const url = `${base}showcase.html?view=${view}&theme=${theme}`;
+            await page.goto(url, { waitUntil: "domcontentloaded" });
+            await waitForReady(page, view);
+            const suffix = scale === 1 ? "" : "@2x";
+            const path = resolve(outDir, `${view}${suffix}.png`);
+            await page.screenshot({ path, animations: "disabled" });
+            results.push(path);
+            console.log(`[capture] ${theme}/${view} @${scale}x -> ${path}`);
+          }
         }
+        await context.close();
       }
-      await context.close();
     }
   } finally {
     await browser.close();

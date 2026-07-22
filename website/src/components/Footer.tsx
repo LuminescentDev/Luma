@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { GITHUB_REPO_URL } from '../config';
 import { GithubIcon } from './GithubIcon';
 
@@ -26,15 +27,23 @@ export function Footer() {
         </div>
 
         <div className='flex flex-col gap-3 text-sm text-muted sm:items-end'>
-          <a
-            href={GITHUB_REPO_URL}
-            target='_blank'
-            rel='noreferrer noopener'
-            className='inline-flex items-center gap-2 rounded-sm transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent'
-          >
-            <GithubIcon className='h-4 w-4' />
-            GitHub
-          </a>
+          <div className='flex items-center gap-5'>
+            <Link
+              to='/support'
+              className='rounded-sm transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent'
+            >
+              Support
+            </Link>
+            <a
+              href={GITHUB_REPO_URL}
+              target='_blank'
+              rel='noreferrer noopener'
+              className='inline-flex items-center gap-2 rounded-sm transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent'
+            >
+              <GithubIcon className='h-4 w-4' />
+              GitHub
+            </a>
+          </div>
           <p>
             Licensed under{' '}
             <span className='font-medium text-foreground'>MIT</span>. In early

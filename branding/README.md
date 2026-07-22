@@ -12,6 +12,15 @@ pnpm exec playwright install chromium # one-time: download the headless browser
 pnpm screenshots                      # boot the harness + capture the matrix
 ```
 
+For App Store screenshots of the real mobile shell at 1284 x 2778 pixels:
+
+```sh
+pnpm screenshots:ios
+```
+
+These use a 428 x 926 logical iPhone viewport at 3x density and are written to
+`branding/screenshots/ios/<theme>/<view>.png`.
+
 Output lands in `branding/screenshots/<theme>/<view>.png` (plus a crisp
 `<view>@2x.png` variant), for every combination of:
 

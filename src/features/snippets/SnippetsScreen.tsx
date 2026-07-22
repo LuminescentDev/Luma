@@ -69,13 +69,13 @@ export function SnippetsScreen() {
 
   return (
     <div className="h-full overflow-y-auto bg-background">
-      <div className="mx-auto max-w-6xl px-8 py-8">
-        <div className="mb-6 flex items-start justify-between gap-4">
+      <div className="mx-auto max-w-6xl px-4 py-4 md:px-8 md:py-8">
+        <div className="mb-5 flex items-start justify-between gap-3 md:mb-6 md:gap-4">
           <div>
             <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 text-accent">
               <SquareCode size={22} />
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight">Snippets</h1>
+            <h1 className="text-lg font-semibold tracking-tight md:text-2xl">Snippets</h1>
             <p className="mt-1 text-sm text-muted">
               Save reusable commands and insert or run them in the focused terminal.
             </p>
@@ -83,7 +83,7 @@ export function SnippetsScreen() {
           <button
             type="button"
             onClick={openNew}
-            className="flex shrink-0 items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:brightness-110"
+            className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-xs font-medium text-accent-foreground transition-colors hover:brightness-110 md:min-h-0 md:gap-2 md:px-4 md:text-sm"
           >
             <Plus size={14} /> New snippet
           </button>
@@ -236,7 +236,7 @@ function SnippetCard({
         </DropdownMenu.Root>
       </div>
 
-      <pre className="max-h-20 overflow-hidden rounded-md border border-border bg-background px-2.5 py-2 font-mono text-xs text-foreground/90">
+      <pre className="max-h-24 whitespace-pre-wrap break-words rounded-md border border-border bg-background px-2.5 py-2 font-mono text-xs text-foreground/90 md:max-h-20 md:overflow-hidden md:whitespace-pre">
         {snippet.command}
       </pre>
 

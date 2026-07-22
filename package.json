@@ -12,6 +12,7 @@
     "showcase:dev": "vite --config showcase.vite.config.ts",
     "showcase:build": "vite --config showcase.vite.config.ts build",
     "screenshots": "node scripts/capture-screenshots.mjs",
+    "screenshots:ios": "node scripts/capture-ios-screenshots.mjs",
     "preview": "vp preview",
     "typecheck": "tsc --noEmit",
     "test": "vp test run",
