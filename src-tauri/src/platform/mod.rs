@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serde::Serialize;
 
 pub fn home_dir() -> Option<PathBuf> {
@@ -31,6 +32,7 @@ pub fn hide_background_tokio_command(command: &mut tokio::process::Command) {
     hide_background_std_command(command.as_std_mut());
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DetectedShell {
@@ -52,6 +54,7 @@ fn find_in_path(executable: &str) -> Option<PathBuf> {
     None
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn shell(id: &str, name: &str, path: PathBuf, args: &[&str]) -> DetectedShell {
     DetectedShell {
         id: id.into(),
@@ -63,6 +66,7 @@ fn shell(id: &str, name: &str, path: PathBuf, args: &[&str]) -> DetectedShell {
 
 /// Detect shells available on this machine, ordered by preference. The first
 /// entry is the platform default when the user has not chosen one.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn detect_shells() -> Vec<DetectedShell> {
     let mut shells = Vec::new();
 

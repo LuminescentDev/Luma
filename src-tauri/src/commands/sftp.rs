@@ -71,21 +71,25 @@ pub async fn sftp_delete(
 }
 
 #[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_list(path: Option<String>) -> Result<DirectoryListing> {
     sftp::local_list(path).await
 }
 
 #[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_mkdir(path: String) -> Result<()> {
     sftp::local_mkdir(path).await
 }
 
 #[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_rename(state: State<'_, AppState>, from: String, to: String) -> Result<()> {
     sftp::local_rename(from, to, state.app_data_dir.clone()).await
 }
 
 #[tauri::command]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn local_delete(state: State<'_, AppState>, path: String, recursive: bool) -> Result<()> {
     sftp::local_delete(path, recursive, state.app_data_dir.clone()).await
 }

@@ -22,9 +22,11 @@ pub enum LumaError {
     #[error("terminal error: {0}")]
     Pty(String),
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[error("serial error: {0}")]
     Serial(String),
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[error("SSH executable unavailable: {0}")]
     SshUnavailable(String),
 
@@ -67,7 +69,9 @@ impl LumaError {
             LumaError::Io(_) => "io",
             LumaError::InvalidInput(_) => "invalid-input",
             LumaError::Pty(_) => "pty",
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             LumaError::Serial(_) => "serial",
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
             LumaError::SshUnavailable(_) => "ssh-unavailable",
             LumaError::CapabilityUnavailable { .. } => "capability-unavailable",
             LumaError::SshConnection { category, .. } => category,

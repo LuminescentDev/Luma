@@ -9,7 +9,9 @@ mod tunnels;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::process::Command;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -54,6 +56,7 @@ pub use tunnels::{
     tunnel_connection_config, TunnelExit, TunnelInfo, TunnelManager, TunnelStartResponse,
 };
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) const CAPTURE_LIMIT_BYTES: usize = 16 * 1024;
 pub(crate) const SSH_AUTHENTICATED_MARKER: &[u8] = b"__LUMA_SSH_AUTHENTICATED__";
 const MAX_PROXY_JUMP_DEPTH: usize = 8;
@@ -88,6 +91,7 @@ pub(crate) struct ProxyTarget {
 
 #[derive(Clone)]
 pub(crate) struct SshConnectionConfig {
+    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
     pub(crate) executable: String,
     pub(crate) hostname: String,
     port: u16,
@@ -97,8 +101,10 @@ pub(crate) struct SshConnectionConfig {
     proxy_jumps: Vec<ProxyTarget>,
     pub(crate) startup_command: Option<String>,
     askpass_identity_id: Option<String>,
+    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
     askpass_service: Option<String>,
     askpass_prompt: Option<String>,
+    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
     fallback_password_identity_id: Option<String>,
     password: Option<Arc<Zeroizing<String>>>,
     key_passphrase: Option<Arc<Zeroizing<String>>>,
@@ -905,6 +911,7 @@ pub async fn connection_config(
     ))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn classify_openssh_exit(
     code: Option<u32>,
     output: &str,
