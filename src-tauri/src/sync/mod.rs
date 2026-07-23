@@ -22,6 +22,8 @@
 //! tombstone resurrects it within a bundle; a tombstone wins ties. Across two
 //! devices, simultaneous object/delete changes remain conflicts.
 
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+mod icloud;
 mod providers;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -542,9 +544,21 @@ pub async fn configure(
             clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
             stored.gist_id = optional_identifier(input.gist_id.take(), "gistId")?;
         }
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        "icloud-drive" => {
+            clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
+            clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
+        }
+        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+        "icloud-drive" => {
+            return Err(LumaError::InvalidInput(
+                "iCloud Drive sync is only available on Apple devices".into(),
+            ));
+        }
         _ => {
             return Err(LumaError::InvalidInput(
-                "provider must be 'local-folder', 'webdav', or 'github-gist'".into(),
+                "provider must be 'local-folder', 'webdav', 'github-gist', or 'icloud-drive'"
+                    .into(),
             ));
         }
     }
@@ -2821,6 +2835,16 @@ async fn create_provider(
             credential_get(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?,
             stored.gist_id.clone(),
         )?)),
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        "icloud-drive" => {
+            let path = icloud::container_documents_dir()?;
+            std::fs::create_dir_all(&path).map_err(|error| {
+                LumaError::SyncUnavailable(format!(
+                    "could not prepare the Luma iCloud Drive folder: {error}"
+                ))
+            })?;
+            Ok(Box::new(LocalFolderProvider::new(path)))
+        }
         _ => Err(LumaError::SyncUnavailable(
             "stored sync provider is unsupported".into(),
         )),

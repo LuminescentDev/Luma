@@ -80,7 +80,8 @@ account or paid cloud service.
   XChaCha20-Poly1305
 - Optional OS keychain storage through Windows Credential Manager, macOS
   Keychain, or Linux Secret Service
-- End-to-end-encrypted sync through a local folder, WebDAV, or GitHub Gist
+- End-to-end-encrypted sync through a local folder, WebDAV, GitHub Gist, or
+  iCloud Drive on Apple devices
 - Sync conflict detection and resolution, plus encrypted backup import/export
 - Redacting application logs and narrowly scoped Tauri capabilities
 - Signed in-app updates and cross-platform release automation

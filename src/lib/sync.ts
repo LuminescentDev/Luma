@@ -55,7 +55,11 @@ export type ConflictResolution = {
   resolution: ConflictResolutionChoice;
 };
 
-export type SyncProvider = "local-folder" | "webdav" | "github-gist";
+export type SyncProvider =
+  | "local-folder"
+  | "webdav"
+  | "github-gist"
+  | "icloud-drive";
 
 export type SyncConfig = {
   enabled: boolean;
@@ -73,7 +77,8 @@ export type SyncConfig = {
 export type SyncConfigureInput =
   | { provider: "local-folder"; folderPath: string }
   | { provider: "webdav"; url: string; username: string; password: string }
-  | { provider: "github-gist"; token: string; gistId: string | null };
+  | { provider: "github-gist"; token: string; gistId: string | null }
+  | { provider: "icloud-drive" };
 
 export type SyncReport = {
   pulled: boolean;

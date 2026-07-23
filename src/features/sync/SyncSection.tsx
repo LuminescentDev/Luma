@@ -39,12 +39,14 @@ const PROVIDER_OPTIONS: { value: ProviderChoice; label: string }[] = [
   { value: "local-folder", label: "Local folder" },
   { value: "webdav", label: "WebDAV" },
   { value: "github-gist", label: "GitHub Gist" },
+  { value: "icloud-drive", label: "iCloud Drive" },
 ];
 
 const PROVIDER_LABELS: Record<SyncProvider, string> = {
   "local-folder": "Local folder",
   webdav: "WebDAV",
   "github-gist": "GitHub Gist",
+  "icloud-drive": "iCloud Drive",
 };
 
 export function SyncSection() {
@@ -63,9 +65,14 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const folderSyncEnabled = useCapabilityStore(
     (s) => s.capabilities.features.folderSync,
   );
-  const providerOptions = folderSyncEnabled
-    ? PROVIDER_OPTIONS
-    : PROVIDER_OPTIONS.filter((option) => option.value !== "local-folder");
+  const appleDevice = useCapabilityStore(
+    (s) => s.capabilities.os === "ios" || s.capabilities.os === "macos",
+  );
+  const providerOptions = PROVIDER_OPTIONS.filter(
+    (option) =>
+      (folderSyncEnabled || option.value !== "local-folder") &&
+      (appleDevice || option.value !== "icloud-drive"),
+  );
   const configure = useConfigureSync();
   const disable = useDisableSync();
   const setPassphrase = useSetSyncPassphrase();
@@ -128,6 +135,9 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
     if (provider === "github-gist") {
       if (!token) return null;
       return { provider: "github-gist", token, gistId: gistId.trim() || null };
+    }
+    if (provider === "icloud-drive") {
+      return { provider: "icloud-drive" };
     }
     return null;
   };

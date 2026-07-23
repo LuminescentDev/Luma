@@ -149,7 +149,8 @@ jobs:
           NODE
 
       - name: Build and upload signed release artifacts
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
+        timeout-minutes: 45
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -157,8 +158,10 @@ jobs:
         with:
           tagName: ${{ needs.release-please.outputs.tag_name }}
           releaseDraft: true
-          includeUpdaterJson: true
+          retryAttempts: 2
+          uploadUpdaterJson: true
           updaterJsonPreferNsis: true
+          args: --verbose
 
       - name: Verify macOS signing and notarization
         if: matrix.platform == 'macos'
