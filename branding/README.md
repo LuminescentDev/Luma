@@ -55,3 +55,11 @@ accepts `dark | light`. Defaults are `view=terminal&theme=dark`.
 - Terminal output is streamed through the real xterm pipeline (mock spawn ->
   mocked `Channel` -> `terminalManager`), so terminal bytes never pass through
   React state — the same architecture invariant the app enforces.
+
+## Icon Composer assets
+
+Layered source art for building a Liquid Glass app icon (macOS 26 / iOS 26
+`.icon` format) with Apple's Icon Composer lives in
+[`icon-composer/`](icon-composer/) — a full-bleed square `background`, the
+gradient `star` glyph, and a flat `star-flat` variant, plus 1024×1024 PNG
+rasterizations. See `icon-composer/README.md` for how to assemble them.
