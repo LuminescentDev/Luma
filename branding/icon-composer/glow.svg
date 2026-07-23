@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <radialGradient id="glow" cx="256" cy="238" r="236" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7c6cf2" stop-opacity="0.62"/>
+      <stop offset="0.45" stop-color="#7c6cf2" stop-opacity="0.30"/>
+      <stop offset="0.75" stop-color="#7c6cf2" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7c6cf2" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="0" y="0" width="512" height="512" fill="url(#glow)"/>
+</svg>
