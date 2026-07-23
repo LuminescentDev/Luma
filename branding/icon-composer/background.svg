@@ -5,13 +5,6 @@
       <stop offset="0.55" stop-color="#17191f"/>
       <stop offset="1" stop-color="#101217"/>
     </linearGradient>
-    <radialGradient id="glow" cx="256" cy="238" r="236" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7c6cf2" stop-opacity="0.62"/>
-      <stop offset="0.45" stop-color="#7c6cf2" stop-opacity="0.30"/>
-      <stop offset="0.75" stop-color="#7c6cf2" stop-opacity="0.10"/>
-      <stop offset="1" stop-color="#7c6cf2" stop-opacity="0"/>
-    </radialGradient>
   </defs>
   <rect x="0" y="0" width="512" height="512" fill="url(#bg)"/>
-  <rect x="0" y="0" width="512" height="512" fill="url(#glow)"/>
 </svg>
