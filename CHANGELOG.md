@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/LuminescentDev/Luma/compare/v0.9.0...v0.10.0) (2026-07-23)
+
+
+### Features
+
+* add iPad screenshot capture script ([4ae18b6](https://github.com/LuminescentDev/Luma/commit/4ae18b622e85db463185be206e6a97a574cae7ee))
+* add macOS signing and notarization steps to release workflow ([8505edf](https://github.com/LuminescentDev/Luma/commit/8505edfc23eb8d93d6ebb1bfa3a38a169b6dbe1d))
+
 ## [0.9.0](https://github.com/LuminescentDev/Luma/compare/v0.8.0...v0.9.0) (2026-07-22)
 
 
