@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/LuminescentDev/Luma/compare/v0.11.0...v0.12.0) (2026-07-24)
+
+
+### Features
+
+* add mobile screenshot capture and enhance terminal content for narrow viewports ([b95de4d](https://github.com/LuminescentDev/Luma/commit/b95de4d7f1198b27bc3e95952fb4e3be74a24d00))
+* add notarization and staple process for macOS DMG in release workflow ([1bd8c4f](https://github.com/LuminescentDev/Luma/commit/1bd8c4fdd7a96ddfffe16775b6e755dce6d5fdff))
+
 ## [0.11.0](https://github.com/LuminescentDev/Luma/compare/v0.10.0...v0.11.0) (2026-07-24)
 
 
