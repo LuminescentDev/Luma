@@ -81,7 +81,7 @@ account or paid cloud service.
 - Optional OS keychain storage through Windows Credential Manager, macOS
   Keychain, or Linux Secret Service
 - End-to-end-encrypted sync through a local folder, WebDAV, GitHub Gist, or
-  iCloud Drive on Apple devices
+  Luma Cloud
 - Sync conflict detection and resolution, plus encrypted backup import/export
 - Redacting application logs and narrowly scoped Tauri capabilities
 - Signed in-app updates and cross-platform release automation

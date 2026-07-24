@@ -75,15 +75,6 @@ tauri-plugin-updater = "2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
-objc2-foundation = { version = "0.3", default-features = false, features = [
-  "std",
-  "NSFileManager",
-  "NSObject",
-  "NSString",
-  "NSURL",
-] }
-
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",

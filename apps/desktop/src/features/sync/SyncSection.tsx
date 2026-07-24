@@ -47,7 +47,6 @@ const PROVIDER_OPTIONS: { value: ProviderChoice; label: string }[] = [
   { value: "webdav", label: "WebDAV" },
   { value: "github-gist", label: "GitHub Gist" },
   { value: "luma-cloud", label: "Luma Cloud" },
-  { value: "icloud-drive", label: "iCloud Drive" },
 ];
 
 const PROVIDER_LABELS: Record<SyncProvider, string> = {
@@ -55,7 +54,6 @@ const PROVIDER_LABELS: Record<SyncProvider, string> = {
   webdav: "WebDAV",
   "github-gist": "GitHub Gist",
   "luma-cloud": "Luma Cloud",
-  "icloud-drive": "iCloud Drive",
 };
 
 export function SyncSection() {
@@ -74,13 +72,8 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const folderSyncEnabled = useCapabilityStore(
     (s) => s.capabilities.features.folderSync,
   );
-  const appleDevice = useCapabilityStore(
-    (s) => s.capabilities.os === "ios" || s.capabilities.os === "macos",
-  );
   const providerOptions = PROVIDER_OPTIONS.filter(
-    (option) =>
-      (folderSyncEnabled || option.value !== "local-folder") &&
-      (appleDevice || option.value !== "icloud-drive"),
+    (option) => folderSyncEnabled || option.value !== "local-folder",
   );
   const configure = useConfigureSync();
   const disable = useDisableSync();
@@ -153,9 +146,6 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
     if (provider === "luma-cloud") {
       if (!cloudUrl.trim() || !config.cloudSignedIn) return null;
       return { provider: "luma-cloud", cloudUrl: cloudUrl.trim() };
-    }
-    if (provider === "icloud-drive") {
-      return { provider: "icloud-drive" };
     }
     return null;
   };

@@ -59,8 +59,7 @@ export type SyncProvider =
   | "local-folder"
   | "webdav"
   | "github-gist"
-  | "luma-cloud"
-  | "icloud-drive";
+  | "luma-cloud";
 
 export type SyncConfig = {
   enabled: boolean;
@@ -81,8 +80,7 @@ export type SyncConfigureInput =
   | { provider: "local-folder"; folderPath: string }
   | { provider: "webdav"; url: string; username: string; password: string }
   | { provider: "github-gist"; token: string; gistId: string | null }
-  | { provider: "luma-cloud"; cloudUrl: string }
-  | { provider: "icloud-drive" };
+  | { provider: "luma-cloud"; cloudUrl: string };
 
 export type CloudAuthStart = {
   userCode: string;

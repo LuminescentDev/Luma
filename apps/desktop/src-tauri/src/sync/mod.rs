@@ -22,8 +22,6 @@
 //! tombstone resurrects it within a bundle; a tombstone wins ties. Across two
 //! devices, simultaneous object/delete changes remain conflicts.
 
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-mod icloud;
 mod providers;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -641,21 +639,9 @@ pub async fn configure(
             clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
             stored.cloud_url = Some(cloud_url.trim_end_matches('/').to_string());
         }
-        #[cfg(any(target_os = "ios", target_os = "macos"))]
-        "icloud-drive" => {
-            clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
-        }
-        #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-        "icloud-drive" => {
-            return Err(LumaError::InvalidInput(
-                "iCloud Drive sync is only available on Apple devices".into(),
-            ));
-        }
         _ => {
             return Err(LumaError::InvalidInput(
-                "provider must be 'local-folder', 'webdav', 'github-gist', 'luma-cloud', or 'icloud-drive'".into(),
+                "provider must be 'local-folder', 'webdav', 'github-gist', or 'luma-cloud'".into(),
             ));
         }
     }
@@ -3254,16 +3240,6 @@ async fn create_provider(
             })?;
             let access_token = cloud_access_token(pool, vault_state, &api_url).await?;
             Ok(Box::new(LumaCloudProvider::new(api_url, access_token)?))
-        }
-        #[cfg(any(target_os = "ios", target_os = "macos"))]
-        "icloud-drive" => {
-            let path = icloud::container_documents_dir()?;
-            std::fs::create_dir_all(&path).map_err(|error| {
-                LumaError::SyncUnavailable(format!(
-                    "could not prepare the Luma iCloud Drive folder: {error}"
-                ))
-            })?;
-            Ok(Box::new(LocalFolderProvider::new(path)))
         }
         _ => Err(LumaError::SyncUnavailable(
             "stored sync provider is unsupported".into(),

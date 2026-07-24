@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		04F2BCE9931EFF8753C87313 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F1DD5E0C948BA5E2EF13AA6 /* libapp.a */; };
 		06B83BAEC5A77DE0CCBD7650 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 80352B1B3FDF6ABE60A1CBF1 /* Metal.framework */; };
-		0FBDBDA2719A8BED83F2F99C /* ICloudBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64400EEC4FCA80D9FDD1F367 /* ICloudBridge.swift */; };
 		16C2E65FDF6CB31E7F6F3A41 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 245900759016140715B3A77D /* Assets.xcassets */; };
 		2AE3561D42A51C2EC1BDE8E6 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 5DFD11FC39BC71335638D0FC /* assets */; };
 		4424DD56818229A32D0E29DE /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3232EB2F12FFE72DD82B655 /* QuartzCore.framework */; };
@@ -50,7 +49,6 @@
 		59C792A4726AFADEADC5480A /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		5DFD11FC39BC71335638D0FC /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		5E9CE6507E26F39A4FF9171B /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
-		64400EEC4FCA80D9FDD1F367 /* ICloudBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudBridge.swift; sourceTree = "<group>"; };
 		65E72A2666234CEE92BDEEAD /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		6CF6C4923736457BC44F14E5 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		733B72CE6365DAAD40EA5883 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
@@ -64,7 +62,6 @@
 		8DFCF3DF18E67017AF2DFB4A /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 		97DDC0CBEC611EA00976EC3E /* settings.rs */ = {isa = PBXFileReference; path = settings.rs; sourceTree = "<group>"; };
 		9B899CBD09BDE44CE2F2445B /* snippets.rs */ = {isa = PBXFileReference; path = snippets.rs; sourceTree = "<group>"; };
-		9EFD21286E5C99C588686CBC /* icloud.rs */ = {isa = PBXFileReference; path = icloud.rs; sourceTree = "<group>"; };
 		9F0E06B8110700E7628D1B1B /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		9F1DD5E0C948BA5E2EF13AA6 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		A1AC3D789E064927B06B97C1 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
@@ -203,7 +200,6 @@
 		57B45594772D700FF4D12ED1 /* sync */ = {
 			isa = PBXGroup;
 			children = (
-				9EFD21286E5C99C588686CBC /* icloud.rs */,
 				A1AC3D789E064927B06B97C1 /* mod.rs */,
 				1CCE33872168FFD41FCE49BE /* providers.rs */,
 			);
@@ -362,7 +358,6 @@
 		E8283E8DFF64FE81D76E6759 /* luma_iOS */ = {
 			isa = PBXGroup;
 			children = (
-				64400EEC4FCA80D9FDD1F367 /* ICloudBridge.swift */,
 				EC304183740023A97AAB1B55 /* Info.plist */,
 				C3E743558FDABB92D6E16E21 /* luma_iOS.entitlements */,
 			);
@@ -478,7 +473,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0FBDBDA2719A8BED83F2F99C /* ICloudBridge.swift in Sources */,
 				DA3C42591DA5AF2C2B015FC3 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

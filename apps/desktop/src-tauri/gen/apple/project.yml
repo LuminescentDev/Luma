@@ -59,14 +59,7 @@ targets:
         CFBundleVersion: "0.10.0"
     entitlements:
       path: luma_iOS/luma_iOS.entitlements
-      properties:
-        com.apple.developer.icloud-container-identifiers:
-          - iCloud.dev.bwmp.luma
-        com.apple.developer.icloud-services:
-          - CloudDocuments
-        com.apple.developer.ubiquity-container-identifiers:
-          - iCloud.dev.bwmp.luma
-        com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)dev.bwmp.luma
+      properties: {}
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full
