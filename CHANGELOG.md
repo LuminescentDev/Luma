@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.0](https://github.com/LuminescentDev/Luma/compare/v0.10.0...v0.11.0) (2026-07-24)
+
+
+### Features
+
+* add iCloud Drive support for synchronization and update related configurations ([32ae1b6](https://github.com/LuminescentDev/Luma/commit/32ae1b6ecf17ea458a1bd09ea32b1d893b22bc5f))
+* **branding:** add Icon Composer assets for Liquid Glass app icon ([717cdf1](https://github.com/LuminescentDev/Luma/commit/717cdf190d7562f9d66612814626a885333f612f))
+* implement iCloud Drive support and update related configurations ([bd36a0b](https://github.com/LuminescentDev/Luma/commit/bd36a0bd659443470b3b00747ac157e6bec8aa7f))
+
 ## [0.10.0](https://github.com/LuminescentDev/Luma/compare/v0.9.0...v0.10.0) (2026-07-23)
 
 
