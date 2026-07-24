@@ -1,6 +1,6 @@
 [package]
 name = "luma"
-version = "0.10.0"
+version = "0.12.0"
 description = "A lightweight cross-platform terminal and SSH client"
 authors = ["Luma contributors"]
 license = "MIT"
@@ -74,6 +74,15 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "std",
+  "NSFileManager",
+  "NSObject",
+  "NSString",
+  "NSURL",
+] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

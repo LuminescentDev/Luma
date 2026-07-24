@@ -1,51 +1,42 @@
 //! Apple iCloud Drive container discovery.
 //!
-//! iOS must ask Foundation for the provisioned ubiquitous container. macOS
-//! exposes the same container below `~/Library/Mobile Documents`; using that
-//! path keeps the Rust provider independent of Objective-C on desktop.
+//! Ask Foundation for the provisioned ubiquitous container on both iOS and
+//! macOS. Constructing the path below `~/Library/Mobile Documents` directly
+//! bypasses the API that grants the process access to the container.
 
 use std::path::PathBuf;
 
 use crate::errors::{LumaError, Result};
 
-#[cfg(target_os = "macos")]
-const CONTAINER_ID: &str = "iCloud.dev.bwmp.luma";
-
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 pub fn container_documents_dir() -> Result<PathBuf> {
-    use std::ffi::CStr;
+    use objc2_foundation::{ns_string, NSFileManager};
 
-    unsafe extern "C" {
-        fn luma_icloud_container_path() -> *mut libc::c_char;
-    }
-
-    // SAFETY: the Swift bridge returns either null or a strdup-allocated,
-    // NUL-terminated UTF-8 string. Ownership is transferred to this call.
-    let pointer = unsafe { luma_icloud_container_path() };
-    if pointer.is_null() {
+    let file_manager = NSFileManager::defaultManager();
+    if file_manager.ubiquityIdentityToken().is_none() {
         return Err(unavailable());
     }
-    let path = unsafe { CStr::from_ptr(pointer) }
-        .to_string_lossy()
-        .into_owned();
-    unsafe { libc::free(pointer.cast()) };
-    Ok(PathBuf::from(path).join("Documents").join("Luma"))
-}
-
-#[cfg(target_os = "macos")]
-pub fn container_documents_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(unavailable)?;
-    let disk_name = CONTAINER_ID.replace('.', "~");
-    Ok(PathBuf::from(home)
-        .join("Library")
-        .join("Mobile Documents")
-        .join(disk_name)
-        .join("Documents")
-        .join("Luma"))
+    let url = file_manager
+        .URLForUbiquityContainerIdentifier(Some(ns_string!("iCloud.dev.bwmp.luma")))
+        .ok_or_else(container_unavailable)?;
+    let path = url.to_file_path().ok_or_else(container_unavailable)?;
+    Ok(path.join("Documents").join("Luma"))
 }
 
 fn unavailable() -> LumaError {
     LumaError::SyncUnavailable(
         "iCloud Drive is unavailable; sign in to iCloud and enable iCloud Drive for Luma".into(),
     )
+}
+
+fn container_unavailable() -> LumaError {
+    #[cfg(all(target_os = "macos", dev))]
+    let message = "the iCloud container is unavailable because `tauri dev` runs an unsigned \
+                   executable; test iCloud sync from a signed Luma.app bundle";
+
+    #[cfg(not(all(target_os = "macos", dev)))]
+    let message = "the provisioned iCloud container is unavailable; verify that this build is \
+                   signed with Luma's iCloud entitlements";
+
+    LumaError::SyncUnavailable(message.into())
 }

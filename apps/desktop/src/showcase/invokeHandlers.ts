@@ -16,25 +16,33 @@ import {
 import {
   DEBIAN_SESSION,
   UBUNTU_SESSION,
+  UBUNTU_SESSION_MOBILE,
   fillerSession,
 } from "./terminalContent";
 
 type ByteChannel = Channel<ArrayBuffer | number[] | string>;
 
-const CONTENT: Record<string, string> = {
-  "h-web-01": UBUNTU_SESSION,
-  "h-db-01": DEBIAN_SESSION,
-};
+const NARROW_VIEWPORT_MAX_PX = 600;
+
+function isNarrowViewport(platform: "desktop" | "ios"): boolean {
+  if (platform !== "ios") return false;
+  return typeof window !== "undefined" && window.innerWidth <= NARROW_VIEWPORT_MAX_PX;
+}
 
 const AUTH_FINALIZE_MS = 750;
 const CONTENT_DELAY_MS = AUTH_FINALIZE_MS + 350;
 
 let backendSeq = 0;
 
-function driveSsh(channel: ByteChannel, backendId: string, hostId: string): void {
+function driveSsh(
+  channel: ByteChannel,
+  backendId: string,
+  hostId: string,
+  sessions: Record<string, string>,
+): void {
   const host = HOSTS.find((h) => h.id === hostId);
   const content =
-    CONTENT[hostId] ??
+    sessions[hostId] ??
     fillerSession(host?.username ?? "user", host?.name ?? "server");
   const osId = host?.osId ?? "linux";
 
@@ -64,6 +72,10 @@ export function createInvokeHandler(
   platform: "desktop" | "ios" = "desktop",
 ): (cmd: string, args: InvokeArgs) => unknown {
   const settings = buildSettings(theme);
+  const sessions: Record<string, string> = {
+    "h-web-01": isNarrowViewport(platform) ? UBUNTU_SESSION_MOBILE : UBUNTU_SESSION,
+    "h-db-01": DEBIAN_SESSION,
+  };
 
   return (cmd, args) => {
     switch (cmd) {
@@ -143,7 +155,7 @@ export function createInvokeHandler(
         const hostId = request.hostId ?? "";
         const host = HOSTS.find((h) => h.id === hostId);
         const backendId = `ssh-${++backendSeq}`;
-        driveSsh(args.onData as ByteChannel, backendId, hostId);
+        driveSsh(args.onData as ByteChannel, backendId, hostId, sessions);
         return { sessionId: backendId, title: host?.name ?? "SSH" };
       }
       case "pty_spawn": {

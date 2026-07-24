@@ -165,6 +165,50 @@ jobs:
           updaterJsonPreferNsis: true
           args: --verbose
 
+      - name: Notarize and staple macOS DMG
+        if: matrix.platform == 'macos'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          dmg_path="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+
+          if [ -z "$dmg_path" ]; then
+            echo "Expected macOS DMG artifact was not found"
+            exit 1
+          fi
+
+          submission_output="$(mktemp)"
+          notarytool_exit=0
+          xcrun notarytool submit "$dmg_path" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait | tee "$submission_output" || notarytool_exit=$?
+
+          submission_status="$(sed -n 's/^[[:space:]]*status: //p' "$submission_output" | tail -n 1)"
+          echo "Notarization status: ${submission_status:-<none>}"
+
+          if [ "$notarytool_exit" -ne 0 ] || [ "$submission_status" != "Accepted" ]; then
+            submission_id="$(sed -n 's/^[[:space:]]*id: //p' "$submission_output" | head -n 1)"
+            if [ -n "$submission_id" ]; then
+              echo "Notarization failed (exit=$notarytool_exit, status=${submission_status:-<none>}), fetching log for submission $submission_id"
+              xcrun notarytool log "$submission_id" \
+                --key "$APPLE_API_KEY_PATH" \
+                --key-id "$APPLE_API_KEY" \
+                --issuer "$APPLE_API_ISSUER" || true
+            fi
+            rm -f "$submission_output"
+            exit 1
+          fi
+          rm -f "$submission_output"
+
+          xcrun stapler staple "$dmg_path"
+
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" "$dmg_path" --clobber
+
       - name: Verify macOS signing and notarization
         if: matrix.platform == 'macos'
         shell: bash

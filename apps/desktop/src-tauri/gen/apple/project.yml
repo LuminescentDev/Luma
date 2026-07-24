@@ -32,6 +32,7 @@ targets:
     sources:
       - path: Sources
       - path: Assets.xcassets
+      - path: ../../../branding/icon-composer/star.icon
       - path: Externals
       - path: luma_iOS
       - path: assets
@@ -54,10 +55,18 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.8.0
-        CFBundleVersion: "0.8.0"
+        CFBundleShortVersionString: 0.10.0
+        CFBundleVersion: "0.10.0"
     entitlements:
       path: luma_iOS/luma_iOS.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.dev.bwmp.luma
+        com.apple.developer.icloud-services:
+          - CloudDocuments
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.dev.bwmp.luma
+        com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)dev.bwmp.luma
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full
@@ -65,6 +74,7 @@ targets:
     settings:
       base:
         ENABLE_BITCODE: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: star
         ARCHS: [arm64]
         VALID_ARCHS: arm64 
         LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
