@@ -9,22 +9,23 @@
     ".": {
       "package-name": "luma",
       "exclude-paths": [
-        "website"
+        "apps/website",
+        "services"
       ],
       "extra-files": [
         {
           "type": "json",
-          "path": "package.json",
+          "path": "apps/desktop/package.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": "src-tauri/tauri.conf.json",
+          "path": "apps/desktop/src-tauri/tauri.conf.json",
           "jsonpath": "$.version"
         },
         {
           "type": "toml",
-          "path": "src-tauri/Cargo.toml",
+          "path": "apps/desktop/src-tauri/Cargo.toml",
           "jsonpath": "$.package.version"
         }
       ]

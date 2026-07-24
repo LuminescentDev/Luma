@@ -28,7 +28,7 @@ node scripts/benchmark.mjs
 ```
 
 You can pass a binary path directly or set `LUMA_BENCH_BINARY` when the default
-`src-tauri/target/release` location is not appropriate:
+`apps/desktop/src-tauri/target/release` location is not appropriate:
 
 ```sh
 node scripts/benchmark.mjs /path/to/luma

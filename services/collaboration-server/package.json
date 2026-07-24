@@ -1,0 +1,33 @@
+{
+  "name": "@luma/collaboration-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@luma/collaboration-encryption": "workspace:*",
+    "@luma/collaboration-protocol": "workspace:*",
+    "@aws-sdk/client-s3": "^3.1094.0",
+    "jose": "^6.2.4",
+    "pg": "^8.22.0",
+    "redis": "^6.1.0",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.1",
+    "typescript": "~5.8.3",
+    "vitest": "^4.1.10"
+  }
+}

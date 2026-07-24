@@ -137,7 +137,7 @@ Rust iOS targets. Install the targets once:
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 ```
 
-If `src-tauri/gen/apple` is not present in a fresh checkout, generate the Xcode
+If `apps/desktop/src-tauri/gen/apple` is not present in a fresh checkout, generate the Xcode
 project once with `pnpm tauri ios init`. Then launch Luma on a connected iPhone
 or an installed simulator:
 
@@ -152,7 +152,7 @@ requires a unique bundle identifier and the corresponding signing profile.
 
 ### Run on Android
 
-The checked-in Android project is in `src-tauri/gen/android`. The repository's
+The checked-in Android project is in `apps/desktop/src-tauri/gen/android`. The repository's
 Android workflow is a PowerShell helper for Windows hosts. Install Android
 Studio with the Android SDK and NDK, JDK 21, and the Rust Android targets needed
 by the connected device or emulator. Android Studio's bundled Java runtime is
@@ -174,9 +174,9 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 pnpm tauri build
 ```
 
@@ -186,18 +186,27 @@ tests, and native bundle builds on Windows, macOS, and Linux.
 ## Project layout
 
 ```text
-src/                    React application
-  features/             Terminal, SSH, SFTP, sync, mobile, and other UI
-  lib/                  Typed frontend/backend command adapters
-  stores/               Zustand application state
-src-tauri/
-  src/commands/         Tauri command boundary
-  src/storage/          SQLite repositories
-  src/terminal/         PTY lifecycle and streaming
-  src/ssh/              Embedded/system SSH, known-host, and tunnel support
-  src/sftp/             File operations and transfers
-  src/sync/             Encryption, merge logic, and sync providers
-  migrations/           Versioned SQLite schema
+apps/
+  desktop/
+    src/                React application
+      features/         Terminal, SSH, SFTP, sync, mobile, and other UI
+      lib/              Typed frontend/backend command adapters
+      stores/           Zustand application state
+    src-tauri/          Rust/Tauri application
+      src/commands/     Tauri command boundary
+      src/storage/      SQLite repositories
+      src/terminal/     PTY lifecycle and streaming
+      src/ssh/          Embedded/system SSH, known-host, and tunnel support
+      src/sftp/         File operations and transfers
+      src/sync/         Encryption, merge logic, and sync providers
+      migrations/       Versioned SQLite schema
+  website/              Product website
+packages/
+  collaboration-protocol/ Shared realtime protocol and validation
+  collaboration-encryption/ Per-device room keys and event encryption
+services/
+  collaboration-server/ Multi-instance realtime collaboration service
+  sync-server/          Cloud sync service
 scripts/                Benchmark, Termius export, and Android dev helpers
 ```
 

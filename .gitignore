@@ -12,36 +12,38 @@ dist
 dist-showcase
 termius-vault-export*.json
 dist-ssr
+.vite/
+*.tsbuildinfo
 *.local
 .claude/settings.local.json
 
 # Android / Gradle generated files and local machine configuration
-src-tauri/gen/android/.gradle/
-src-tauri/gen/android/**/build/
-src-tauri/gen/android/**/.kotlin/
-src-tauri/gen/android/local.properties
-src-tauri/gen/android/**/local.properties
-src-tauri/gen/android/**/key.properties
-src-tauri/gen/android/**/keystore.properties
-src-tauri/gen/android/app/.tauri/
-src-tauri/gen/android/app/src/main/**/generated/
-src-tauri/gen/android/app/src/main/jniLibs/**/*.so
-src-tauri/gen/android/app/src/main/assets/tauri.conf.json
-src-tauri/gen/android/app/tauri.build.gradle.kts
-src-tauri/gen/android/app/tauri.properties
-src-tauri/gen/android/app/proguard-tauri.pro
+apps/desktop/src-tauri/gen/android/.gradle/
+apps/desktop/src-tauri/gen/android/**/build/
+apps/desktop/src-tauri/gen/android/**/.kotlin/
+apps/desktop/src-tauri/gen/android/local.properties
+apps/desktop/src-tauri/gen/android/**/local.properties
+apps/desktop/src-tauri/gen/android/**/key.properties
+apps/desktop/src-tauri/gen/android/**/keystore.properties
+apps/desktop/src-tauri/gen/android/app/.tauri/
+apps/desktop/src-tauri/gen/android/app/src/main/**/generated/
+apps/desktop/src-tauri/gen/android/app/src/main/jniLibs/**/*.so
+apps/desktop/src-tauri/gen/android/app/src/main/assets/tauri.conf.json
+apps/desktop/src-tauri/gen/android/app/tauri.build.gradle.kts
+apps/desktop/src-tauri/gen/android/app/tauri.properties
+apps/desktop/src-tauri/gen/android/app/proguard-tauri.pro
 
 # iOS / Xcode generated files and local machine configuration
-src-tauri/gen/apple/build/
-src-tauri/gen/apple/Externals/
-src-tauri/gen/apple/DerivedData/
-src-tauri/gen/apple/Pods/
-src-tauri/gen/apple/.symlinks/
-src-tauri/gen/apple/**/xcuserdata/
-src-tauri/gen/apple/**/*.xcuserstate
-src-tauri/gen/apple/**/*.xccheckout
-src-tauri/gen/apple/**/*.xcscmblueprint
-src-tauri/gen/apple/**/project.xcworkspace/xcshareddata/swiftpm/
+apps/desktop/src-tauri/gen/apple/build/
+apps/desktop/src-tauri/gen/apple/Externals/
+apps/desktop/src-tauri/gen/apple/DerivedData/
+apps/desktop/src-tauri/gen/apple/Pods/
+apps/desktop/src-tauri/gen/apple/.symlinks/
+apps/desktop/src-tauri/gen/apple/**/xcuserdata/
+apps/desktop/src-tauri/gen/apple/**/*.xcuserstate
+apps/desktop/src-tauri/gen/apple/**/*.xccheckout
+apps/desktop/src-tauri/gen/apple/**/*.xcscmblueprint
+apps/desktop/src-tauri/gen/apple/**/project.xcworkspace/xcshareddata/swiftpm/
 
 # Editor directories and files
 .vscode/*

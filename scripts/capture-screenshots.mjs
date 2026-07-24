@@ -18,6 +18,7 @@ import { chromium } from "playwright";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
+const desktopRoot = resolve(repoRoot, "apps", "desktop");
 
 const VIEWS = ["terminal", "hosts", "snippets", "settings", "palette"];
 const THEMES = ["dark", "light"];
@@ -49,15 +50,15 @@ async function waitForReady(page, view) {
   await page.waitForTimeout(250);
 }
 
-const CONFIG = resolve(repoRoot, "showcase.vite.config.ts");
+const CONFIG = resolve(desktopRoot, "showcase.vite.config.ts");
 
 async function main() {
   // Build the harness once, then serve the static output. This is far faster and
   // more deterministic to capture than an on-demand dev server.
   console.log("[capture] building harness…");
-  await build({ configFile: CONFIG, root: repoRoot, logLevel: "warn" });
+  await build({ configFile: CONFIG, root: desktopRoot, logLevel: "warn" });
 
-  const server = await preview({ configFile: CONFIG, root: repoRoot, logLevel: "warn" });
+  const server = await preview({ configFile: CONFIG, root: desktopRoot, logLevel: "warn" });
   const base = server.resolvedUrls?.local?.[0] ?? `http://localhost:${server.config.preview.port}/`;
   console.log(`[capture] harness server: ${base}`);
 

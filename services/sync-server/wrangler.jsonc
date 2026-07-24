@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "luma-sync",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-24",
+  "workers_dev": false,
+  "vars": {
+    "JWT_ISSUER": "https://YOUR_TENANT.auth0.com/",
+    "JWT_AUDIENCE": "https://sync.luma.app",
+    "JWT_JWKS_URL": "https://YOUR_TENANT.auth0.com/.well-known/jwks.json",
+    "OIDC_CLIENT_ID": "REPLACE_WITH_NATIVE_APPLICATION_CLIENT_ID",
+    "OIDC_DEVICE_AUTHORIZATION_ENDPOINT": "https://YOUR_TENANT.auth0.com/oauth/device/code",
+    "OIDC_TOKEN_ENDPOINT": "https://YOUR_TENANT.auth0.com/oauth/token",
+    "DEFAULT_QUOTA_BYTES": "26214400",
+    "MAX_BLOB_BYTES": "67108864",
+    "REVISION_LIMIT": "20"
+  },
+  "r2_buckets": [
+    {
+      "binding": "SYNC_BUCKET",
+      "bucket_name": "luma-sync-production"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "luma-sync-production",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

@@ -48,7 +48,7 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop/src-tauri
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -62,14 +62,20 @@ jobs:
       - name: Frontend tests
         run: pnpm test
 
+      - name: Workspace typechecks
+        run: pnpm workspace:typecheck
+
+      - name: Workspace tests
+        run: pnpm workspace:test
+
       - name: Rustfmt
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   bundle:
     name: Bundle (${{ matrix.platform }})
@@ -108,24 +114,24 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop/src-tauri
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build Tauri bundles
         # Release builds use release.yml to inject the updater key and sign artifacts.
-        run: pnpm tauri build --config src-tauri/tauri.ci.conf.json
+        run: pnpm --dir apps/desktop tauri build --config src-tauri/tauri.ci.conf.json
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
         with:
           name: luma-${{ matrix.platform }}
           path: |
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.rpm
+            apps/desktop/src-tauri/target/release/bundle/**/*.msi
+            apps/desktop/src-tauri/target/release/bundle/**/*.exe
+            apps/desktop/src-tauri/target/release/bundle/**/*.dmg
+            apps/desktop/src-tauri/target/release/bundle/**/*.AppImage
+            apps/desktop/src-tauri/target/release/bundle/**/*.deb
+            apps/desktop/src-tauri/target/release/bundle/**/*.rpm
           if-no-files-found: warn

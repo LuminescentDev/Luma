@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - "website/**"
+      - "apps/website/**"
+      - "services/**"
 
 permissions:
   contents: write
@@ -64,7 +65,7 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: apps/desktop/src-tauri
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -136,7 +137,7 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require('node:fs');
-          const path = 'src-tauri/tauri.conf.json';
+          const path = 'apps/desktop/src-tauri/tauri.conf.json';
           const publicKey = process.env.TAURI_UPDATER_PUBLIC_KEY;
           const endpoint = process.env.TAURI_UPDATER_ENDPOINT;
           if (!publicKey) {
@@ -156,6 +157,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          projectPath: apps/desktop
           tagName: ${{ needs.release-please.outputs.tag_name }}
           releaseDraft: true
           retryAttempts: 2
@@ -167,8 +169,8 @@ jobs:
         if: matrix.platform == 'macos'
         shell: bash
         run: |
-          app_path="$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
-          dmg_path="$(find src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          app_path="$(find apps/desktop/src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' -print -quit)"
+          dmg_path="$(find apps/desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
 
           if [ -z "$app_path" ] || [ -z "$dmg_path" ]; then
             echo "Expected macOS app and DMG artifacts were not found"
