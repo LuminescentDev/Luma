@@ -78,6 +78,7 @@
       "layers" : [
         {
           "blend-mode" : "normal",
+          "fill" : "automatic",
           "glass" : false,
           "hidden" : false,
           "image-name" : "background.svg",

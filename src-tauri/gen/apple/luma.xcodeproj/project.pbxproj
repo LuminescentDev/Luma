@@ -9,81 +9,88 @@
 /* Begin PBXBuildFile section */
 		04F2BCE9931EFF8753C87313 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F1DD5E0C948BA5E2EF13AA6 /* libapp.a */; };
 		06B83BAEC5A77DE0CCBD7650 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 80352B1B3FDF6ABE60A1CBF1 /* Metal.framework */; };
+		0FBDBDA2719A8BED83F2F99C /* ICloudBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64400EEC4FCA80D9FDD1F367 /* ICloudBridge.swift */; };
 		16C2E65FDF6CB31E7F6F3A41 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 245900759016140715B3A77D /* Assets.xcassets */; };
 		2AE3561D42A51C2EC1BDE8E6 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 5DFD11FC39BC71335638D0FC /* assets */; };
 		4424DD56818229A32D0E29DE /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3232EB2F12FFE72DD82B655 /* QuartzCore.framework */; };
+		4914B9BFEBCA021D3739DE97 /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = 7C680B01957847E1AC7DEA8F /* libapp.a */; };
 		5A968DF1478ADA2E83AE6218 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F0E06B8110700E7628D1B1B /* Security.framework */; };
+		67058740C320BE6986A03103 /* star.icon in Resources */ = {isa = PBXBuildFile; fileRef = 858C9D329E54B589E585026F /* star.icon */; };
 		6AF7F3B9CC665C1DDB660E8B /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59C792A4726AFADEADC5480A /* WebKit.framework */; };
 		7836BB4E6F0DE9F82B3B3666 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 889148FB83A5C407848F791A /* MetalKit.framework */; };
+		91CFBCD5A9A6C47C5747BF5A /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = 54495C6C38C150D5E15E9D5C /* libapp.a */; };
 		AA5CFE8E43ACEE19139E668B /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 65E72A2666234CEE92BDEEAD /* UIKit.framework */; };
 		B18986AEC417F05CAD62BF38 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5E9CE6507E26F39A4FF9171B /* CoreGraphics.framework */; };
 		C374817B409F8017174F012F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 6CF6C4923736457BC44F14E5 /* LaunchScreen.storyboard */; };
 		DA3C42591DA5AF2C2B015FC3 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 82C981E0D49899869B47A137 /* main.mm */; };
-		F271A8B4D93A4C01A1C10D01 /* ICloudBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F271A8B4D93A4C01A1C10D02 /* ICloudBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		03F69ADE66F63A2DA52FA42D /* host_groups.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = host_groups.rs; sourceTree = "<group>"; };
-		08FE2A7D402384CEC2D7DAB2 /* sftp.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = sftp.rs; sourceTree = "<group>"; };
-		12CCA1671102D3F34278224E /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		14ADD4B9A0C70E62BAEFF9B9 /* hosts.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = hosts.rs; sourceTree = "<group>"; };
-		1AD918BA1DF54A03DE1E1F88 /* serial.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = serial.rs; sourceTree = "<group>"; };
-		1CCE33872168FFD41FCE49BE /* providers.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = providers.rs; sourceTree = "<group>"; };
-		1EA04AE61C04C90E9C1A62B0 /* key_references.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = key_references.rs; sourceTree = "<group>"; };
+		03F69ADE66F63A2DA52FA42D /* host_groups.rs */ = {isa = PBXFileReference; path = host_groups.rs; sourceTree = "<group>"; };
+		08FE2A7D402384CEC2D7DAB2 /* sftp.rs */ = {isa = PBXFileReference; path = sftp.rs; sourceTree = "<group>"; };
+		12CCA1671102D3F34278224E /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		14ADD4B9A0C70E62BAEFF9B9 /* hosts.rs */ = {isa = PBXFileReference; path = hosts.rs; sourceTree = "<group>"; };
+		1AD918BA1DF54A03DE1E1F88 /* serial.rs */ = {isa = PBXFileReference; path = serial.rs; sourceTree = "<group>"; };
+		1CCE33872168FFD41FCE49BE /* providers.rs */ = {isa = PBXFileReference; path = providers.rs; sourceTree = "<group>"; };
+		1EA04AE61C04C90E9C1A62B0 /* key_references.rs */ = {isa = PBXFileReference; path = key_references.rs; sourceTree = "<group>"; };
 		245900759016140715B3A77D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		259280BC474FC66036066A27 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		26CCB6C7ABB521449CCBA51F /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		2FE218E6ABC8AFAE75C0568D /* identities.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = identities.rs; sourceTree = "<group>"; };
-		31478A9BC4B2FF2AFEAB7B18 /* transfer.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = transfer.rs; sourceTree = "<group>"; };
-		318AB938BAD64DD15F5AAA20 /* hosts.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = hosts.rs; sourceTree = "<group>"; };
-		32F769DAF1FAC30257681F14 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		33D362BE64458A4F112B3C2C /* vault.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = vault.rs; sourceTree = "<group>"; };
-		35DA9B3C6623219646BC0EEB /* main.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = main.rs; sourceTree = "<group>"; };
-		5014C043AAED579368A588FB /* identities_mobile.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = identities_mobile.rs; sourceTree = "<group>"; };
-		54918D004565543B43363348 /* profiles.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = profiles.rs; sourceTree = "<group>"; };
-		565DDAA8B0C8CC8D5DCE320E /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		596C4BEA7F567F14193217D2 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		259280BC474FC66036066A27 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		26CCB6C7ABB521449CCBA51F /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		2FE218E6ABC8AFAE75C0568D /* identities.rs */ = {isa = PBXFileReference; path = identities.rs; sourceTree = "<group>"; };
+		31478A9BC4B2FF2AFEAB7B18 /* transfer.rs */ = {isa = PBXFileReference; path = transfer.rs; sourceTree = "<group>"; };
+		318AB938BAD64DD15F5AAA20 /* hosts.rs */ = {isa = PBXFileReference; path = hosts.rs; sourceTree = "<group>"; };
+		32F769DAF1FAC30257681F14 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		33D362BE64458A4F112B3C2C /* vault.rs */ = {isa = PBXFileReference; path = vault.rs; sourceTree = "<group>"; };
+		35DA9B3C6623219646BC0EEB /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		5014C043AAED579368A588FB /* identities_mobile.rs */ = {isa = PBXFileReference; path = identities_mobile.rs; sourceTree = "<group>"; };
+		54495C6C38C150D5E15E9D5C /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		54918D004565543B43363348 /* profiles.rs */ = {isa = PBXFileReference; path = profiles.rs; sourceTree = "<group>"; };
+		565DDAA8B0C8CC8D5DCE320E /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		596C4BEA7F567F14193217D2 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 		59C792A4726AFADEADC5480A /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		5DFD11FC39BC71335638D0FC /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		5E9CE6507E26F39A4FF9171B /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		64400EEC4FCA80D9FDD1F367 /* ICloudBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudBridge.swift; sourceTree = "<group>"; };
 		65E72A2666234CEE92BDEEAD /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		6CF6C4923736457BC44F14E5 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
-		733B72CE6365DAAD40EA5883 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		7522DAACE0113B404FB0083F /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		7C4010FAF79BE3626A901F9F /* config.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = config.rs; sourceTree = "<group>"; };
+		733B72CE6365DAAD40EA5883 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		7522DAACE0113B404FB0083F /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		7C4010FAF79BE3626A901F9F /* config.rs */ = {isa = PBXFileReference; path = config.rs; sourceTree = "<group>"; };
+		7C680B01957847E1AC7DEA8F /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		80352B1B3FDF6ABE60A1CBF1 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		82C981E0D49899869B47A137 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		858C9D329E54B589E585026F /* star.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = star.icon; sourceTree = "<group>"; };
 		889148FB83A5C407848F791A /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
-		8DFCF3DF18E67017AF2DFB4A /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		97DDC0CBEC611EA00976EC3E /* settings.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = settings.rs; sourceTree = "<group>"; };
-		9B899CBD09BDE44CE2F2445B /* snippets.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = snippets.rs; sourceTree = "<group>"; };
+		8DFCF3DF18E67017AF2DFB4A /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		97DDC0CBEC611EA00976EC3E /* settings.rs */ = {isa = PBXFileReference; path = settings.rs; sourceTree = "<group>"; };
+		9B899CBD09BDE44CE2F2445B /* snippets.rs */ = {isa = PBXFileReference; path = snippets.rs; sourceTree = "<group>"; };
+		9EFD21286E5C99C588686CBC /* icloud.rs */ = {isa = PBXFileReference; path = icloud.rs; sourceTree = "<group>"; };
 		9F0E06B8110700E7628D1B1B /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		9F1DD5E0C948BA5E2EF13AA6 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
-		A1AC3D789E064927B06B97C1 /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
-		A79A0ACD12609EB0FEB88518 /* platform.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = platform.rs; sourceTree = "<group>"; };
-		B3456CF2CBFDA5D6980C82D4 /* vault.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = vault.rs; sourceTree = "<group>"; };
-		B8888273032DBBA1308A96C1 /* Luma.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Luma.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1AC3D789E064927B06B97C1 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		A79A0ACD12609EB0FEB88518 /* platform.rs */ = {isa = PBXFileReference; path = platform.rs; sourceTree = "<group>"; };
+		B3456CF2CBFDA5D6980C82D4 /* vault.rs */ = {isa = PBXFileReference; path = vault.rs; sourceTree = "<group>"; };
+		B8888273032DBBA1308A96C1 /* luma_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = luma_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		BD37385CAE3EC5D1D8A67FF7 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
-		BE15412CB18FB0631732C64A /* port_forwards.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = port_forwards.rs; sourceTree = "<group>"; };
-		BFB238064440DC8740E2EF47 /* sync.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = sync.rs; sourceTree = "<group>"; };
-		C3D785AE403EEFB83BDA84DE /* snippets.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = snippets.rs; sourceTree = "<group>"; };
+		BE15412CB18FB0631732C64A /* port_forwards.rs */ = {isa = PBXFileReference; path = port_forwards.rs; sourceTree = "<group>"; };
+		BFB238064440DC8740E2EF47 /* sync.rs */ = {isa = PBXFileReference; path = sync.rs; sourceTree = "<group>"; };
+		C3D785AE403EEFB83BDA84DE /* snippets.rs */ = {isa = PBXFileReference; path = snippets.rs; sourceTree = "<group>"; };
 		C3E743558FDABB92D6E16E21 /* luma_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = luma_iOS.entitlements; sourceTree = "<group>"; };
-		C4D080077915CE06957B1490 /* local.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = local.rs; sourceTree = "<group>"; };
-		C856922043AF4C4B8BD98B9C /* session_logging.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = session_logging.rs; sourceTree = "<group>"; };
-		CBA00DA775D691387A14D4B6 /* port_forwards.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = port_forwards.rs; sourceTree = "<group>"; };
+		C4D080077915CE06957B1490 /* local.rs */ = {isa = PBXFileReference; path = local.rs; sourceTree = "<group>"; };
+		C856922043AF4C4B8BD98B9C /* session_logging.rs */ = {isa = PBXFileReference; path = session_logging.rs; sourceTree = "<group>"; };
+		CBA00DA775D691387A14D4B6 /* port_forwards.rs */ = {isa = PBXFileReference; path = port_forwards.rs; sourceTree = "<group>"; };
 		D3232EB2F12FFE72DD82B655 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
-		D6604E9A52809320BFE3006C /* snippet_runs.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = snippet_runs.rs; sourceTree = "<group>"; };
-		D879FDFADDCE980E09CFE344 /* import.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = import.rs; sourceTree = "<group>"; };
-		DF08D8EC0FDC47F124D80D00 /* tunnels.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = tunnels.rs; sourceTree = "<group>"; };
-		DF0C5E54A408C1532531F718 /* lib.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = lib.rs; sourceTree = "<group>"; };
-		DFF08331AB6AB04BEFA5A363 /* embedded.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = embedded.rs; sourceTree = "<group>"; };
-		E1F07DEB8F59826959B743BE /* known_hosts.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = known_hosts.rs; sourceTree = "<group>"; };
-		E431669ECA84CF0FDDECA92B /* remote_os.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = remote_os.rs; sourceTree = "<group>"; };
+		D6604E9A52809320BFE3006C /* snippet_runs.rs */ = {isa = PBXFileReference; path = snippet_runs.rs; sourceTree = "<group>"; };
+		D879FDFADDCE980E09CFE344 /* import.rs */ = {isa = PBXFileReference; path = import.rs; sourceTree = "<group>"; };
+		DF08D8EC0FDC47F124D80D00 /* tunnels.rs */ = {isa = PBXFileReference; path = tunnels.rs; sourceTree = "<group>"; };
+		DF0C5E54A408C1532531F718 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		DFF08331AB6AB04BEFA5A363 /* embedded.rs */ = {isa = PBXFileReference; path = embedded.rs; sourceTree = "<group>"; };
+		E1F07DEB8F59826959B743BE /* known_hosts.rs */ = {isa = PBXFileReference; path = known_hosts.rs; sourceTree = "<group>"; };
+		E431669ECA84CF0FDDECA92B /* remote_os.rs */ = {isa = PBXFileReference; path = remote_os.rs; sourceTree = "<group>"; };
 		EC304183740023A97AAB1B55 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		EE1727BF9A46BA753DD5E23F /* known_hosts.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = known_hosts.rs; sourceTree = "<group>"; };
-		FB1938D5364450F4DCBD4E9D /* ssh.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = ssh.rs; sourceTree = "<group>"; };
-		F271A8B4D93A4C01A1C10D02 /* ICloudBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ICloudBridge.swift; sourceTree = "<group>"; };
-		FBB227EFAC4C3CBAB3871F8C /* mod.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = mod.rs; sourceTree = "<group>"; };
+		EE1727BF9A46BA753DD5E23F /* known_hosts.rs */ = {isa = PBXFileReference; path = known_hosts.rs; sourceTree = "<group>"; };
+		FB1938D5364450F4DCBD4E9D /* ssh.rs */ = {isa = PBXFileReference; path = ssh.rs; sourceTree = "<group>"; };
+		FBB227EFAC4C3CBAB3871F8C /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -120,6 +127,7 @@
 				245900759016140715B3A77D /* Assets.xcassets */,
 				6CF6C4923736457BC44F14E5 /* LaunchScreen.storyboard */,
 				E74ECB41FDEA12B5CE7C2544 /* Externals */,
+				BF8C302D457666E81A15301B /* icon-composer */,
 				E8283E8DFF64FE81D76E6759 /* luma_iOS */,
 				CD55D617342FE7039B70563A /* Sources */,
 				4EEDC1B91E99826BA0558894 /* src */,
@@ -195,6 +203,7 @@
 		57B45594772D700FF4D12ED1 /* sync */ = {
 			isa = PBXGroup;
 			children = (
+				9EFD21286E5C99C588686CBC /* icloud.rs */,
 				A1AC3D789E064927B06B97C1 /* mod.rs */,
 				1CCE33872168FFD41FCE49BE /* providers.rs */,
 			);
@@ -244,6 +253,15 @@
 			path = sftp;
 			sourceTree = "<group>";
 		};
+		9AA9785EC8E7B44EC35A0EDD /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+				D228F9266DFCDBBFEC130DED /* debug */,
+				E5B0B2FEC360C4447CD21CC4 /* release */,
+			);
+			path = arm64;
+			sourceTree = "<group>";
+		};
 		A0ED0F7DFA89B1CEB07B5AAD /* import */ = {
 			isa = PBXGroup;
 			children = (
@@ -279,10 +297,19 @@
 			path = commands;
 			sourceTree = "<group>";
 		};
+		BF8C302D457666E81A15301B /* icon-composer */ = {
+			isa = PBXGroup;
+			children = (
+				858C9D329E54B589E585026F /* star.icon */,
+			);
+			name = "icon-composer";
+			path = "../../../branding/icon-composer";
+			sourceTree = "<group>";
+		};
 		C5E20ED4C7BECD0DE57A3418 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				B8888273032DBBA1308A96C1 /* Luma.app */,
+				B8888273032DBBA1308A96C1 /* luma_iOS.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -293,6 +320,14 @@
 				886F335E5E17A208E0E592DE /* luma */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		D228F9266DFCDBBFEC130DED /* debug */ = {
+			isa = PBXGroup;
+			children = (
+				54495C6C38C150D5E15E9D5C /* libapp.a */,
+			);
+			path = debug;
 			sourceTree = "<group>";
 		};
 		D5F39F8C1AF09C92E5642CA1 /* ssh */ = {
@@ -308,9 +343,18 @@
 			path = ssh;
 			sourceTree = "<group>";
 		};
+		E5B0B2FEC360C4447CD21CC4 /* release */ = {
+			isa = PBXGroup;
+			children = (
+				7C680B01957847E1AC7DEA8F /* libapp.a */,
+			);
+			path = release;
+			sourceTree = "<group>";
+		};
 		E74ECB41FDEA12B5CE7C2544 /* Externals */ = {
 			isa = PBXGroup;
 			children = (
+				9AA9785EC8E7B44EC35A0EDD /* arm64 */,
 			);
 			path = Externals;
 			sourceTree = "<group>";
@@ -318,11 +362,18 @@
 		E8283E8DFF64FE81D76E6759 /* luma_iOS */ = {
 			isa = PBXGroup;
 			children = (
-				F271A8B4D93A4C01A1C10D02 /* ICloudBridge.swift */,
+				64400EEC4FCA80D9FDD1F367 /* ICloudBridge.swift */,
 				EC304183740023A97AAB1B55 /* Info.plist */,
 				C3E743558FDABB92D6E16E21 /* luma_iOS.entitlements */,
 			);
 			path = luma_iOS;
+			sourceTree = "<group>";
+		};
+		"TEMP_2E83F9E8-BFA1-43DA-8B4D-102C6D56DC67" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -345,7 +396,7 @@
 			packageProductDependencies = (
 			);
 			productName = luma_iOS;
-			productReference = B8888273032DBBA1308A96C1 /* Luma.app */;
+			productReference = B8888273032DBBA1308A96C1 /* luma_iOS.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -356,6 +407,12 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					BD36DECCDD3A6EED286B479A = {
+						DevelopmentTeam = 828MX392ZN;
+						ProvisioningStyle = Automatic;
+					};
+				};
 			};
 			buildConfigurationList = BB25079A9452F3B2B01FEB0E /* Build configuration list for PBXProject "luma" */;
 			developmentRegion = en;
@@ -384,6 +441,9 @@
 				16C2E65FDF6CB31E7F6F3A41 /* Assets.xcassets in Resources */,
 				C374817B409F8017174F012F /* LaunchScreen.storyboard in Resources */,
 				2AE3561D42A51C2EC1BDE8E6 /* assets in Resources */,
+				4914B9BFEBCA021D3739DE97 /* libapp.a in Resources */,
+				91CFBCD5A9A6C47C5747BF5A /* libapp.a in Resources */,
+				67058740C320BE6986A03103 /* star.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -409,7 +469,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\n  nvm use --silent default\nfi\npnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}";
+			shellScript = "export NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\n  nvm use --silent default\nfi\npnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -418,7 +478,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F271A8B4D93A4C01A1C10D01 /* ICloudBridge.swift in Sources */,
+				0FBDBDA2719A8BED83F2F99C /* ICloudBridge.swift in Sources */,
 				DA3C42591DA5AF2C2B015FC3 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -549,12 +609,14 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = arm64;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = star;
 				CODE_SIGN_ENTITLEMENTS = luma_iOS/luma_iOS.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "828MX392ZN";
+				DEVELOPMENT_TEAM = 828MX392ZN;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -566,22 +628,10 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bwmp.luma;
-				PRODUCT_NAME = "Luma";
+				PRODUCT_NAME = Luma;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
@@ -592,12 +642,14 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
-				ARCHS = arm64;
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = star;
 				CODE_SIGN_ENTITLEMENTS = luma_iOS/luma_iOS.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "828MX392ZN";
+				DEVELOPMENT_TEAM = 828MX392ZN;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -609,22 +661,10 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bwmp.luma;
-				PRODUCT_NAME = "Luma";
+				PRODUCT_NAME = Luma;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;

@@ -3159,6 +3159,7 @@ dependencies = [
  "fs2",
  "keyring",
  "libc",
+ "objc2-foundation",
  "pkcs8 0.10.2",
  "portable-pty",
  "rand 0.8.7",

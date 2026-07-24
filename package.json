@@ -4,6 +4,7 @@
   "version": "0.10.0",
   "type": "module",
   "scripts": {
+    "apple:icon": "node scripts/compile-apple-icon.mjs",
     "dev": "vp dev",
     "build": "tsc && vp build",
     "website:dev": "pnpm --dir website dev",
