@@ -87,6 +87,40 @@ export const UBUNTU_SESSION = crlf([
   "",
   `${prompt("ubuntu", "vps-0cd97c22", "~")}`,
 ]);
+const UBUNTU_INFO_MOBILE = [
+  b("ubuntu@vps-0cd97c22"),
+  orange("-------------------"),
+  `${orange("OS")}: Ubuntu 25.04 x86_64`,
+  `${orange("Kernel")}: 6.14.0-37-generic`,
+  `${orange("Uptime")}: 12 days, 19 hours`,
+  `${orange("Packages")}: 700 (dpkg)`,
+  `${orange("Shell")}: zsh 5.9`,
+  `${orange("CPU")}: 2 × AMD EPYC 7B12`,
+  `${orange("Memory")}: 3.56 / 7.57 GiB (${green("47%")})`,
+  `${orange("Disk (/)")}: 12 / 71.6 GiB (${yellow("43%")})`,
+  `${orange("Local IP")}: 192.169.420.69`,
+];
+
+export const UBUNTU_SESSION_MOBILE = crlf([
+  dim("Last login: Tue Jul 21 09:14 2026"),
+  "",
+  ...UBUNTU_INFO_MOBILE,
+  "",
+  paletteRow([40, 41, 42, 43, 44, 45, 46, 47]),
+  paletteRow([100, 101, 102, 103, 104, 105, 106, 107]),
+  "",
+  `${prompt("ubuntu", "vps-0cd97c22", "~")}ls`,
+  `${blue("logs")}  ${blue("scripts")}  docker-compose.yml`,
+  "",
+  `${prompt("ubuntu", "vps-0cd97c22", "~")}git status`,
+  `On branch ${green("main")}`,
+  `Up to date with '${red("origin/main")}'.`,
+  "",
+  "Changes not staged for commit:",
+  `  ${red("modified:   docker-compose.yml")}`,
+  "",
+  `${prompt("ubuntu", "vps-0cd97c22", "~")}`,
+]);
 
 export const DEBIAN_SESSION = crlf([
   dim("Linux db-primary 6.1.0-26-amd64 #1 SMP Debian 6.1.112-1 x86_64"),

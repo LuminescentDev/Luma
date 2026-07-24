@@ -1,4 +1,11 @@
-import { ChevronLeft, ChevronRight, Moon, Sun } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Monitor,
+  Moon,
+  Smartphone,
+  Sun,
+} from 'lucide-react';
 import {
   type KeyboardEvent,
   useCallback,
@@ -9,13 +16,15 @@ import {
 
 type Theme = 'dark' | 'light';
 
+type Device = 'desktop' | 'mobile';
+
 type Slide = {
   view: string;
   label: string;
   alt: string;
 };
 
-const slides: Slide[] = [
+const desktopSlides: Slide[] = [
   {
     view: 'terminal',
     label: 'Terminal',
@@ -43,29 +52,71 @@ const slides: Slide[] = [
   },
 ];
 
-// Source screenshots are captured at a 1440x900 desktop viewport (8:5).
-const IMG_WIDTH = 1440;
-const IMG_HEIGHT = 900;
+// The mobile shell has no command palette, so it ships four views.
+const mobileSlides: Slide[] = [
+  {
+    view: 'terminal',
+    label: 'Terminal',
+    alt: 'Luma on iPhone showing a single full-screen SSH session with a colour system summary and git status output, plus a touch key bar for Ctrl, Alt, Esc, and Tab above the keyboard.',
+  },
+  {
+    view: 'hosts',
+    label: 'Hosts',
+    alt: 'Luma on iPhone showing the hosts tab with folders and saved connections in a scrollable list above the bottom tab navigation.',
+  },
+  {
+    view: 'snippets',
+    label: 'Snippets',
+    alt: 'Luma on iPhone showing the snippets tab, where each saved command can be inserted or run in the focused terminal with one tap.',
+  },
+  {
+    view: 'settings',
+    label: 'Settings',
+    alt: 'Luma on iPhone showing the settings tab with theme mode and colour theme pickers sized for touch.',
+  },
+];
+
+const deviceSlides: Record<Device, Slide[]> = {
+  desktop: desktopSlides,
+  mobile: mobileSlides,
+};
+
+const deviceSize: Record<Device, { width: number; height: number }> = {
+  desktop: { width: 1440, height: 900 },
+  mobile: { width: 428, height: 926 },
+};
+
 const AUTOPLAY_MS = 6000;
 
-function shotSrc(theme: Theme, view: string, retina = false) {
-  return `/screenshots/${theme}/${view}${retina ? '@2x' : ''}.png`;
+function shotSrc(device: Device, theme: Theme, view: string, retina = false) {
+  const prefix = device === 'mobile' ? '/screenshots/mobile' : '/screenshots';
+  return `${prefix}/${theme}/${view}${retina ? '@2x' : ''}.png`;
 }
 
 export function Screenshots() {
   const [index, setIndex] = useState(0);
   const [theme, setTheme] = useState<Theme>('dark');
+  const [device, setDevice] = useState<Device>('desktop');
   const [paused, setPaused] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
   const regionRef = useRef<HTMLDivElement>(null);
 
+  const slides = deviceSlides[device];
   const count = slides.length;
-  const active = slides[index];
+  const activeIndex = Math.min(index, count - 1);
+  const active = slides[activeIndex];
+  const { width: imgWidth, height: imgHeight } = deviceSize[device];
+  const isMobile = device === 'mobile';
 
   const go = useCallback(
     (next: number) => setIndex((next + count) % count),
     [count],
   );
+
+  const selectDevice = useCallback((next: Device) => {
+    setDevice(next);
+    setIndex((prev) => Math.min(prev, deviceSlides[next].length - 1));
+  }, []);
 
   useEffect(() => {
     const query = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -78,7 +129,7 @@ export function Screenshots() {
   useEffect(() => {
     if (paused || reducedMotion) return;
     const id = window.setInterval(
-      () => setIndex((prev) => (prev + 1) % count),
+      () => setIndex((prev) => (Math.min(prev, count - 1) + 1) % count),
       AUTOPLAY_MS,
     );
     return () => window.clearInterval(id);
@@ -87,10 +138,10 @@ export function Screenshots() {
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft') {
       event.preventDefault();
-      go(index - 1);
+      go(activeIndex - 1);
     } else if (event.key === 'ArrowRight') {
       event.preventDefault();
-      go(index + 1);
+      go(activeIndex + 1);
     }
   };
 
@@ -113,35 +164,65 @@ export function Screenshots() {
           </h2>
           <p className='mt-4 text-base text-muted sm:text-lg'>
             From local terminals to saved hosts, snippets, and the command
-            palette — the same clean interface across every screen.
+            palette — the same clean interface on the desktop and in your
+            pocket.
           </p>
         </div>
 
-        <div
-          role='group'
-          aria-label='Preview theme'
-          className='inline-flex flex-none items-center gap-1 self-start rounded-lg border border-border bg-surface p-1 sm:self-auto'
-        >
-          {(['dark', 'light'] as const).map((option) => {
-            const selected = theme === option;
-            const Icon = option === 'dark' ? Moon : Sun;
-            return (
-              <button
-                key={option}
-                type='button'
-                onClick={() => setTheme(option)}
-                aria-pressed={selected}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium capitalize transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
-                  selected
-                    ? 'bg-accent text-accent-foreground'
-                    : 'text-muted hover:text-foreground'
-                }`}
-              >
-                <Icon className='h-4 w-4' aria-hidden='true' />
-                {option}
-              </button>
-            );
-          })}
+        <div className='flex flex-none flex-wrap items-center gap-2 self-start sm:justify-end sm:self-auto'>
+          <div
+            role='group'
+            aria-label='Preview theme'
+            className='inline-flex flex-none items-center gap-1 rounded-lg border border-border bg-surface p-1'
+          >
+            {(['dark', 'light'] as const).map((option) => {
+              const selected = theme === option;
+              const Icon = option === 'dark' ? Moon : Sun;
+              return (
+                <button
+                  key={option}
+                  type='button'
+                  onClick={() => setTheme(option)}
+                  aria-pressed={selected}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium capitalize transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                    selected
+                      ? 'bg-accent text-accent-foreground'
+                      : 'text-muted hover:text-foreground'
+                  }`}
+                >
+                  <Icon className='h-4 w-4' aria-hidden='true' />
+                  {option}
+                </button>
+              );
+            })}
+          </div>
+
+          <div
+            role='group'
+            aria-label='Preview device'
+            className='inline-flex flex-none items-center gap-1 rounded-lg border border-border bg-surface p-1'
+          >
+            {(['desktop', 'mobile'] as const).map((option) => {
+              const selected = device === option;
+              const Icon = option === 'desktop' ? Monitor : Smartphone;
+              return (
+                <button
+                  key={option}
+                  type='button'
+                  onClick={() => selectDevice(option)}
+                  aria-pressed={selected}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium capitalize transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+                    selected
+                      ? 'bg-accent text-accent-foreground'
+                      : 'text-muted hover:text-foreground'
+                  }`}
+                >
+                  <Icon className='h-4 w-4' aria-hidden='true' />
+                  {option}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
@@ -167,14 +248,14 @@ export function Screenshots() {
           <div
             className='flex'
             style={{
-              transform: `translateX(-${index * 100}%)`,
+              transform: `translateX(-${activeIndex * 100}%)`,
               transition: reducedMotion
                 ? 'none'
                 : 'transform 500ms cubic-bezier(0.22, 1, 0.36, 1)',
             }}
           >
             {slides.map((slide, slideIndex) => {
-              const isActive = slideIndex === index;
+              const isActive = slideIndex === activeIndex;
               return (
                 <div
                   key={slide.view}
@@ -183,18 +264,30 @@ export function Screenshots() {
                   aria-label={`${slideIndex + 1} of ${count}: ${slide.label}`}
                   aria-hidden={!isActive}
                   inert={!isActive}
-                  className='min-w-full'
-                  style={{ aspectRatio: `${IMG_WIDTH} / ${IMG_HEIGHT}` }}
+                  className={
+                    isMobile
+                      ? 'flex min-w-full items-center justify-center px-14 py-8 sm:px-16 sm:py-12'
+                      : 'min-w-full'
+                  }
+                  style={
+                    isMobile
+                      ? undefined
+                      : { aspectRatio: `${imgWidth} / ${imgHeight}` }
+                  }
                 >
                   <img
-                    src={shotSrc(theme, slide.view)}
-                    srcSet={`${shotSrc(theme, slide.view)} 1x, ${shotSrc(theme, slide.view, true)} 2x`}
-                    width={IMG_WIDTH}
-                    height={IMG_HEIGHT}
+                    src={shotSrc(device, theme, slide.view)}
+                    srcSet={`${shotSrc(device, theme, slide.view)} 1x, ${shotSrc(device, theme, slide.view, true)} 2x`}
+                    width={imgWidth}
+                    height={imgHeight}
                     alt={slide.alt}
                     loading={isActive ? 'eager' : 'lazy'}
                     draggable={false}
-                    className='h-full w-full object-cover'
+                    className={
+                      isMobile
+                        ? 'h-auto max-h-[70vh] w-auto max-w-[min(22rem,100%)] rounded-2xl border border-border object-contain shadow-lg'
+                        : 'h-full w-full object-cover'
+                    }
                   />
                 </div>
               );
@@ -204,7 +297,7 @@ export function Screenshots() {
 
         <button
           type='button'
-          onClick={() => go(index - 1)}
+          onClick={() => go(activeIndex - 1)}
           aria-label='Previous screenshot'
           className='absolute left-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background/80 text-foreground backdrop-blur-sm transition-colors hover:border-accent/60 hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
         >
@@ -212,7 +305,7 @@ export function Screenshots() {
         </button>
         <button
           type='button'
-          onClick={() => go(index + 1)}
+          onClick={() => go(activeIndex + 1)}
           aria-label='Next screenshot'
           className='absolute right-3 top-1/2 inline-flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full border border-border bg-background/80 text-foreground backdrop-blur-sm transition-colors hover:border-accent/60 hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
         >
@@ -225,7 +318,7 @@ export function Screenshots() {
           <span className='text-accent'>{active.label}</span>
           <span className='text-muted'>
             {' '}
-            — {index + 1} of {count}
+            — {activeIndex + 1} of {count}
           </span>
         </p>
 
@@ -235,7 +328,7 @@ export function Screenshots() {
           className='flex items-center gap-2.5'
         >
           {slides.map((slide, slideIndex) => {
-            const selected = slideIndex === index;
+            const selected = slideIndex === activeIndex;
             return (
               <button
                 key={slide.view}
