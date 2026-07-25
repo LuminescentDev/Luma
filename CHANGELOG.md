@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.1](https://github.com/LuminescentDev/Luma/compare/v0.14.0...v0.14.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* correct path for SQL migration files in .gitattributes ([d54cb33](https://github.com/LuminescentDev/Luma/commit/d54cb332d638d3474c949f33896e3daca57bc98a))
+* update beforeBuildCommand to include shared build step ([3ca311e](https://github.com/LuminescentDev/Luma/commit/3ca311e908dc60ab1dcfd30a85813fd74d69133e))
+
 ## [0.14.0](https://github.com/LuminescentDev/Luma/compare/v0.13.0...v0.14.0) (2026-07-25)
 
 
