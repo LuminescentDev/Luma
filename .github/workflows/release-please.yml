@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: ubuntu-22.04
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -35,7 +35,7 @@ jobs:
       matrix:
         include:
           - platform: windows
-            os: windows-latest
+            os: blacksmith-4vcpu-windows-2025
           - platform: macos
             os: macos-latest
           - platform: linux
@@ -230,7 +230,7 @@ jobs:
   checksums:
     name: Generate release checksums
     needs: [release-please, build]
-    runs-on: ubuntu-22.04
+    runs-on: blacksmith-4vcpu-ubuntu-2204
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
