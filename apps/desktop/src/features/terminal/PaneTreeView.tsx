@@ -7,7 +7,15 @@ import type {
 } from "../../types";
 import { useSessionStore } from "../../stores/sessionStore";
 import { PaneView } from "./PaneView";
+import { PaneTitleBar } from "./PaneTitleBar";
 import { useTabDragStore } from "../../stores/tabDragStore";
+import { resolvePaneTarget } from "./tabDrop";
+import {
+  attachTab,
+  detachTab,
+  windowPositionUnderCursor,
+} from "./detachedTabs";
+import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { cn } from "../../lib/utils";
 
 /*
@@ -24,19 +32,238 @@ export function PaneTreeView({
 }) {
   const leafCount = countLeaves(tab.root);
   const sourceTabId = useTabDragStore((s) => s.sourceTabId);
+  const sourcePaneId = useTabDragStore((s) => s.sourcePaneId);
   const targetTabId = useTabDragStore((s) => s.targetTabId);
-  const showDropPreview = Boolean(sourceTabId && targetTabId === tab.id);
+  // A tab drag previews only over the tab it would merge into. A pane drag can
+  // land on any pane, including one in its own tab, so it previews as soon as
+  // the gesture starts — there is nothing to "enter" first.
+  const showDropPreview = Boolean(
+    sourceTabId && (sourcePaneId ? leafCount > 1 : targetTabId === tab.id),
+  );
+  const dragSurfaceRef = useRef<HTMLDivElement>(null);
+  const paneDrag = usePaneDrag(tab.id, dragSurfaceRef);
   return (
-    <div className="relative h-full w-full p-1">
+    <div
+      ref={dragSurfaceRef}
+      onPointerMove={paneDrag.onPointerMove}
+      onPointerUp={paneDrag.onPointerUp}
+      onPointerCancel={paneDrag.onPointerCancel}
+      className="relative h-full w-full p-1"
+    >
       <PaneNodeView
         node={tab.root}
         tab={tab}
         sessions={sessions}
         multiPane={leafCount > 1}
         showDropPreview={showDropPreview}
+        paneDrag={paneDrag}
       />
     </div>
   );
+}
+
+type PaneDragHandlers = {
+  sourcePaneId: string | null;
+  onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerUp: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerCancel: (event: React.PointerEvent<HTMLDivElement>) => void;
+  handlers: (paneId: string, title: string) => {
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => void;
+  };
+};
+
+/*
+ * Pointer-driven pane dragging, mirroring TabBar's tab drag: no capture on
+ * pointerdown (it retargets the compatibility click and would swallow the
+ * header's buttons), capture once the gesture passes the movement threshold.
+ * Targets are resolved live from `data-tab-drop-pane`, so a pane can be dropped
+ * onto any pane in any tab of this window; dropping on the tab strip promotes
+ * the pane into a tab of its own.
+ */
+function usePaneDrag(
+  tabId: string,
+  dragSurfaceRef: React.RefObject<HTMLDivElement | null>,
+): PaneDragHandlers {
+  const movePaneToPane = useSessionStore((s) => s.movePaneToPane);
+  const detachPaneToTab = useSessionStore((s) => s.detachPaneToTab);
+  const sourcePaneId = useTabDragStore((s) => s.sourcePaneId);
+  const drag = useRef<{
+    pointerId: number;
+    paneId: string;
+    title: string;
+    startX: number;
+    startY: number;
+    dragging: boolean;
+    sourceTabId: string;
+    detachedTabId: string | null;
+    tornWindow: WebviewWindow | null;
+    tearing: boolean;
+    tornMoveInFlight: boolean;
+  } | null>(null);
+
+  const moveTornWindow = (current: NonNullable<typeof drag.current>) => {
+    if (!current.tornWindow || current.tornMoveInFlight) return;
+    current.tornMoveInFlight = true;
+    const win = current.tornWindow;
+    void (async () => {
+      try {
+        const position = await windowPositionUnderCursor();
+        if (position) await win.setPosition(position);
+      } catch {
+        // The window may have re-docked or closed while a move was in flight.
+      } finally {
+        current.tornMoveInFlight = false;
+      }
+    })();
+  };
+
+  const handlers = (paneId: string, title: string) => ({
+    onPointerDown: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      drag.current = {
+        pointerId: event.pointerId,
+        paneId,
+        title,
+        startX: event.clientX,
+        startY: event.clientY,
+        dragging: false,
+        sourceTabId: tabId,
+        detachedTabId: null,
+        tornWindow: null,
+        tearing: false,
+        tornMoveInFlight: false,
+      };
+    },
+  });
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+      const current = drag.current;
+      if (!current || current.pointerId !== event.pointerId) return;
+
+      if (!current.dragging) {
+        const distance = Math.hypot(
+          event.clientX - current.startX,
+          event.clientY - current.startY,
+        );
+        if (distance < 5) return;
+        current.dragging = true;
+        const dragSurface = dragSurfaceRef.current;
+        if (dragSurface && !dragSurface.hasPointerCapture(event.pointerId)) {
+          dragSurface.setPointerCapture(event.pointerId);
+        }
+        useTabDragStore
+          .getState()
+          .beginPane(tabId, current.paneId, current.title, event.clientX, event.clientY);
+      }
+      event.preventDefault();
+
+      const outside =
+        event.clientX <= 0 ||
+        event.clientY <= 0 ||
+        event.clientX >= window.innerWidth - 1 ||
+        event.clientY >= window.innerHeight - 1;
+
+      if (current.tornWindow || current.tearing) {
+        if (current.tornWindow && !outside && current.detachedTabId) {
+          const win = current.tornWindow;
+          current.tornWindow = null;
+          current.tearing = false;
+          attachTab(current.detachedTabId, { activate: false });
+          void win.close().catch(() => {});
+        } else {
+          moveTornWindow(current);
+          return;
+        }
+      }
+
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      const drop = resolvePaneTarget(element, event.clientX, event.clientY);
+      // A pane can't be dropped onto itself; keep the preview clear instead of
+      // showing a split that would be a no-op.
+      const valid = drop && drop.targetPaneId !== current.paneId ? drop : null;
+      useTabDragStore
+        .getState()
+        .move(
+          event.clientX,
+          event.clientY,
+          valid?.targetTabId ?? null,
+          valid?.zone ?? null,
+          valid?.targetPaneId ?? null,
+        );
+      if (!valid && outside && !current.detachedTabId) {
+        const newTabId = detachPaneToTab(current.sourceTabId, current.paneId, {
+          activate: false,
+        });
+        if (!newTabId) return;
+        current.sourceTabId = newTabId;
+        current.detachedTabId = newTabId;
+        current.tearing = true;
+        useTabDragStore
+          .getState()
+          .beginPane(newTabId, current.paneId, current.title, event.clientX, event.clientY);
+        void detachTab(newTabId, { continueDrag: true }).then((win) => {
+          const active = drag.current;
+          if (active !== current) {
+            void win?.setFocus().catch(() => {});
+            return;
+          }
+          if (!win) {
+            current.tearing = false;
+            return;
+          }
+          current.tornWindow = win;
+          moveTornWindow(current);
+        });
+      }
+  };
+
+  const onPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+      const current = drag.current;
+      if (!current || current.pointerId !== event.pointerId) return;
+      const dragSurface = dragSurfaceRef.current;
+      if (dragSurface?.hasPointerCapture(event.pointerId)) {
+        dragSurface.releasePointerCapture(event.pointerId);
+      }
+      drag.current = null;
+      if (!current.dragging) return;
+      event.preventDefault();
+      if (current.tornWindow || current.tearing) {
+        void current.tornWindow?.setFocus().catch(() => {});
+        useTabDragStore.getState().clear();
+        return;
+      }
+
+      const state = useTabDragStore.getState();
+      const { targetTabId, targetPaneId, zone } = state;
+      state.clear();
+      if (targetTabId && targetPaneId && zone) {
+        const direction = zone === "left" || zone === "right" ? "row" : "column";
+        const placement = zone === "left" || zone === "top" ? "before" : "after";
+        movePaneToPane(
+          current.sourceTabId,
+          current.paneId,
+          targetTabId,
+          targetPaneId,
+          direction,
+          placement,
+        );
+        return;
+      }
+      // Released over the tab strip: the pane becomes a tab of its own.
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      if (element instanceof Element && element.closest("header")) {
+        detachPaneToTab(current.sourceTabId, current.paneId);
+      }
+  };
+
+  const onPointerCancel = (event: React.PointerEvent<HTMLDivElement>) => {
+      if (drag.current?.pointerId !== event.pointerId) return;
+      void drag.current.tornWindow?.setFocus().catch(() => {});
+      drag.current = null;
+      useTabDragStore.getState().clear();
+  };
+
+  return { sourcePaneId, handlers, onPointerMove, onPointerUp, onPointerCancel };
 }
 
 function countLeaves(node: PaneNode): number {
@@ -51,12 +278,14 @@ function PaneNodeView({
   sessions,
   multiPane,
   showDropPreview,
+  paneDrag,
 }: {
   node: PaneNode;
   tab: WorkspaceTab;
   sessions: TerminalSession[];
   multiPane: boolean;
   showDropPreview: boolean;
+  paneDrag: PaneDragHandlers;
 }) {
   const focusPane = useSessionStore((s) => s.focusPane);
   const targetPaneId = useTabDragStore((s) => s.targetPaneId);
@@ -73,21 +302,39 @@ function PaneNodeView({
     const broadcasting =
       broadcastActive && !(tab.broadcastExcluded ?? []).includes(session.id);
     return (
-      <div className="relative h-full min-h-0 w-full min-w-0">
+      <div
+        data-tab-drop-tab={tab.id}
+        data-tab-drop-pane={node.id}
+        className="luma-pane-enter relative h-full min-h-0 w-full min-w-0"
+      >
         <PaneView
           session={session}
           tabId={tab.id}
           focused={tab.activePaneId === node.id}
           showFocusRing={multiPane}
+          // A lone pane is already named by its tab; the header would only cost
+          // terminal height and its drag/split actions have no second pane to
+          // act against.
+          titleBar={
+            multiPane ? (
+              <PaneTitleBar
+                session={session}
+                focused={tab.activePaneId === node.id}
+                dragging={paneDrag.sourcePaneId === node.id}
+                onFocus={() => focusPane(tab.id, node.id)}
+                {...paneDrag.handlers(node.id, session.title)}
+                onPointerMove={() => {}}
+                onPointerUp={() => {}}
+                onPointerCancel={() => {}}
+              />
+            ) : undefined
+          }
           broadcastActive={broadcastActive}
           broadcasting={broadcasting}
           onFocus={() => focusPane(tab.id, node.id)}
         />
-        {showDropPreview && (
-          <div
-            data-tab-drop-pane={node.id}
-            className="absolute inset-0 z-40 rounded-lg border border-dashed border-accent/35 bg-background/10"
-          >
+        {showDropPreview && paneDrag.sourcePaneId !== node.id && (
+          <div className="pointer-events-none absolute inset-0 z-40 rounded-lg border border-dashed border-accent/35 bg-background/10">
             {selected && zone && (
               <div
                 className={cn(
@@ -115,7 +362,7 @@ function PaneNodeView({
       {node.children.map((child, index) => (
         <div key={child.id} className="contents">
           <div
-            className="relative min-h-0 min-w-0"
+            className="relative min-h-0 min-w-0 transition-[flex-grow] duration-150 ease-out"
             style={{ flexGrow: node.sizes[index] ?? 1, flexBasis: 0 }}
           >
             <PaneNodeView
@@ -124,6 +371,7 @@ function PaneNodeView({
               sessions={sessions}
               multiPane={multiPane}
               showDropPreview={showDropPreview}
+              paneDrag={paneDrag}
             />
           </div>
           {index < node.children.length - 1 && (

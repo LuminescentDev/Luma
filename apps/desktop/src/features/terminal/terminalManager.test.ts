@@ -469,3 +469,172 @@ describe("terminalManager shell integration", () => {
     terminalManager.dispose("si-none");
   });
 });
+
+describe("terminalManager fit overflow", () => {
+  /** Mount a session into a host of `hostHeight` px whose rendered grid measures
+   * `renderedHeight` px, then fit. jsdom does no layout, so both heights are
+   * stubbed: clientHeight on the host and the screen's bounding rect. */
+  async function fitInto(
+    id: string,
+    hostHeight: number,
+    renderedHeight: number,
+    hostPaddingTop = 0,
+  ): Promise<Terminal> {
+    setInvoke((cmd) => {
+      if (cmd === "pty_spawn") return { sessionId: `${id}-backend`, shellName: "bash" };
+      if (cmd === "pty_kill") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    const startIndex = createdTerminals.length;
+    await terminalManager.createSession(id, { kind: "local", ref: undefined }, callbacks());
+    const term = createdTerminals[startIndex];
+
+    const host = document.createElement("div");
+    // The pane host reserves top padding (pl-2 pt-1.5); clientHeight includes it.
+    if (hostPaddingTop) host.style.paddingTop = `${hostPaddingTop}px`;
+    document.body.appendChild(host);
+    Object.defineProperty(host, "clientHeight", {
+      value: hostHeight,
+      configurable: true,
+    });
+    terminalManager.attach(id, host);
+
+    const screen = term.element?.querySelector(".xterm-screen") as HTMLElement;
+    screen.getBoundingClientRect = () =>
+      ({ height: renderedHeight }) as DOMRect;
+    return term;
+  }
+
+  it("drops a row when the fitted grid renders past the container", async () => {
+    // 24 rows measuring 3px taller than the space available clips the last line.
+    const term = await fitInto("fit-over", 500, 503);
+    term.resize(80, 24);
+
+    terminalManager.fitSession("fit-over");
+
+    expect(term.rows).toBe(23);
+    expect(term.cols).toBe(80);
+
+    terminalManager.dispose("fit-over");
+  });
+
+  it("keeps the grid when it fits, ignoring sub-pixel overflow", async () => {
+    const term = await fitInto("fit-exact", 500, 500.4);
+    term.resize(80, 24);
+
+    terminalManager.fitSession("fit-exact");
+
+    expect(term.rows).toBe(24);
+
+    terminalManager.dispose("fit-exact");
+  });
+
+  it("drops a row when the grid overflows the host's padded content box", async () => {
+    // clientHeight (500) counts the host's 6px top padding, so a grid rendering
+    // 498px sits within clientHeight yet overflows the 494px content box the
+    // terminal actually fills — its last line is clipped unless a row is dropped.
+    const term = await fitInto("fit-pad", 500, 498, 6);
+    term.resize(80, 24);
+
+    terminalManager.fitSession("fit-pad");
+
+    expect(term.rows).toBe(23);
+
+    terminalManager.dispose("fit-pad");
+  });
+
+  it("never drops below a single row", async () => {
+    const term = await fitInto("fit-tiny", 10, 40);
+    term.resize(80, 1);
+
+    terminalManager.fitSession("fit-tiny");
+
+    expect(term.rows).toBe(1);
+
+    terminalManager.dispose("fit-tiny");
+  });
+});
+
+describe("terminalManager buffer snapshot", () => {
+  /** Stub the PTY backend and create a local session, returning its terminal. */
+  async function createLocal(id: string): Promise<Terminal> {
+    setInvoke((cmd) => {
+      if (cmd === "pty_spawn") return { sessionId: `${id}-backend`, shellName: "bash" };
+      if (cmd === "pty_kill") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    const startIndex = createdTerminals.length;
+    await terminalManager.createSession(id, { kind: "local", ref: undefined }, callbacks());
+    return createdTerminals[startIndex];
+  }
+
+  it("serializes plain lines without escapes and drops trailing blanks", async () => {
+    const term = await createLocal("buf-plain");
+    term.setLine(0, "hello   ");
+    term.setLine(1, "world");
+
+    // Trailing unstyled blanks are dropped, and so are the empty viewport rows
+    // below the last content line.
+    expect(terminalManager.getBufferText("buf-plain")).toBe("hello\r\nworld");
+
+    terminalManager.dispose("buf-plain");
+  });
+
+  it("emits SGR escapes so a replayed buffer keeps its colors", async () => {
+    const term = await createLocal("buf-color");
+    // "ab" red-on-default, "cd" plain.
+    term.setLine(0, "abcd", [
+      { fgPalette: 1 },
+      { fgPalette: 1 },
+      undefined,
+      undefined,
+    ]);
+
+    // Leaving a styled run resets so attributes never leak into the next one.
+    expect(terminalManager.getBufferText("buf-color")).toBe(
+      "\x1b[38;5;1mab\x1b[0mcd",
+    );
+
+    terminalManager.dispose("buf-color");
+  });
+
+  it("unstyles interior blanks that separate styled runs", async () => {
+    const term = await createLocal("buf-gap");
+    term.setLine(0, "a b", [{ bgPalette: 4 }, undefined, { bgPalette: 4 }]);
+
+    // The gap must not inherit the run's background, or the replayed line shows
+    // a solid block where the original had none.
+    expect(terminalManager.getBufferText("buf-gap")).toBe(
+      "\x1b[48;5;4ma\x1b[0m \x1b[48;5;4mb\x1b[0m",
+    );
+
+    terminalManager.dispose("buf-gap");
+  });
+
+  it("clears a display session so re-applying a snapshot is idempotent", () => {
+    const startIndex = createdTerminals.length;
+    terminalManager.createDisplaySession("disp-reset");
+    const term = createdTerminals[startIndex];
+    const reset = vi.spyOn(term, "reset");
+    const write = vi.spyOn(term, "write");
+
+    terminalManager.resetOutput("disp-reset");
+    terminalManager.writeOutput("disp-reset", "snapshot");
+
+    expect(reset).toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith("snapshot");
+
+    terminalManager.dispose("disp-reset");
+  });
+
+  it("does not reset a backend session (its output comes from the PTY)", async () => {
+    const term = await createLocal("buf-backend");
+    const reset = vi.spyOn(term, "reset");
+
+    terminalManager.resetOutput("buf-backend");
+
+    expect(reset).not.toHaveBeenCalled();
+
+    terminalManager.dispose("buf-backend");
+  });
+});

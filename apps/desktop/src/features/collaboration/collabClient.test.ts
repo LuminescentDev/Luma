@@ -14,6 +14,7 @@ import { terminalManager } from "../terminal/terminalManager";
 import { resetDeviceIdentityCache } from "./deviceIdentity";
 import {
   joinRoom,
+  getCollabStates,
   resetCollabClientForTests,
   startSharing,
 } from "./collabClient";
@@ -156,7 +157,13 @@ describe("owner sharing bridges + encrypts PTY output", () => {
     // The plaintext must never appear on the wire.
     expect(JSON.stringify(output)).not.toContain("secret-output");
 
+    await terminalManager.createSession("s2", { kind: "local", ref: undefined }, noopCallbacks());
+    await startSharing("s2");
+    expect(getCollabStates().filter((state) => state.mode === "hosting")).toHaveLength(2);
+    expect(ws.readyState).toBe(FakeWebSocket.OPEN);
+
     terminalManager.dispose("s1");
+    terminalManager.dispose("s2");
   });
 });
 

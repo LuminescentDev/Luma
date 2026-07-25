@@ -27,7 +27,7 @@ import {
   joinRoomByCapability,
   leaveRoom,
   startSharing,
-  stopSharing,
+  stopSharingRoom,
 } from "./collabClient";
 import { ConnectionStatusBadge, ControlBadge, RolePill } from "./collabUi";
 import { cn } from "../../lib/utils";
@@ -39,7 +39,10 @@ export function CollaborationDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const runtime = useCollabStore((s) => s.runtime);
+  const runtimes = useCollabStore((s) => s.runtimes);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const runtime = runtimes.find((candidate) => candidate.ownerSessionId === activeSessionId)
+    ?? runtimes.find((candidate) => candidate.mode === "viewing");
   const auth = useCollabStore((s) => s.auth);
   const hydrate = useCollabStore((s) => s.hydrate);
   const openSettings = useUiStore((s) => s.openSettings);
@@ -74,9 +77,9 @@ export function CollaborationDialog({
             onOpenChange(false);
           }}
         />
-      ) : runtime.mode === "hosting" ? (
-        <HostingPanel />
-      ) : runtime.mode === "viewing" ? (
+      ) : runtime?.mode === "hosting" ? (
+        <HostingPanel runtime={runtime} />
+      ) : runtime?.mode === "viewing" ? (
         <ViewingPanel onLeft={() => onOpenChange(false)} />
       ) : (
         <IdlePanel onJoined={() => onOpenChange(false)} />
@@ -296,8 +299,7 @@ function JoinFlow({ onJoined }: { onJoined: () => void }) {
   );
 }
 
-function HostingPanel() {
-  const runtime = useCollabStore((s) => s.runtime);
+function HostingPanel({ runtime }: { runtime: ReturnType<typeof useCollabStore.getState>["runtime"] }) {
   const [token, setToken] = useState("");
   const [role, setRole] = useState<InvitedRoomRole>("viewer");
   const [addBusy, setAddBusy] = useState(false);
@@ -313,7 +315,7 @@ function HostingPanel() {
     setLinkBusy(true);
     setLinkError(null);
     try {
-      setLink({ url: await createJoinLink(linkRole), role: linkRole });
+      setLink({ url: await createJoinLink(linkRole, runtime.roomId ?? undefined), role: linkRole });
     } catch (e) {
       setLinkError(parseCollaborationError(e).message);
     } finally {
@@ -326,7 +328,7 @@ function HostingPanel() {
     setAddBusy(true);
     setError(null);
     try {
-      await addParticipant(token.trim(), role);
+      await addParticipant(token.trim(), role, runtime.roomId ?? undefined);
       setToken("");
     } catch (e) {
       setError(parseCollaborationError(e).message);
@@ -339,7 +341,7 @@ function HostingPanel() {
     if (stopBusy) return;
     setStopBusy(true);
     try {
-      await stopSharing();
+      if (runtime.roomId) await stopSharingRoom(runtime.roomId);
     } finally {
       setStopBusy(false);
     }
@@ -441,7 +443,7 @@ function HostingPanel() {
         </div>
       </section>
 
-      <ParticipantList />
+      <ParticipantList runtime={runtime} />
 
       {error && (
         <p role="alert" className="text-xs text-danger">
@@ -501,8 +503,9 @@ function ViewingPanel({ onLeft }: { onLeft: () => void }) {
   );
 }
 
-function ParticipantList() {
-  const runtime = useCollabStore((s) => s.runtime);
+function ParticipantList({ runtime: selectedRuntime }: { runtime?: ReturnType<typeof useCollabStore.getState>["runtime"] }) {
+  const defaultRuntime = useCollabStore((s) => s.runtime);
+  const runtime = selectedRuntime ?? defaultRuntime;
   const controlHolder = runtime.sharedTerminalId
     ? runtime.control[runtime.sharedTerminalId] ?? null
     : null;

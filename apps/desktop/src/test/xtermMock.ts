@@ -22,6 +22,88 @@ export class FakeMarker {
   }
 }
 
+/** Per-character styling a test can seed alongside a buffer line. Only the
+ * attributes the buffer serializer reads are modelled. */
+export type CellStyle = {
+  bold?: boolean;
+  fgPalette?: number;
+  bgPalette?: number;
+};
+
+/** Headless stand-in for xterm's IBufferCell. Like the real one it is a mutable
+ * flyweight: `getLine().getCell(x, cell)` loads into the cell it is handed, so
+ * callers read the object they passed in rather than the return value. */
+class FakeCell {
+  private chars = " ";
+  private style: CellStyle | undefined = undefined;
+
+  load(chars: string, style: CellStyle | undefined): void {
+    this.chars = chars;
+    this.style = style;
+  }
+
+  getChars(): string {
+    return this.chars;
+  }
+  getWidth(): number {
+    return 1;
+  }
+  isAttributeDefault(): boolean {
+    return this.style === undefined;
+  }
+  isBold(): number {
+    return this.style?.bold ? 1 : 0;
+  }
+  isDim(): number {
+    return 0;
+  }
+  isItalic(): number {
+    return 0;
+  }
+  isUnderline(): number {
+    return 0;
+  }
+  isBlink(): number {
+    return 0;
+  }
+  isInverse(): number {
+    return 0;
+  }
+  isInvisible(): number {
+    return 0;
+  }
+  isStrikethrough(): number {
+    return 0;
+  }
+  isOverline(): number {
+    return 0;
+  }
+  isFgRGB(): boolean {
+    return false;
+  }
+  isBgRGB(): boolean {
+    return false;
+  }
+  isFgPalette(): boolean {
+    return this.style?.fgPalette !== undefined;
+  }
+  isBgPalette(): boolean {
+    return this.style?.bgPalette !== undefined;
+  }
+  isFgDefault(): boolean {
+    return this.style?.fgPalette === undefined;
+  }
+  isBgDefault(): boolean {
+    return this.style?.bgPalette === undefined;
+  }
+  getFgColor(): number {
+    return this.style?.fgPalette ?? -1;
+  }
+  getBgColor(): number {
+    return this.style?.bgPalette ?? -1;
+  }
+}
+
 /** Headless stand-in for xterm's IDecoration. */
 class FakeDecoration {
   isDisposed = false;
@@ -53,6 +135,8 @@ export class Terminal {
   markers: FakeMarker[] = [];
   /** Buffer line text keyed by absolute line index (tests seed via setLine). */
   lines = new Map<number, string>();
+  /** Optional per-character styling for a seeded line, index-aligned to it. */
+  lineStyles = new Map<number, Array<CellStyle | undefined>>();
   /** Last line passed to scrollToLine(), or null. */
   scrolledTo: number | null = null;
   baseY = 0;
@@ -87,11 +171,20 @@ export class Terminal {
         cursorY: 0,
         cursorX: 0,
         length: this.baseY + this.rows,
+        getNullCell: () => new FakeCell(),
         getLine: (y: number) => {
           const text = this.lines.get(y);
           if (text === undefined) return undefined;
+          const styles = this.lineStyles.get(y);
           return {
+            length: text.length,
             translateToString: (_trimRight?: boolean) => text,
+            getCell: (x: number, cell?: FakeCell) => {
+              if (x >= text.length) return undefined;
+              const target = cell ?? new FakeCell();
+              target.load(text[x], styles?.[x]);
+              return target;
+            },
           };
         },
       },
@@ -132,7 +225,23 @@ export class Terminal {
   reset(): void {}
   focus(): void {}
   dispose(): void {}
-  open(_host: HTMLElement): void {}
+  resize(cols: number, rows: number): void {
+    this.cols = cols;
+    this.rows = rows;
+  }
+  /** Builds the element tree the manager reaches into (notably `.xterm-screen`,
+   * whose rendered height is compared against the host to detect a clipped
+   * bottom row). jsdom performs no layout, so tests that care about geometry
+   * stub the relevant heights themselves. */
+  open(host: HTMLElement): void {
+    const element = host.ownerDocument.createElement("div");
+    element.className = "xterm";
+    const screen = host.ownerDocument.createElement("div");
+    screen.className = "xterm-screen";
+    element.appendChild(screen);
+    host.appendChild(element);
+    this.element = element;
+  }
   refresh(_start: number, _end: number): void {}
   hasSelection(): boolean {
     return false;
@@ -154,9 +263,11 @@ export class Terminal {
     this.oscHandlers.get(ident)?.(data);
   }
 
-  /** Test hook: seed a buffer line's text for output-extraction tests. */
-  setLine(y: number, text: string): void {
+  /** Test hook: seed a buffer line's text for output-extraction tests, with
+   * optional per-character styling for buffer-serialization tests. */
+  setLine(y: number, text: string, styles?: Array<CellStyle | undefined>): void {
     this.lines.set(y, text);
+    if (styles) this.lineStyles.set(y, styles);
   }
 }
 

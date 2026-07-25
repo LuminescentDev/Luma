@@ -6,6 +6,7 @@ import {
 } from "../lib/collab";
 import {
   getCollabState,
+  getCollabStates,
   setCollabObserver,
   type CollabRuntimeState,
 } from "../features/collaboration/collabClient";
@@ -22,6 +23,7 @@ type CollabStoreState = {
   authLoading: boolean;
   authError: string | null;
   runtime: CollabRuntimeState;
+  runtimes: CollabRuntimeState[];
   wired: boolean;
 
   /** Wire the client → store observer once (no network). Safe to call on launch. */
@@ -36,12 +38,18 @@ export const useCollabStore = create<CollabStoreState>((set, get) => ({
   authLoading: false,
   authError: null,
   runtime: getCollabState(),
+  runtimes: getCollabStates(),
   wired: false,
 
   wire: () => {
     if (get().wired) return;
-    setCollabObserver((runtime) => set({ runtime }));
-    set({ wired: true, runtime: getCollabState() });
+    setCollabObserver((runtimes) => {
+      const runtime = runtimes.find((candidate) => candidate.mode === "viewing")
+        ?? runtimes[0]
+        ?? getCollabState();
+      set({ runtime, runtimes });
+    });
+    set({ wired: true, runtime: getCollabState(), runtimes: getCollabStates() });
   },
 
   hydrate: async () => {

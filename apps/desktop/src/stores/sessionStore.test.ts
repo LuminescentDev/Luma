@@ -399,6 +399,84 @@ describe("mergeTabs", () => {
     ]);
   });
 
+  it("grafts a detached multi-pane source as one subtree beside the target pane", async () => {
+    mockLocalSpawn();
+    // Target tab: two panes side by side.
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("row");
+    // Source tab (as a detached window would carry it): two stacked panes.
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("column");
+
+    const [target, source] = useSessionStore.getState().tabs;
+    const targetPanes = collectLeaves(target.root);
+    const sourcePanes = collectLeaves(source.root);
+    const sourceActivePaneId = source.activePaneId;
+    const sourceActiveSessionId = sourcePanes.find(
+      (p) => p.id === sourceActivePaneId,
+    )!.sessionId;
+
+    // Drop over the target's first pane, splitting it to the right.
+    useSessionStore
+      .getState()
+      .mergeTabs(source.id, target.id, "row", "after", targetPanes[0].id);
+
+    const after = useSessionStore.getState();
+    expect(after.tabs).toHaveLength(1);
+    const merged = after.tabs[0];
+    // Every pane survives with its id intact — nothing was dropped or renamed.
+    expect(collectLeaves(merged.root).map((l) => l.id).sort()).toEqual(
+      [...targetPanes, ...sourcePanes].map((l) => l.id).sort(),
+    );
+    // The source's whole subtree is grafted contiguously beside the pane, not
+    // flattened: it appears as a single child split holding both source panes.
+    expect(merged.root.kind).toBe("split");
+    if (merged.root.kind !== "split") return;
+    expect(merged.root.children).toHaveLength(3);
+    const grafted = merged.root.children[1];
+    expect(grafted.kind).toBe("split");
+    expect(collectLeaves(grafted).map((l) => l.id).sort()).toEqual(
+      sourcePanes.map((l) => l.id).sort(),
+    );
+    // Focus follows the source tab's previously active pane.
+    expect(merged.activePaneId).toBe(sourceActivePaneId);
+    expect(after.activeSessionId).toBe(sourceActiveSessionId);
+  });
+
+  it("leaves both tabs untouched when the target pane id is stale", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("row");
+    await useSessionStore.getState().openLocalSession();
+    const [target, source] = useSessionStore.getState().tabs;
+
+    // A rejected merge must be a true no-op: no broadcast regrouping or focus.
+    const clearGroup = vi.spyOn(terminalManager, "clearBroadcastGroup");
+    const setGroup = vi.spyOn(terminalManager, "setBroadcastGroup");
+    const focus = vi.spyOn(terminalManager, "focus");
+
+    useSessionStore
+      .getState()
+      .mergeTabs(source.id, target.id, "row", "after", "ghost-pane");
+
+    const after = useSessionStore.getState();
+    expect(after.tabs).toHaveLength(2);
+    expect(after.tabs.map((t) => t.id).sort()).toEqual(
+      [target.id, source.id].sort(),
+    );
+    // Neither pane tree changed: a stale target must not drop the source tree.
+    expect(after.tabs.find((t) => t.id === source.id)!.root).toEqual(source.root);
+    expect(after.tabs.find((t) => t.id === target.id)!.root).toEqual(target.root);
+    // No terminal side effects ran past the preflight rejection.
+    expect(clearGroup).not.toHaveBeenCalled();
+    expect(setGroup).not.toHaveBeenCalled();
+    expect(focus).not.toHaveBeenCalled();
+
+    clearGroup.mockRestore();
+    setGroup.mockRestore();
+    focus.mockRestore();
+  });
+
   it("is a no-op for identical or unknown ids", async () => {
     mockLocalSpawn();
     await useSessionStore.getState().openLocalSession();
@@ -414,6 +492,199 @@ describe("mergeTabs", () => {
 
     useSessionStore.getState().mergeTabs(tab1.id, "nope");
     expect(useSessionStore.getState().tabs).toHaveLength(2);
+  });
+});
+
+describe("movePaneToPane", () => {
+  it("re-splits a pane within its own tab, preserving pane and session ids", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("row");
+    await useSessionStore.getState().splitActivePane("row");
+
+    const before = useSessionStore.getState().tabs[0];
+    const panes = collectLeaves(before.root);
+    expect(panes).toHaveLength(3);
+
+    // Drag the last pane onto the first one's bottom edge.
+    useSessionStore
+      .getState()
+      .movePaneToPane(before.id, panes[2].id, before.id, panes[0].id, "column", "after");
+
+    const after = useSessionStore.getState();
+    expect(after.tabs).toHaveLength(1);
+    const tab = after.tabs[0];
+    // Nothing respawned: every pane and session id survived the move.
+    expect(collectLeaves(tab.root).map((l) => l.id).sort()).toEqual(
+      panes.map((l) => l.id).sort(),
+    );
+    expect(after.sessions).toHaveLength(3);
+
+    expect(tab.root.kind).toBe("split");
+    if (tab.root.kind !== "split") return;
+    // The moved pane now sits stacked under the pane it was dropped on.
+    const stacked = tab.root.children[0];
+    expect(stacked.kind).toBe("split");
+    if (stacked.kind !== "split") return;
+    expect(stacked.direction).toBe("column");
+    expect(collectLeaves(stacked).map((l) => l.id)).toEqual([
+      panes[0].id,
+      panes[2].id,
+    ]);
+    // Focus follows the moved pane.
+    expect(tab.activePaneId).toBe(panes[2].id);
+  });
+
+  it("moves a pane into another tab and removes an emptied source tab", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession(); // target tab
+    await useSessionStore.getState().openLocalSession(); // source tab (1 pane)
+
+    const [target, source] = useSessionStore.getState().tabs;
+    const targetPane = collectLeaves(target.root)[0];
+    const sourcePane = collectLeaves(source.root)[0];
+
+    useSessionStore
+      .getState()
+      .movePaneToPane(source.id, sourcePane.id, target.id, targetPane.id, "row", "after");
+
+    const after = useSessionStore.getState();
+    // The source tab held only that pane, so it disappears with the move.
+    expect(after.tabs).toHaveLength(1);
+    expect(after.tabs[0].id).toBe(target.id);
+    expect(collectLeaves(after.tabs[0].root).map((l) => l.id)).toEqual([
+      targetPane.id,
+      sourcePane.id,
+    ]);
+    // Sessions are moved, never respawned.
+    expect(after.sessions).toHaveLength(2);
+    expect(after.activeTabId).toBe(target.id);
+    expect(after.activeSessionId).toBe(sourcePane.sessionId);
+  });
+
+  it("keeps the source tab when it still has panes left", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession(); // target
+    await useSessionStore.getState().openLocalSession(); // source
+    await useSessionStore.getState().splitActivePane("row"); // source now 2 panes
+
+    const [target, source] = useSessionStore.getState().tabs;
+    const targetPane = collectLeaves(target.root)[0];
+    const sourcePanes = collectLeaves(source.root);
+
+    useSessionStore
+      .getState()
+      .movePaneToPane(source.id, sourcePanes[0].id, target.id, targetPane.id, "row", "after");
+
+    const after = useSessionStore.getState();
+    expect(after.tabs).toHaveLength(2);
+    const remainingSource = after.tabs.find((t) => t.id === source.id)!;
+    expect(collectLeaves(remainingSource.root).map((l) => l.id)).toEqual([
+      sourcePanes[1].id,
+    ]);
+    // The source tab's focus moved off the pane that left.
+    expect(remainingSource.activePaneId).toBe(sourcePanes[1].id);
+    expect(collectLeaves(after.tabs.find((t) => t.id === target.id)!.root)).toHaveLength(2);
+  });
+
+  it("is a no-op for the same pane or a stale target", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("row");
+    const tab = useSessionStore.getState().tabs[0];
+    const panes = collectLeaves(tab.root);
+    const focus = vi.spyOn(terminalManager, "focus");
+
+    useSessionStore
+      .getState()
+      .movePaneToPane(tab.id, panes[0].id, tab.id, panes[0].id, "row", "after");
+    expect(useSessionStore.getState().tabs[0].root).toEqual(tab.root);
+
+    useSessionStore
+      .getState()
+      .movePaneToPane(tab.id, panes[0].id, tab.id, "ghost-pane", "row", "after");
+    expect(useSessionStore.getState().tabs[0].root).toEqual(tab.root);
+    expect(focus).not.toHaveBeenCalled();
+
+    focus.mockRestore();
+  });
+});
+
+describe("detachPaneToTab", () => {
+  it("promotes a pane into its own tab beside the one it left", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("row");
+
+    const source = useSessionStore.getState().tabs[0];
+    const panes = collectLeaves(source.root);
+
+    const detachedTabId = useSessionStore
+      .getState()
+      .detachPaneToTab(source.id, panes[1].id);
+
+    const after = useSessionStore.getState();
+    expect(after.tabs).toHaveLength(2);
+    // The new tab lands immediately after the tab it came from.
+    expect(after.tabs[0].id).toBe(source.id);
+    const moved = after.tabs[1];
+    expect(detachedTabId).toBe(moved.id);
+    expect(collectLeaves(moved.root).map((l) => l.id)).toEqual([panes[1].id]);
+    expect(moved.activePaneId).toBe(panes[1].id);
+    // The source keeps its remaining pane; no session respawned.
+    expect(collectLeaves(after.tabs[0].root).map((l) => l.id)).toEqual([panes[0].id]);
+    expect(after.sessions).toHaveLength(2);
+    expect(after.activeTabId).toBe(moved.id);
+    expect(after.activeSessionId).toBe(panes[1].sessionId);
+  });
+
+  it("is a no-op for a pane that is already alone in its tab", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    const tab = useSessionStore.getState().tabs[0];
+    const pane = collectLeaves(tab.root)[0];
+
+    useSessionStore.getState().detachPaneToTab(tab.id, pane.id);
+
+    expect(useSessionStore.getState().tabs).toHaveLength(1);
+    expect(useSessionStore.getState().tabs[0].id).toBe(tab.id);
+  });
+
+  it("can extract a pane without activating its temporary tab", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("row");
+
+    const before = useSessionStore.getState();
+    const source = before.tabs[0];
+    const panes = collectLeaves(source.root);
+    const activeTabId = before.activeTabId;
+
+    const detachedTabId = useSessionStore
+      .getState()
+      .detachPaneToTab(source.id, panes[1].id, { activate: false });
+
+    const after = useSessionStore.getState();
+    expect(detachedTabId).not.toBeNull();
+    expect(after.activeTabId).toBe(activeTabId);
+    expect(after.activeSessionId).toBe(
+      collectLeaves(after.tabs[0].root)[0].sessionId,
+    );
+  });
+
+  it("disables broadcast when the source tab drops to a single pane", async () => {
+    mockLocalSpawn();
+    await useSessionStore.getState().openLocalSession();
+    await useSessionStore.getState().splitActivePane("row");
+    const tab = useSessionStore.getState().tabs[0];
+    useSessionStore.getState().toggleBroadcast(tab.id);
+    expect(useSessionStore.getState().tabs[0].broadcastEnabled).toBe(true);
+
+    const panes = collectLeaves(tab.root);
+    useSessionStore.getState().detachPaneToTab(tab.id, panes[1].id);
+
+    const source = useSessionStore.getState().tabs.find((t) => t.id === tab.id)!;
+    expect(source.broadcastEnabled).toBe(false);
   });
 });
 

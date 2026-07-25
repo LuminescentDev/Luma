@@ -34,9 +34,11 @@ type UiState = {
   openKnownHosts: () => void;
   terminalSearchOpen: boolean;
   setTerminalSearchOpen: (open: boolean) => void;
-  newTabOpen: boolean;
+  newTabIds: string[];
+  activeNewTabId: string | null;
   openNewTab: () => void;
-  closeNewTab: () => void;
+  selectNewTab: (tabId: string) => void;
+  closeNewTab: (tabId?: string) => void;
   /** Serial-terminal connect dialog visibility. */
   serialConnectOpen: boolean;
   openSerialConnect: () => void;
@@ -72,15 +74,44 @@ export const useUiStore = create<UiState>((set) => ({
   openNav: () => set({ navOpen: true }),
   selectSection: (section) => set({ mainView: section }),
   openSection: (section) => set({ mainView: section }),
-  showTerminal: () => set({ mainView: "terminal" }),
+  showTerminal: () => set({ mainView: "terminal", activeNewTabId: null }),
   openSettings: () => set({ mainView: "settings" }),
   openKeychain: () => set({ mainView: "keychain" }),
   openKnownHosts: () => set({ mainView: "known-hosts" }),
   terminalSearchOpen: false,
   setTerminalSearchOpen: (open) => set({ terminalSearchOpen: open }),
-  newTabOpen: false,
-  openNewTab: () => set({ mainView: "terminal", newTabOpen: true }),
-  closeNewTab: () => set({ newTabOpen: false }),
+  newTabIds: [],
+  activeNewTabId: null,
+  openNewTab: () =>
+    set((state) => {
+      const tabId = crypto.randomUUID();
+      return {
+        mainView: "terminal",
+        newTabIds: [...state.newTabIds, tabId],
+        activeNewTabId: tabId,
+      };
+    }),
+  selectNewTab: (tabId) =>
+    set((state) =>
+      state.newTabIds.includes(tabId)
+        ? { mainView: "terminal", activeNewTabId: tabId }
+        : {},
+    ),
+  closeNewTab: (tabId) =>
+    set((state) => {
+      const closingId = tabId ?? state.activeNewTabId;
+      if (!closingId) return {};
+      const index = state.newTabIds.indexOf(closingId);
+      if (index < 0) return {};
+      const newTabIds = state.newTabIds.filter((id) => id !== closingId);
+      const activeNewTabId =
+        state.activeNewTabId === closingId
+          ? tabId
+            ? (newTabIds[Math.min(index, newTabIds.length - 1)] ?? null)
+            : null
+          : state.activeNewTabId;
+      return { newTabIds, activeNewTabId };
+    }),
   serialConnectOpen: false,
   openSerialConnect: () => set({ serialConnectOpen: true }),
   closeSerialConnect: () => set({ serialConnectOpen: false }),

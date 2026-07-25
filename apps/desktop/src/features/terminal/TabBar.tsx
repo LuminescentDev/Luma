@@ -1,6 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import {
   Cable,
   Columns2,
@@ -32,8 +33,36 @@ import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { SaveTemplateDialog } from "./SaveTemplateDialog";
 import { SplitWithHostDialog } from "./SplitWithHostDialog";
 import { SaveHostDialog } from "./SaveHostDialog";
-import { useTabDragStore, type TabDropZone } from "../../stores/tabDragStore";
+import { useTabDragStore } from "../../stores/tabDragStore";
 import type { SplitDirection, TerminalSession, WorkspaceTab } from "../../types";
+import type { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { resolvePaneTarget } from "./tabDrop";
+import {
+  attachTab,
+  detachTab,
+  detachedTabIds,
+  detachedTabsVersion,
+  detachedWindowLabel,
+  subscribeDetachedTabs,
+  windowPositionUnderCursor,
+} from "./detachedTabs";
+
+/** Logical height of the main window's top tab strip. A detached window released
+ * over this band re-docks as its own standalone tab; below it, over a pane, it
+ * grafts into that pane. Mirrors the `h-10` header. */
+const DOCK_STRIP_HEIGHT = 40;
+
+/** A detached window reports its cursor as main-window client coordinates. */
+type DetachedDragPoint = { tabId: string; x: number; y: number };
+
+/** True when the drag pointer has left the window frame. Coordinates clamp at
+ * the frame edge when the window is maximized, so touching an edge counts as
+ * leaving — otherwise a maximized window could never tear a tab off. */
+function pointerOutsideWindow(x: number, y: number): boolean {
+  return (
+    x <= 0 || y <= 0 || x >= window.innerWidth - 1 || y >= window.innerHeight - 1
+  );
+}
 
 /** A tab is restorable (saveable as a template) when at least one of its panes
  * hosts a session with a restore descriptor. */
@@ -159,7 +188,23 @@ export function TabBar() {
   const tabListRef = useRef<HTMLDivElement>(null);
   const sessions = useSessionStore((s) => s.sessions);
   const tabs = useSessionStore((s) => s.tabs);
+  useSyncExternalStore(subscribeDetachedTabs, detachedTabsVersion, detachedTabsVersion);
+  const draggedTabId = useTabDragStore((s) => s.sourceTabId);
+  const tornDrag = useTabDragStore((s) => s.torn);
+  const externalDrag = useTabDragStore((s) => s.external);
+  // A live-torn tab is already detached but must STAY MOUNTED (collapsed to
+  // zero width) until the pointer is released: its strip element holds the
+  // pointer capture that drives the rest of the gesture. Unmounting it would
+  // silently end the drag.
+  // A detached window hovering the strip is also still detached, but shows its
+  // tab as the dimmed landing placeholder for the duration of the hover.
+  const visibleTabs = tabs.filter(
+    (tab) =>
+      !detachedTabIds().has(tab.id) ||
+      ((tornDrag || externalDrag) && tab.id === draggedTabId),
+  );
   const activeTabId = useSessionStore((s) => s.activeTabId);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveTab = useSessionStore((s) => s.setActiveTab);
   const closeTab = useSessionStore((s) => s.closeTab);
   const splitActivePane = useSessionStore((s) => s.splitActivePane);
@@ -169,9 +214,17 @@ export function TabBar() {
   const openPalette = useUiStore((s) => s.openPalette);
   const openNewTab = useUiStore((s) => s.openNewTab);
   const closeNewTab = useUiStore((s) => s.closeNewTab);
-  const newTabOpen = useUiStore((s) => s.newTabOpen);
+  const selectNewTab = useUiStore((s) => s.selectNewTab);
+  const newTabIds = useUiStore((s) => s.newTabIds);
+  const activeNewTabId = useUiStore((s) => s.activeNewTabId);
   const openCollab = useUiStore((s) => s.openCollab);
-  const collabMode = useCollabStore((s) => s.runtime.mode);
+  const collabMode = useCollabStore((s) =>
+    s.runtimes.some((runtime) => runtime.ownerSessionId === activeSessionId)
+      ? "hosting"
+      : s.runtimes.some((runtime) => runtime.mode === "viewing")
+        ? "viewing"
+        : "idle",
+  );
   const logs = useSessionLogStore((s) => s.logs);
 
   // Pointer-based drag state. Native HTML drag/drop is unreliable inside a
@@ -184,18 +237,68 @@ export function TabBar() {
     startY: number;
     dragging: boolean;
     targetId: string | null;
+    /** Live tear-off: the tab's new OS window, moved under the cursor on every
+     * pointermove (this window keeps pointer capture for the whole gesture). */
+    tornWindow: WebviewWindow | null;
+    /** Tear-off spawn in flight — suppresses duplicate detach calls. */
+    tearing: boolean;
+    /** One setPosition in flight at a time; extra moves collapse into the next. */
+    tornMoveInFlight: boolean;
   } | null>(null);
   const suppressTabClick = useRef(false);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
-  const draggedTabId = useTabDragStore((s) => s.sourceTabId);
+  const [closingTabIds, setClosingTabIds] = useState<Set<string>>(() => new Set());
+  const closeTimers = useRef(new Map<string, number>());
   const draggedTitle = useTabDragStore((s) => s.sourceTitle);
   const dragX = useTabDragStore((s) => s.x);
   const dragY = useTabDragStore((s) => s.y);
-  const selectedTargetTabId = useTabDragStore((s) => s.targetTabId);
-  const selectedDropZone = useTabDragStore((s) => s.zone);
   const beginVisualDrag = useTabDragStore((s) => s.begin);
+  const beginExternalDrag = useTabDragStore((s) => s.beginExternal);
   const moveVisualDrag = useTabDragStore((s) => s.move);
+  const setTornDrag = useTabDragStore((s) => s.setTorn);
   const clearVisualDrag = useTabDragStore((s) => s.clear);
+
+  useEffect(
+    () => () => {
+      for (const timer of closeTimers.current.values()) window.clearTimeout(timer);
+    },
+    [],
+  );
+
+  const closeTabWithAnimation = (tabId: string) => {
+    if (closeTimers.current.has(tabId)) return;
+    setClosingTabIds((current) => new Set(current).add(tabId));
+    closeTimers.current.set(
+      tabId,
+      window.setTimeout(() => {
+        closeTimers.current.delete(tabId);
+        closeTab(tabId);
+        setClosingTabIds((current) => {
+          const next = new Set(current);
+          next.delete(tabId);
+          return next;
+        });
+      }, 140),
+    );
+  };
+
+  const closeNewTabWithAnimation = (tabId: string) => {
+    const timerKey = `new:${tabId}`;
+    if (closeTimers.current.has(timerKey)) return;
+    setClosingTabIds((current) => new Set(current).add(timerKey));
+    closeTimers.current.set(
+      timerKey,
+      window.setTimeout(() => {
+        closeTimers.current.delete(timerKey);
+        closeNewTab(tabId);
+        setClosingTabIds((current) => {
+          const next = new Set(current);
+          next.delete(timerKey);
+          return next;
+        });
+      }, 140),
+    );
+  };
   // Workspace-action dialogs (Save template / Split with host). The tab whose
   // layout the save dialog serializes is captured when the action fires.
   const [saveTemplateTab, setSaveTemplateTab] = useState<WorkspaceTab | null>(null);
@@ -206,6 +309,115 @@ export function TabBar() {
   // main view; selecting a sidebar section deselects the tabs (they stay in the
   // bar so the user can click one to return).
   const terminalActive = useUiStore((s) => s.mainView === "terminal");
+
+  // A detached window dragged over this window drives the SAME preview an
+  // in-window tab drag shows: the tab reappears in the strip as the dimmed drag
+  // source, and hovering a pane renders that pane's nearest-edge split overlay.
+  // Nothing commits until release. Dragging back out (leave) returns the tab to
+  // its detached state without ever having snapped in.
+  useEffect(() => {
+    const cleanups: Array<() => void> = [];
+    let cancelled = false;
+    let previewFrame = 0;
+    let pendingPreview: DetachedDragPoint | null = null;
+    const register = (unlisten: () => void) => {
+      if (cancelled) unlisten();
+      else cleanups.push(unlisten);
+    };
+    // Ensure the placeholder drag source is active for this tab, resolving the
+    // title from its active pane. Idempotent: only (re)begins when the tab
+    // changed, so it never clears a target mid-hover.
+    const ensureExternal = (tabId: string) => {
+      const drag = useTabDragStore.getState();
+      if (drag.external && drag.sourceTabId === tabId) return true;
+      const state = useSessionStore.getState();
+      const tab = state.tabs.find((t) => t.id === tabId);
+      if (!tab) return false;
+      const leaf = findLeaf(tab.root, tab.activePaneId);
+      const title =
+        state.sessions.find((s) => s.id === leaf?.sessionId)?.title ?? "Terminal";
+      // The tab STAYS detached — only its placeholder appears in the strip.
+      // Attaching and detaching on every frame crossing would tear down and
+      // rebuild the output mirroring.
+      beginExternalDrag(tabId, title);
+      return true;
+    };
+    const updateExternalPreview = ({ tabId, x, y }: DetachedDragPoint) => {
+      if (!ensureExternal(tabId)) return;
+      // Above the strip band the tab re-docks as its own standalone tab: keep the
+      // dimmed placeholder but clear any pane target so no split preview shows.
+      if (y < DOCK_STRIP_HEIGHT) {
+        moveVisualDrag(x, y, null, null, null);
+        return;
+      }
+      const paneDrop = resolvePaneTarget(document.elementFromPoint(x, y), x, y);
+      if (paneDrop) {
+        moveVisualDrag(x, y, paneDrop.targetTabId, paneDrop.zone, paneDrop.targetPaneId);
+      } else {
+        // Inside the window but over no pane (sidebar, empty state): keep the
+        // placeholder without a sticky pane preview.
+        moveVisualDrag(x, y, null, null, null);
+      }
+    };
+    void listen<DetachedDragPoint>("detached-terminal-drag-move", (event) => {
+      pendingPreview = event.payload;
+      if (previewFrame) return;
+      previewFrame = requestAnimationFrame(() => {
+        previewFrame = 0;
+        const preview = pendingPreview;
+        pendingPreview = null;
+        if (preview) updateExternalPreview(preview);
+      });
+    }).then(register);
+    void listen<string>("detached-terminal-drag-leave", (event) => {
+      if (useTabDragStore.getState().sourceTabId !== event.payload) return;
+      pendingPreview = null;
+      if (previewFrame) {
+        cancelAnimationFrame(previewFrame);
+        previewFrame = 0;
+      }
+      clearVisualDrag();
+    }).then(register);
+    void listen<DetachedDragPoint>("detached-terminal-dock", (event) => {
+      const { tabId, x, y } = event.payload;
+      // Re-resolve the target from the drop coordinates rather than trusting the
+      // last hovered state, which a coalesced probe may have missed.
+      let committed = false;
+      if (y < DOCK_STRIP_HEIGHT) {
+        // attachTab clears the placeholder drag state for this tab.
+        attachTab(tabId);
+        committed = true;
+      } else {
+        const paneDrop = resolvePaneTarget(document.elementFromPoint(x, y), x, y);
+        if (paneDrop && paneDrop.targetTabId !== tabId) {
+          // Attach first (stops mirroring, removes the placeholder) without
+          // activating, then graft the whole detached tree beside the target
+          // pane — no visible standalone-tab intermediate state.
+          attachTab(tabId, { activate: false });
+          const direction =
+            paneDrop.zone === "left" || paneDrop.zone === "right" ? "row" : "column";
+          const placement =
+            paneDrop.zone === "left" || paneDrop.zone === "top" ? "before" : "after";
+          mergeTabs(tabId, paneDrop.targetTabId, direction, placement, paneDrop.targetPaneId);
+          committed = true;
+        }
+      }
+      if (!committed) {
+        // Invalid drop inside the window: drop the preview and send no
+        // acknowledgement, so the detached window stays open.
+        if (useTabDragStore.getState().sourceTabId === tabId) clearVisualDrag();
+        return;
+      }
+      void getCurrentWindow().show();
+      void getCurrentWindow().setFocus();
+      void emitTo(detachedWindowLabel(tabId), "detached-terminal-dock-committed", tabId);
+    }).then(register);
+    return () => {
+      cancelled = true;
+      if (previewFrame) cancelAnimationFrame(previewFrame);
+      for (const cleanup of cleanups) cleanup();
+    };
+  }, [beginExternalDrag, clearVisualDrag, mergeTabs, moveVisualDrag]);
 
   // Broadcast toggle is only offered when the active tab has more than one pane.
   const activeTab = tabs.find((t) => t.id === activeTabId);
@@ -224,7 +436,7 @@ export function TabBar() {
     tabListRef.current
       ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeTabId, terminalActive, newTabOpen]);
+  }, [activeTabId, terminalActive, activeNewTabId]);
 
   const scrollTabs = (event: React.WheelEvent<HTMLDivElement>) => {
     const tabList = event.currentTarget;
@@ -237,17 +449,6 @@ export function TabBar() {
 
     event.preventDefault();
     tabList.scrollLeft += event.deltaY;
-  };
-
-  const dragWindowFromEmptyStrip = (
-    event: React.MouseEvent<HTMLDivElement>,
-  ) => {
-    // Keep native window dragging off the tab elements themselves. Tauri drag
-    // regions and HTML5 draggable elements compete for the same pointer gesture
-    // in WebView2, which leaves tab targets showing the "not allowed" cursor.
-    if (event.button === 0 && event.target === event.currentTarget) {
-      void getCurrentWindow().startDragging();
-    }
   };
 
   const startTabDrag = (
@@ -270,12 +471,37 @@ export function TabBar() {
       startY: event.clientY,
       dragging: false,
       targetId: null,
+      tornWindow: null,
+      tearing: false,
+      tornMoveInFlight: false,
     };
     // NB: pointer capture is deliberately NOT set here. Capturing on the outer
     // wrapper makes Chromium/WebView2 retarget the subsequent compatibility
     // `click` event to the capturing element, so the inner role="tab" button's
     // onClick never fires and a plain click can no longer activate the tab.
     // Capture is instead taken once a real drag begins (see moveTabDrag).
+  };
+
+  /** Move a live-torn window so its tab-strip grab point tracks the global
+   * cursor. windowPositionUnderCursor works in physical pixels, which are
+   * absolute across the whole desktop — correct on any monitor and any DPI
+   * mix, including when the main window is not on the primary display.
+   * Coalesces to one setPosition in flight so a fast drag can't queue stale
+   * moves. */
+  const moveTornWindow = (drag: NonNullable<typeof tabDrag.current>) => {
+    const win = drag.tornWindow;
+    if (!win || drag.tornMoveInFlight) return;
+    drag.tornMoveInFlight = true;
+    void (async () => {
+      try {
+        const position = await windowPositionUnderCursor();
+        if (position) await win.setPosition(position);
+      } catch {
+        // The window may have been closed mid-gesture (e.g. docked back).
+      } finally {
+        drag.tornMoveInFlight = false;
+      }
+    })();
   };
 
   const moveTabDrag = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -300,45 +526,110 @@ export function TabBar() {
     }
 
     event.preventDefault();
+
+    // Once torn, the gesture steers the new window instead of an in-app ghost.
+    if (drag.tornWindow || drag.tearing) {
+      // Dragging back inside the frame re-docks within the same gesture: the
+      // tab returns to the strip (attachTab first, so the strip element that
+      // holds pointer capture never unmounts) and the torn window closes.
+      if (
+        drag.tornWindow &&
+        !pointerOutsideWindow(event.clientX, event.clientY)
+      ) {
+        const win = drag.tornWindow;
+        drag.tornWindow = null;
+        drag.tearing = false;
+        attachTab(drag.sourceId, { activate: false });
+        setTornDrag(false);
+        void win.close().catch(() => {});
+      } else {
+        moveVisualDrag(event.clientX, event.clientY, null, null, null);
+        moveTornWindow(drag);
+        return;
+      }
+    }
+
     const element = document.elementFromPoint(event.clientX, event.clientY);
-    const targetId =
+    const paneDrop =
+      element instanceof Element
+        ? resolvePaneTarget(element, event.clientX, event.clientY)
+        : null;
+    let targetId =
       element instanceof Element
         ? element.closest<HTMLElement>("[data-luma-tab-id]")?.dataset.lumaTabId ?? null
         : null;
-    const paneTarget =
-      element instanceof Element
-        ? element.closest<HTMLElement>("[data-tab-drop-pane]")
-        : null;
-    let dropZone: TabDropZone | null = null;
-    if (paneTarget) {
-      const rect = paneTarget.getBoundingClientRect();
-      const distances: Array<[TabDropZone, number]> = [
-        ["left", event.clientX - rect.left],
-        ["right", rect.right - event.clientX],
-        ["top", event.clientY - rect.top],
-        ["bottom", rect.bottom - event.clientY],
-      ];
-      dropZone = distances.reduce((closest, candidate) =>
-        candidate[1] < closest[1] ? candidate : closest,
-      )[0];
+    // Dragging into the terminal workspace means "group with the tab shown
+    // there", the same as hovering that tab in the strip. A pane hit already
+    // carries its owning tab id (see resolvePaneTarget); otherwise fall back to
+    // the workspace wrapper's visible tab.
+    if (!targetId && !paneDrop && element instanceof Element) {
+      targetId =
+        element.closest<HTMLElement>("[data-tab-drop-workspace]")?.dataset
+          .tabDropWorkspace ?? null;
     }
-    drag.targetId = targetId && targetId !== drag.sourceId ? targetId : drag.targetId;
+
+    // Live tear-off, Chrome-style: the moment the pointer leaves the window
+    // frame with no merge/group target, the tab detaches into its own window
+    // which then follows the cursor for the REST of this gesture (this element
+    // keeps pointer capture; each pointermove repositions the new window). The
+    // header check keeps maximized windows safe — there the pointer clamps at
+    // the screen edge, and a drag along the top-edge tab strip must not tear off.
+    const overTitlebar =
+      element instanceof Element && element.closest("header") !== null;
     if (
-      targetId &&
-      targetId !== drag.sourceId &&
-      useTabDragStore.getState().targetTabId !== targetId
+      !targetId &&
+      !paneDrop &&
+      !overTitlebar &&
+      pointerOutsideWindow(event.clientX, event.clientY)
     ) {
-      setActiveTab(targetId);
+      drag.tearing = true;
+      setDragOverTabId(null);
+      setTornDrag(true);
+      moveVisualDrag(event.clientX, event.clientY, null, null, null);
+      void detachTab(drag.sourceId, { continueDrag: true }).then((win) => {
+        // The gesture may have ended (pointer released / cancelled) while the
+        // window was spawning — then the window just stays where it appeared.
+        const current = tabDrag.current;
+        if (current?.sourceId !== drag.sourceId) {
+          void win?.setFocus().catch(() => {});
+          clearVisualDrag();
+          return;
+        }
+        if (!win) {
+          current.tearing = false;
+          return;
+        }
+        current.tornWindow = win;
+        moveTornWindow(current);
+      });
+      return;
     }
+    // A pane hit on the source tab's own workspace is not a real target (you
+    // can't group a tab with itself), so ignore it exactly like the strip path.
+    const validPane =
+      paneDrop && paneDrop.targetTabId !== drag.sourceId ? paneDrop : null;
+    const effectiveTargetId = validPane?.targetTabId ?? targetId;
+    // Non-sticky, like Chrome: the drop action always reflects where the
+    // pointer currently is, not the last tab it happened to pass over.
+    drag.targetId =
+      effectiveTargetId && effectiveTargetId !== drag.sourceId ? effectiveTargetId : null;
+    if (
+      effectiveTargetId &&
+      effectiveTargetId !== drag.sourceId &&
+      useTabDragStore.getState().targetTabId !== effectiveTargetId
+    ) {
+      setActiveTab(effectiveTargetId);
+    }
+    // Only a strip tab shows the "Split" badge; a pane hit shows its overlay.
     setDragOverTabId((current) =>
       current === targetId ? current : targetId !== drag.sourceId ? targetId : null,
     );
     moveVisualDrag(
       event.clientX,
       event.clientY,
-      targetId && targetId !== drag.sourceId ? targetId : undefined,
-      dropZone,
-      paneTarget?.dataset.tabDropPane ?? null,
+      effectiveTargetId && effectiveTargetId !== drag.sourceId ? effectiveTargetId : undefined,
+      validPane?.zone ?? null,
+      validPane?.targetPaneId ?? null,
     );
   };
 
@@ -354,21 +645,29 @@ export function TabBar() {
 
     if (drag.dragging) {
       event.preventDefault();
-      const { targetTabId, targetPaneId, zone } = useTabDragStore.getState();
-      if (targetTabId && targetPaneId && zone) {
-        const direction = zone === "left" || zone === "right" ? "row" : "column";
-        const placement = zone === "left" || zone === "top" ? "before" : "after";
-        mergeTabs(
-          drag.sourceId,
-          targetTabId,
-          direction,
-          placement,
-          targetPaneId,
-        );
-      } else if (drag.targetId) {
-        mergeTabs(drag.sourceId, drag.targetId);
+      if (drag.tornWindow || drag.tearing) {
+        // The tab already became its own window mid-drag; releasing just ends
+        // the gesture and hands it focus (deferred until now — focusing during
+        // the drag would break this window's pointer capture).
+        void drag.tornWindow?.setFocus().catch(() => {});
+        clearVisualDrag();
+      } else {
+        const { targetTabId, targetPaneId, zone } = useTabDragStore.getState();
+        if (targetTabId && targetPaneId && zone) {
+          const direction = zone === "left" || zone === "right" ? "row" : "column";
+          const placement = zone === "left" || zone === "top" ? "before" : "after";
+          mergeTabs(
+            drag.sourceId,
+            targetTabId,
+            direction,
+            placement,
+            targetPaneId,
+          );
+        } else if (drag.targetId) {
+          mergeTabs(drag.sourceId, drag.targetId);
+        }
+        clearVisualDrag();
       }
-      clearVisualDrag();
       window.setTimeout(() => {
         suppressTabClick.current = false;
       }, 0);
@@ -376,7 +675,10 @@ export function TabBar() {
   };
 
   const cancelTabDrag = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (tabDrag.current?.pointerId !== event.pointerId) return;
+    const drag = tabDrag.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    // A cancel after tear-off leaves the already-created window where it is.
+    void drag.tornWindow?.setFocus().catch(() => {});
     tabDrag.current = null;
     suppressTabClick.current = false;
     setDragOverTabId(null);
@@ -386,20 +688,18 @@ export function TabBar() {
   return (
     <>
     <div
-      onMouseDown={dragWindowFromEmptyStrip}
       className="flex h-full min-w-0 flex-1 items-center gap-1"
     >
       <div
         ref={tabListRef}
         role="tablist"
         aria-label="Terminal tabs"
-        onMouseDown={dragWindowFromEmptyStrip}
         onWheel={scrollTabs}
         className="flex min-w-0 flex-1 touch-pan-x items-center gap-1 overflow-x-auto overflow-y-hidden"
       >
-        {tabs.map((tab, index) => {
+        {visibleTabs.map((tab, index) => {
           const session = activeSessionOf(tab);
-          const active = tab.id === activeTabId && terminalActive && !newTabOpen;
+          const active = tab.id === activeTabId && terminalActive && !activeNewTabId;
           const title = session?.title ?? "Terminal";
           // Best-effort cwd tooltip from shell integration (OSC 7 / OSC 1337).
           // Read outside React; refreshed on any tab re-render.
@@ -419,7 +719,7 @@ export function TabBar() {
             openPalette,
             hasTab: true,
             hasSession: Boolean(session),
-            onCloseTab: () => closeTab(tab.id),
+            onCloseTab: () => closeTabWithAnimation(tab.id),
             onSplitWithHost: () => setSplitHostOpen(true),
             onSaveTemplate: () => setSaveTemplateTab(tab),
             canSaveTemplate: tabHasRestorable(tab, sessions),
@@ -431,7 +731,7 @@ export function TabBar() {
             // Only offer merge when there is a previous tab to merge into.
             onMergeIntoPrevious:
               index > 0
-                ? () => mergeTabs(tab.id, tabs[index - 1].id)
+                ? () => mergeTabs(tab.id, visibleTabs[index - 1].id)
                 : undefined,
           });
           return (
@@ -455,12 +755,27 @@ export function TabBar() {
               onPointerCancel={cancelTabDrag}
               className={cn(
                 "group flex h-7 min-w-32 max-w-52 shrink-0 touch-none cursor-grab items-center gap-1.5 rounded-lg px-2.5 text-xs transition-colors active:cursor-grabbing",
+                "luma-tab-enter",
+                closingTabIds.has(tab.id) && "luma-tab-exit pointer-events-none",
                 active
                   ? "bg-raised text-foreground shadow-sm"
                   : "bg-raised/45 text-muted hover:bg-raised/75 hover:text-foreground",
                 isDropTarget &&
                   "bg-raised ring-2 ring-inset ring-accent",
-                isDragging && "scale-95 opacity-40",
+                // While dragging, the ghost represents the tab; the original
+                // dims in place, and collapses out of the strip once the tab
+                // tears off into its own window, like Chrome. Width collapse
+                // (not display:none / unmount) keeps pointer capture alive on
+                // this element for the rest of the gesture. An external drag
+                // (a detached window hovering the strip) keeps the dimmed
+                // placeholder visible instead: it marks where the tab will land
+                // and must not react to a pointer this window doesn't own.
+                isDragging &&
+                  (tornDrag
+                    ? "pointer-events-none min-w-0 max-w-0 overflow-hidden border-0 px-0 opacity-0 transition-all duration-150"
+                    : externalDrag
+                      ? "pointer-events-none opacity-40 transition-all duration-150"
+                      : "opacity-40 transition-all duration-150"),
               )}
             >
               {tabColor && (
@@ -519,7 +834,7 @@ export function TabBar() {
                 type="button"
                 data-tab-close
                 aria-label={`Close ${title}`}
-                onClick={() => closeTab(tab.id)}
+                onClick={() => closeTabWithAnimation(tab.id)}
                 className={cn(
                   "shrink-0 rounded p-0.5 hover:bg-raised hover:text-danger",
                   active ? "" : "invisible group-hover:visible",
@@ -531,18 +846,26 @@ export function TabBar() {
             </ContextMenu>
           );
         })}
-        {newTabOpen && (
+        {newTabIds.map((tabId) => (
           <div
+            key={tabId}
             role="presentation"
             onDoubleClick={(event) => event.stopPropagation()}
-            className="group flex h-7 min-w-32 max-w-52 shrink-0 items-center gap-1.5 rounded-lg bg-raised px-2.5 text-xs text-foreground shadow-sm"
+            className={cn(
+              "luma-tab-enter group flex h-7 min-w-32 max-w-52 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs",
+              tabId === activeNewTabId
+                ? "bg-raised text-foreground shadow-sm"
+                : "bg-raised/45 text-muted hover:bg-raised/75 hover:text-foreground",
+              closingTabIds.has(`new:${tabId}`) &&
+                "luma-tab-exit pointer-events-none",
+            )}
           >
             <button
               type="button"
               role="tab"
-              aria-selected="true"
-              aria-current="page"
-              onClick={openNewTab}
+              aria-selected={tabId === activeNewTabId}
+              aria-current={tabId === activeNewTabId ? "page" : undefined}
+              onClick={() => selectNewTab(tabId)}
               className="flex min-w-0 flex-1 items-center gap-1.5 truncate py-1.5 text-left"
             >
               <SquarePlus size={13} className="shrink-0 text-accent" />
@@ -551,41 +874,50 @@ export function TabBar() {
             <button
               type="button"
               aria-label="Close New tab"
-              onClick={closeNewTab}
+              onClick={() => closeNewTabWithAnimation(tabId)}
               className="shrink-0 rounded p-0.5 hover:bg-surface hover:text-danger"
             >
               <X size={13} />
             </button>
           </div>
-        )}
-      </div>
-      {draggedTabId && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-none fixed z-[100] flex min-w-44 flex-col gap-1.5 rounded-xl border border-accent/50 bg-raised/95 p-2.5 text-xs text-foreground shadow-glow backdrop-blur"
-          style={{
-            left: dragX + 14,
-            top: dragY + 14,
-          }}
+        ))}
+        <button
+          type="button"
+          aria-label="New tab"
+          title="New tab (Ctrl+Shift+T)"
+          onClick={openNewTab}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-raised hover:text-foreground"
         >
-          <div className="flex items-center gap-2 font-medium">
-            <Combine size={14} className="shrink-0 text-accent" />
-            <span className="max-w-48 truncate">{draggedTitle}</span>
+          <Plus size={15} />
+        </button>
+      </div>
+      {draggedTabId && !tornDrag && !externalDrag && (() => {
+        const draggedTab = tabs.find((t) => t.id === draggedTabId);
+        const draggedSession = draggedTab ? activeSessionOf(draggedTab) : undefined;
+        const draggedColor = draggedSession?.tabColor ?? null;
+        // Chrome-style drag preview: a lone tab follows the cursor. Once the
+        // pointer leaves the frame the tab tears off into a REAL window that
+        // takes over as the preview, so no ghost is drawn in the torn state.
+        return (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none fixed z-[100]"
+            style={{ left: dragX - 88, top: dragY - 14 }}
+          >
+            <div className="flex h-7 w-44 items-center gap-1.5 rounded-lg border border-border/60 bg-raised px-2.5 text-xs text-foreground shadow-lg">
+              {draggedColor && (
+                <span
+                  aria-hidden="true"
+                  className="h-4 w-0.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: draggedColor }}
+                />
+              )}
+              <TabIcon session={draggedSession} />
+              <span className="min-w-0 flex-1 truncate">{draggedTitle}</span>
+            </div>
           </div>
-          <span className={cn(
-            "rounded-md px-2 py-1 text-[10px] font-medium",
-            dragOverTabId
-              ? "bg-accent text-white"
-              : "bg-surface text-muted",
-          )}>
-            {selectedDropZone
-              ? `Release to ${selectedDropZone}`
-              : selectedTargetTabId
-                ? "Choose a split position in the workspace"
-                : "Drag onto another tab to split"}
-          </span>
-        </div>
-      )}
+        );
+      })()}
 
       <div
         onDoubleClick={(event) => event.stopPropagation()}
@@ -622,15 +954,6 @@ export function TabBar() {
           )}
         >
           <Users size={15} />
-        </button>
-        <button
-          type="button"
-          aria-label="New tab"
-          title="New tab (Ctrl+Shift+T)"
-          onClick={openNewTab}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-raised hover:text-foreground"
-        >
-          <Plus size={15} />
         </button>
         <WorkspaceMenu
           onSplitWithHost={() => setSplitHostOpen(true)}
@@ -746,8 +1069,8 @@ function latencyChipClass(latencyMs: number): string {
   return "bg-danger/15 text-danger";
 }
 
-/** Subtle latency chip shown on connected SSH tabs. */
-function LatencyChip({ latencyMs }: { latencyMs: number }) {
+/** Subtle latency chip shown on connected SSH tabs and pane title bars. */
+export function LatencyChip({ latencyMs }: { latencyMs: number }) {
   return (
     <span
       title={`Round-trip latency: ${latencyMs} ms`}
@@ -761,7 +1084,7 @@ function LatencyChip({ latencyMs }: { latencyMs: number }) {
   );
 }
 
-function TabIcon({ session }: { session: TerminalSession | undefined }) {
+export function TabIcon({ session }: { session: TerminalSession | undefined }) {
   if (!session) return null;
   // Reconnect state layers over the normal status so a dropped SSH session reads
   // as "reconnecting" (amber spinner) or "failed" (red dot) at a glance.

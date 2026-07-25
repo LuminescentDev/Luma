@@ -12,7 +12,13 @@ import { cn } from "../../lib/utils";
 import { looksLikeConnectionString } from "../../lib/connectionString";
 import { parseLumaError, quickConnectPrepare } from "../../lib/hosts";
 
-export function NewTabLauncher() {
+export function NewTabLauncher({
+  tabId,
+  active,
+}: {
+  tabId: string;
+  active: boolean;
+}) {
   const [query, setQuery] = useState("");
   const [quickError, setQuickError] = useState<string | null>(null);
   const [quickBusy, setQuickBusy] = useState(false);
@@ -29,21 +35,23 @@ export function NewTabLauncher() {
   const closeNewTab = useUiStore((s) => s.closeNewTab);
   const openSerialConnect = useUiStore((s) => s.openSerialConnect);
 
-  useEffect(() => inputRef.current?.focus(), []);
+  useEffect(() => {
+    if (active) inputRef.current?.focus();
+  }, [active]);
 
   // Escape dismisses the launcher regardless of what currently holds focus (the
   // search input, a host button, or nothing). Capture phase so it fires before
   // any focused surface handles the key and can't be swallowed en route.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (!active || event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      closeNewTab();
+      closeNewTab(tabId);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [closeNewTab]);
+  }, [active, closeNewTab, tabId]);
 
   const needle = query.trim().toLowerCase();
   const matchingHosts = useMemo(() => {
@@ -92,12 +100,12 @@ export function NewTabLauncher() {
   };
 
   return (
-    <div className="absolute inset-0 z-20 flex flex-col bg-background">
+    <div className={cn("absolute inset-0 z-20 flex flex-col bg-background", !active && "hidden")}>
       <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-3">
         <span className="pl-1 text-xs font-medium text-muted">New tab</span>
         <button
           type="button"
-          onClick={() => closeNewTab()}
+          onClick={() => closeNewTab(tabId)}
           aria-label={hasOpenTab ? "Close and return to terminal" : "Close"}
           title="Close (Esc)"
           className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-raised hover:text-foreground"

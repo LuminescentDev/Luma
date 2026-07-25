@@ -1,4 +1,10 @@
-import { Terminal, type IDecoration, type IMarker, type ITheme } from "@xterm/xterm";
+import {
+  Terminal,
+  type IBufferCell,
+  type IDecoration,
+  type IMarker,
+  type ITheme,
+} from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -209,6 +215,7 @@ export type CommandMarkInfo = {
 // disposes markers when their line is trimmed from scrollback; we also drop the
 // oldest here once the cap is exceeded.
 const MAX_COMMAND_MARKS = 500;
+const outputSubscribers = new Map<string, Set<(data: Uint8Array) => void>>();
 
 // Failed-command gutter bar color (works on both themes; matches the danger red).
 const FAILED_COMMAND_COLOR = "#f87171";
@@ -349,6 +356,72 @@ function isMac(): boolean {
 function currentTheme(): ITheme {
   if (schemeOverride) return schemeOverride;
   return config.theme === "light" ? LIGHT_THEME : DARK_THEME;
+}
+
+/**
+ * Give back one row when the grid the fit addon chose renders taller than the
+ * space it had to fill, which clips the bottom line.
+ *
+ * The addon divides the available height by a cell height it derives from the
+ * CURRENT grid (`round(deviceCellHeight * rows / dpr) / rows`), so that figure
+ * carries a rounding error that shrinks as rows grow. At fractional DPRs the
+ * error can understate the true cell height enough that the chosen row count
+ * renders a few pixels past the container — xterm sizes .xterm-screen from its
+ * own exact math, and the overflow lands on the last line.
+ *
+ * Comparing the rendered height against the container after the fact catches
+ * that regardless of how the addon arrived at the number.
+ */
+function dropOverflowingRow(session: ManagedSession): void {
+  const element = session.term.element;
+  const parent = element?.parentElement;
+  const screen = element?.querySelector<HTMLElement>(".xterm-screen");
+  if (!element || !parent || !screen) return;
+  // Padding lives on the host (the pane reserves pl-2 pt-1.5), not on the
+  // padding-less .xterm element. clientHeight includes that padding, so subtract
+  // the host's own padding to get the content box the grid actually fills;
+  // reading the .xterm element's padding here would always be 0 and leave the
+  // reserved space counted as available, clipping the last row.
+  const style = window.getComputedStyle(parent);
+  const available =
+    parent.clientHeight -
+    (parseFloat(style.paddingTop) || 0) -
+    (parseFloat(style.paddingBottom) || 0);
+  const rendered = screen.getBoundingClientRect().height;
+  // Sub-pixel slack: a fraction of a pixel is not a visibly clipped row, and
+  // getBoundingClientRect is itself fractional.
+  if (rendered - available <= 0.5 || session.term.rows <= 1) return;
+  session.term.resize(session.term.cols, session.term.rows - 1);
+}
+
+/** SGR parameters reproducing a buffer cell's colors and attributes, as the
+ * body of a single `ESC [ ... m`, or "" for a cell with default styling. Used
+ * to serialize a scrollback buffer for replay into another window. */
+function cellStyle(cell: IBufferCell): string {
+  if (cell.isAttributeDefault()) return "";
+  const params: number[] = [];
+  if (cell.isBold()) params.push(1);
+  if (cell.isDim()) params.push(2);
+  if (cell.isItalic()) params.push(3);
+  if (cell.isUnderline()) params.push(4);
+  if (cell.isBlink()) params.push(5);
+  if (cell.isInverse()) params.push(7);
+  if (cell.isInvisible()) params.push(8);
+  if (cell.isStrikethrough()) params.push(9);
+  if (cell.isOverline()) params.push(53);
+  if (cell.isFgRGB()) {
+    const rgb = cell.getFgColor();
+    params.push(38, 2, (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+  } else if (cell.isFgPalette()) {
+    params.push(38, 5, cell.getFgColor());
+  }
+  if (cell.isBgRGB()) {
+    const rgb = cell.getBgColor();
+    params.push(48, 2, (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+  } else if (cell.isBgPalette()) {
+    params.push(48, 5, cell.getBgColor());
+  }
+  return params.length > 0 ? `\x1b[${params.join(";")}m` : "";
 }
 
 function pumpInput(session: ManagedSession): void {
@@ -756,6 +829,11 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
         typeof data === "string" ? new TextEncoder().encode(data) : data;
       session.outputTap(bytes);
     }
+    const subscribers = outputSubscribers.get(session.id);
+    if (subscribers?.size) {
+      const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+      for (const subscriber of subscribers) subscriber(bytes);
+    }
     if (descriptor.kind !== "ssh") return;
     const text = typeof data === "string" ? data : new TextDecoder().decode(data);
     session.sshTranscript = (session.sshTranscript + text).slice(-16_384);
@@ -935,6 +1013,81 @@ export const terminalManager = {
    * session id. It changes on every restart, so callers must not cache it. */
   getBackendId(sessionId: string): string | null {
     return sessions.get(sessionId)?.backendId ?? null;
+  },
+
+  /** Current grid size of a session's terminal, or null when unknown. */
+  getDimensions(sessionId: string): { cols: number; rows: number } | null {
+    const term = sessions.get(sessionId)?.term;
+    return term ? { cols: term.cols, rows: term.rows } : null;
+  },
+
+  /** Resize a session's xterm grid directly (a backend session's onResize
+   * handler then propagates the size to its PTY). Used by detached windows:
+   * the display copy fits to the new window and the real session mirrors that
+   * size here, so the shell redraws for the grid actually on screen. */
+  resizeTerminal(sessionId: string, cols: number, rows: number): void {
+    const session = sessions.get(sessionId);
+    if (!session || session.disposed || cols < 1 || rows < 1) return;
+    if (session.term.cols === cols && session.term.rows === rows) return;
+    session.term.resize(cols, rows);
+  },
+
+  /** The session's scrollback + viewport as replayable text, WITH the SGR
+   * escapes needed to reproduce its colors and styling. `translateToString`
+   * alone returns bare characters, which is why a replayed buffer used to
+   * arrive completely uncolored. */
+  getBufferText(sessionId: string): string {
+    const buffer = sessions.get(sessionId)?.term.buffer.active;
+    if (!buffer) return "";
+    const cell = buffer.getNullCell();
+    const lines: string[] = [];
+    for (let index = 0; index < buffer.length; index += 1) {
+      const line = buffer.getLine(index);
+      if (!line) {
+        lines.push("");
+        continue;
+      }
+      let text = "";
+      let style = "";
+      let pendingBlanks = "";
+      for (let column = 0; column < line.length; column += 1) {
+        if (!line.getCell(column, cell)) break;
+        // Width 0 means this cell is the tail of a preceding wide glyph; its
+        // characters already came through with that glyph.
+        if (cell.getWidth() === 0) continue;
+        const chars = cell.getChars() || " ";
+        const nextStyle = cellStyle(cell);
+        // Trailing run of unstyled blanks is dropped, matching the old
+        // trimRight behaviour, but only once the line is known to end.
+        if (chars === " " && nextStyle === "") {
+          pendingBlanks += chars;
+          continue;
+        }
+        if (pendingBlanks !== "") {
+          // Close the open run before the gap: these blanks carry no styling,
+          // so emitting them under a live background colour would paint it.
+          if (style !== "") {
+            text += "\x1b[0m";
+            style = "";
+          }
+          text += pendingBlanks;
+          pendingBlanks = "";
+        }
+        if (nextStyle !== style) {
+          // SGR attributes are cumulative, so a switch out of a non-default
+          // style needs a reset first or the previous run's bold/colour leaks.
+          text += style === "" ? nextStyle : `\x1b[0m${nextStyle}`;
+          style = nextStyle;
+        }
+        text += chars;
+      }
+      lines.push(style === "" ? text : `${text}\x1b[0m`);
+    }
+    // Drop the empty viewport rows below the last content. Replaying them into
+    // another terminal would push the cursor to the bottom of a full screen of
+    // blanks, leaving a large gap before the shell's next redraw.
+    while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.join("\r\n");
   },
 
   /** The last working directory this session reported via OSC 7 / OSC 1337, or
@@ -1164,6 +1317,7 @@ export const terminalManager = {
     if (!session?.term.element?.isConnected) return;
     try {
       session.fit.fit();
+      dropOverflowingRow(session);
     } catch {
       // Ignore fit errors during teardown.
     }
@@ -1397,6 +1551,16 @@ export const terminalManager = {
     if (session) session.outputTap = null;
   },
 
+  subscribeOutput(sessionId: string, subscriber: (data: Uint8Array) => void): () => void {
+    const subscribers = outputSubscribers.get(sessionId) ?? new Set();
+    subscribers.add(subscriber);
+    outputSubscribers.set(sessionId, subscribers);
+    return () => {
+      subscribers.delete(subscriber);
+      if (subscribers.size === 0) outputSubscribers.delete(sessionId);
+    };
+  },
+
   /**
    * Inject remote controller input into a shared backend session's PTY. Mirrors
    * the local typing path (coalesced write lane) but never steals focus, so the
@@ -1419,13 +1583,19 @@ export const terminalManager = {
    */
   createDisplaySession(
     sessionId: string,
-    options: { onInput?: (data: string) => void } = {},
+    options: {
+      onInput?: (data: string) => void;
+      /** Notified when this display terminal's grid is refit (window resize).
+       * Detached windows forward this to the real session so the backend PTY
+       * matches the grid actually on screen. */
+      onResize?: (cols: number, rows: number) => void;
+    } = {},
   ): void {
     if (sessions.has(sessionId)) return;
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: false,
-      disableStdin: true,
+      disableStdin: options.onInput === undefined,
       fontFamily: config.fontFamily,
       fontSize: config.fontSize,
       scrollback: config.scrollback,
@@ -1482,12 +1652,31 @@ export const terminalManager = {
     sessions.set(sessionId, session);
 
     term.onData((data) => routeUserInput(session, data));
+    if (options.onResize) {
+      const onResize = options.onResize;
+      term.onResize(({ cols, rows }) => {
+        if (session.resizeTimer !== null) window.clearTimeout(session.resizeTimer);
+        session.resizeTimer = window.setTimeout(() => {
+          session.resizeTimer = null;
+          if (!session.disposed) onResize(cols, rows);
+        }, BACKEND_RESIZE_DEBOUNCE_MS);
+      });
+    }
 
     const pendingHost = pendingHosts.get(sessionId);
     if (pendingHost) {
       pendingHosts.delete(sessionId);
       this.attach(sessionId, pendingHost);
     }
+  },
+
+  /** Clear a display-only session's screen and scrollback, so a buffer snapshot
+   * can be (re)applied without stacking on whatever it already showed. */
+  resetOutput(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (!session || !session.display) return;
+    session.term.reset();
+    session.term.clear();
   },
 
   /** Write decrypted remote output bytes into a display-only session's xterm.
@@ -1528,6 +1717,7 @@ export const terminalManager = {
     }
     session.term.dispose();
     sessions.delete(sessionId);
+    outputSubscribers.delete(sessionId);
   },
 };
 

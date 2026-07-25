@@ -23,6 +23,7 @@ export function PaneView({
   tabId,
   focused,
   showFocusRing,
+  titleBar,
   broadcastActive,
   broadcasting,
   onFocus,
@@ -33,6 +34,9 @@ export function PaneView({
   focused: boolean;
   /** Only draw the focus ring when the tab actually has more than one pane. */
   showFocusRing: boolean;
+  /** The pane's title bar / drag handle, rendered above the terminal. Omitted
+   * for a lone pane, where the tab strip already names the session. */
+  titleBar?: React.ReactNode;
   /** The owning tab has broadcast enabled (and more than one pane), so the
    * per-pane include/exclude action is offered. */
   broadcastActive: boolean;
@@ -305,7 +309,7 @@ export function PaneView({
     >
     <div
       className={cn(
-        "relative h-full w-full min-h-0 min-w-0 overflow-hidden",
+        "relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden",
         showFocusRing &&
           (focused
             ? "rounded-md ring-1 ring-accent/70"
@@ -315,7 +319,10 @@ export function PaneView({
         if (!focused) onFocus();
       }}
     >
-      <div ref={hostRef} className="h-full w-full pl-2 pt-1.5" />
+      {titleBar}
+      {/* The xterm host keeps its own padding and stays the terminal's direct
+          parent: dropOverflowingRow measures this element's content box. */}
+      <div ref={hostRef} className="min-h-0 w-full flex-1 pl-2 pt-1.5" />
 
       {/* Broadcast indicator: a distinct accent-tinted inset border plus a
           corner badge on every pane currently receiving fanned-out input.

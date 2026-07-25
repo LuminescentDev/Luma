@@ -111,6 +111,25 @@ type SessionState = {
     placement?: "before" | "after",
     targetPaneId?: string,
   ) => void;
+  /** Move ONE pane out of its tab and re-split it beside `targetPaneId`. Both
+   * panes keep their leaf and session ids, so xterm instances re-attach rather
+   * than respawn. The source tab collapses (and is removed when the moved pane
+   * was its last one). No-op when source and target are the same pane. */
+  movePaneToPane: (
+    sourceTabId: string,
+    sourcePaneId: string,
+    targetTabId: string,
+    targetPaneId: string,
+    direction: SplitDirection,
+    placement: "before" | "after",
+  ) => void;
+  /** Move ONE pane out of its tab into a brand-new tab of its own (the inverse
+   * of a split). Returns the new tab id, or null when the pane cannot move. */
+  detachPaneToTab: (
+    sourceTabId: string,
+    sourcePaneId: string,
+    options?: { activate?: boolean },
+  ) => string | null;
   /** Open ONE new grouped tab reproducing a saved template layout, spawning
    * every leaf via the restore path with fresh session/pane ids. */
   openTemplate: (root: SnapshotPaneNode) => void;
@@ -1039,14 +1058,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   mergeTabs: (sourceTabId, targetTabId, direction = "row", placement = "after", targetPaneId) => {
     if (sourceTabId === targetTabId) return;
+    // Preflight before any state mutation or terminal side effect: unknown tabs,
+    // or a stale pane target (the layout changed between hover and drop), make
+    // the whole merge a true no-op. Otherwise splitLeaf would return the target
+    // root unchanged while the source tab is still removed, and the trailing
+    // showTerminal/clearBroadcastGroup/syncBroadcast/focus would fire on a merge
+    // that never happened.
+    const source = get().tabs.find((t) => t.id === sourceTabId);
+    const target = get().tabs.find((t) => t.id === targetTabId);
+    if (!source || !target) return;
+    if (targetPaneId && !findLeaf(target.root, targetPaneId)) return;
+
     // Sessions grafted out of the source tab must not keep the source's broadcast
     // group; they re-join only if the target tab itself broadcasts (synced below).
-    const movedSessionIds =
-      get().tabs.find((t) => t.id === sourceTabId)?.root
-        ? collectLeaves(get().tabs.find((t) => t.id === sourceTabId)!.root).map(
-            (leaf) => leaf.sessionId,
-          )
-        : [];
+    const movedSessionIds = collectLeaves(source.root).map((leaf) => leaf.sessionId);
     set((state) => {
       const source = state.tabs.find((t) => t.id === sourceTabId);
       const target = state.tabs.find((t) => t.id === targetTabId);
@@ -1109,6 +1134,164 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     syncBroadcast(get().tabs.find((t) => t.id === targetTabId));
     const sessionId = get().activeSessionId;
     if (sessionId) requestAnimationFrame(() => terminalManager.focus(sessionId));
+  },
+
+  movePaneToPane: (
+    sourceTabId,
+    sourcePaneId,
+    targetTabId,
+    targetPaneId,
+    direction,
+    placement,
+  ) => {
+    if (sourcePaneId === targetPaneId) return;
+    // Preflight before any mutation, mirroring mergeTabs: a stale pane id (the
+    // layout changed between hover and drop) makes the whole move a no-op
+    // rather than removing the pane and failing to re-insert it.
+    const source = get().tabs.find((t) => t.id === sourceTabId);
+    const target = get().tabs.find((t) => t.id === targetTabId);
+    if (!source || !target) return;
+    const movedLeaf = findLeaf(source.root, sourcePaneId);
+    if (!movedLeaf || !findLeaf(target.root, targetPaneId)) return;
+    const movedNode: PaneNode = {
+      kind: "leaf",
+      id: movedLeaf.id,
+      sessionId: movedLeaf.sessionId,
+    };
+
+    set((state) => {
+      const source = state.tabs.find((t) => t.id === sourceTabId);
+      const target = state.tabs.find((t) => t.id === targetTabId);
+      if (!source || !target) return {};
+
+      if (sourceTabId === targetTabId) {
+        // Same tab: detach the pane first so splitLeaf sees the collapsed tree,
+        // then re-insert beside the target. removeLeaf can only return null for
+        // a single-leaf tree, which cannot also contain a distinct target.
+        const pruned = removeLeaf(source.root, sourcePaneId);
+        if (!pruned || !findLeaf(pruned, targetPaneId)) return {};
+        const root = splitLeaf(pruned, targetPaneId, direction, movedNode, placement);
+        const tabs = state.tabs.map((t) =>
+          t.id === sourceTabId ? { ...t, root, activePaneId: sourcePaneId } : t,
+        );
+        return {
+          tabs,
+          activeTabId: sourceTabId,
+          activeSessionId: computeActiveSession(tabs, sourceTabId),
+        };
+      }
+
+      const prunedSource = removeLeaf(source.root, sourcePaneId);
+      const targetRoot = splitLeaf(
+        target.root,
+        targetPaneId,
+        direction,
+        movedNode,
+        placement,
+      );
+
+      const tabs: WorkspaceTab[] = [];
+      for (const tab of state.tabs) {
+        if (tab.id === sourceTabId) {
+          // The source tab disappears when its last pane moved away.
+          if (!prunedSource) continue;
+          const remaining = collectLeaves(prunedSource);
+          const stillMultiPane = remaining.length > 1;
+          tabs.push({
+            ...tab,
+            root: prunedSource,
+            activePaneId:
+              tab.activePaneId === sourcePaneId
+                ? remaining[0].id
+                : tab.activePaneId,
+            broadcastEnabled: stillMultiPane ? tab.broadcastEnabled : false,
+            broadcastExcluded: (tab.broadcastExcluded ?? []).filter(
+              (sid) => sid !== movedLeaf.sessionId,
+            ),
+          });
+          continue;
+        }
+        // Focus follows the moved pane; its leaf id survives the graft.
+        tabs.push(
+          tab.id === targetTabId
+            ? { ...tab, root: targetRoot, activePaneId: sourcePaneId }
+            : tab,
+        );
+      }
+      return {
+        tabs,
+        activeTabId: targetTabId,
+        activeSessionId: computeActiveSession(tabs, targetTabId),
+      };
+    });
+
+    useUiStore.getState().showTerminal();
+    // The moved session leaves its old broadcast group unconditionally; it
+    // re-joins only if the tab it landed in is itself broadcasting.
+    terminalManager.clearBroadcastGroup(movedLeaf.sessionId);
+    syncBroadcast(get().tabs.find((t) => t.id === sourceTabId));
+    if (sourceTabId !== targetTabId) {
+      syncBroadcast(get().tabs.find((t) => t.id === targetTabId));
+    }
+    const sessionId = get().activeSessionId;
+    if (sessionId) requestAnimationFrame(() => terminalManager.focus(sessionId));
+  },
+
+  detachPaneToTab: (sourceTabId, sourcePaneId, options) => {
+    const source = get().tabs.find((t) => t.id === sourceTabId);
+    if (!source) return null;
+    const movedLeaf = findLeaf(source.root, sourcePaneId);
+    // A lone pane is already its own tab; moving it would just recreate it.
+    if (!movedLeaf || collectLeaves(source.root).length < 2) return null;
+
+    const newTabId = crypto.randomUUID();
+    set((state) => {
+      const source = state.tabs.find((t) => t.id === sourceTabId);
+      if (!source) return {};
+      const prunedSource = removeLeaf(source.root, sourcePaneId);
+      if (!prunedSource) return {};
+      const remaining = collectLeaves(prunedSource);
+      const stillMultiPane = remaining.length > 1;
+      const moved: WorkspaceTab = {
+        id: newTabId,
+        root: { kind: "leaf", id: movedLeaf.id, sessionId: movedLeaf.sessionId },
+        activePaneId: movedLeaf.id,
+      };
+
+      const index = state.tabs.findIndex((t) => t.id === sourceTabId);
+      const tabs = state.tabs.map((t) =>
+        t.id === sourceTabId
+          ? {
+              ...t,
+              root: prunedSource,
+              activePaneId:
+                t.activePaneId === sourcePaneId ? remaining[0].id : t.activePaneId,
+              broadcastEnabled: stillMultiPane ? t.broadcastEnabled : false,
+              broadcastExcluded: (t.broadcastExcluded ?? []).filter(
+                (sid) => sid !== movedLeaf.sessionId,
+              ),
+            }
+          : t,
+      );
+      // Land the new tab immediately after the one it came from.
+      tabs.splice(index + 1, 0, moved);
+      const activate = options?.activate !== false;
+      const activeTabId = activate ? newTabId : state.activeTabId;
+      return {
+        tabs,
+        activeTabId,
+        activeSessionId: computeActiveSession(tabs, activeTabId),
+      };
+    });
+
+    if (options?.activate !== false) useUiStore.getState().showTerminal();
+    terminalManager.clearBroadcastGroup(movedLeaf.sessionId);
+    syncBroadcast(get().tabs.find((t) => t.id === sourceTabId));
+    if (options?.activate !== false) {
+      const sessionId = get().activeSessionId;
+      if (sessionId) requestAnimationFrame(() => terminalManager.focus(sessionId));
+    }
+    return newTabId;
   },
 
   openTemplate: (root) => {

@@ -12,6 +12,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useUiStore } from '../stores/uiStore';
 import { selectRunningCount, useTunnelStore } from '../stores/tunnelStore';
@@ -23,6 +24,8 @@ import { TabBar } from '../features/terminal/TabBar';
 const appWindow = getCurrentWindow();
 
 export function TitleBar() {
+  const windowFocused = useRef(false);
+  const focusedAt = useRef(0);
   const navOpen = useUiStore((s) => s.navOpen);
   const toggleNav = useUiStore((s) => s.toggleNav);
   const openNav = useUiStore((s) => s.openNav);
@@ -32,9 +35,42 @@ export function TitleBar() {
   const runningTunnels = useTunnelStore(selectRunningCount);
   const activeTransfers = useSftpStore(selectActiveTransferCount);
   const { data: syncConfig } = useSyncConfig();
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void appWindow.isFocused().then((focused) => {
+      if (!cancelled) windowFocused.current = focused;
+    }).catch(() => {});
+    void appWindow.onFocusChanged(({ payload: focused }) => {
+      windowFocused.current = focused;
+      if (focused) focusedAt.current = Date.now();
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   return (
     <header
-      data-tauri-drag-region
+      onMouseDown={(event) => {
+        const target = event.target as Element;
+        const wasJustFocused = Date.now() - focusedAt.current < 250;
+        if (
+          event.button === 0 &&
+          windowFocused.current &&
+          !wasJustFocused &&
+          !target.closest('button, [data-luma-tab-id]')
+        ) {
+          void appWindow.startDragging();
+        }
+      }}
       onDoubleClick={() => void appWindow.toggleMaximize()}
       className='flex h-10 shrink-0 select-none items-center gap-1 border-b border-border bg-surface px-1.5'
     >
@@ -83,7 +119,6 @@ export function TitleBar() {
         <FolderOpen size={13} className='text-accent' /> SFTP
       </button>
       <div
-        data-tauri-drag-region
         className='flex min-w-0 flex-1 items-center pl-1'
       >
         <TabBar />

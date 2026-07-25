@@ -83,6 +83,8 @@ export type CollabRuntimeState = {
   /** terminalId → memberId currently holding its control lease (null = free). */
   control: Record<string, string | null>;
   errorMessage: string | null;
+  /** Local terminal session associated with this room (host rooms only). */
+  ownerSessionId: string | null;
 };
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -129,12 +131,14 @@ type Room = {
   snapshotBytes: number;
   snapshotEtag: string | null;
   errorMessage: string | null;
+  status: CollabConnectionStatus;
 };
 
-let room: Room | null = null;
-let observer: ((state: CollabRuntimeState) => void) | null = null;
+const rooms = new Map<string, Room>();
+let viewingRoomId: string | null = null;
+let observer: ((states: CollabRuntimeState[]) => void) | null = null;
 
-export function setCollabObserver(fn: ((state: CollabRuntimeState) => void) | null): void {
+export function setCollabObserver(fn: ((states: CollabRuntimeState[]) => void) | null): void {
   observer = fn;
 }
 
@@ -150,19 +154,22 @@ const IDLE_STATE: CollabRuntimeState = {
   participants: [],
   control: {},
   errorMessage: null,
+  ownerSessionId: null,
 };
 
-let currentStatus: CollabConnectionStatus = "idle";
-
 export function getCollabState(): CollabRuntimeState {
-  if (!room) return { ...IDLE_STATE };
-  return snapshot(room);
+  const first = rooms.values().next().value as Room | undefined;
+  return first ? snapshot(first) : { ...IDLE_STATE };
+}
+
+export function getCollabStates(): CollabRuntimeState[] {
+  return [...rooms.values()].map(snapshot);
 }
 
 function snapshot(r: Room): CollabRuntimeState {
   return {
     mode: r.mode,
-    status: currentStatus,
+    status: r.status,
     roomId: r.roomId,
     role: r.role,
     keyEpoch: r.keyEpoch,
@@ -175,15 +182,16 @@ function snapshot(r: Room): CollabRuntimeState {
     })),
     control: Object.fromEntries(r.control),
     errorMessage: r.errorMessage,
+    ownerSessionId: r.ownerSessionId,
   };
 }
 
 function notify(): void {
-  observer?.(room ? snapshot(room) : { ...IDLE_STATE, status: currentStatus });
+  observer?.(getCollabStates());
 }
 
-function setStatus(status: CollabConnectionStatus): void {
-  currentStatus = status;
+function setStatus(r: Room, status: CollabConnectionStatus): void {
+  r.status = status;
   notify();
 }
 
@@ -259,7 +267,8 @@ async function sealToDevices(
  * `terminal.output` events. Returns the room id to share out-of-band.
  */
 export async function startSharing(sessionId: string): Promise<{ roomId: string }> {
-  if (room) await leaveRoom();
+  const existing = [...rooms.values()].find((candidate) => candidate.ownerSessionId === sessionId);
+  if (existing) return { roomId: existing.roomId };
   if (!terminalManager.isKnown(sessionId)) {
     throw new Error("This terminal is no longer available to share.");
   }
@@ -274,7 +283,7 @@ export async function startSharing(sessionId: string): Promise<{ roomId: string 
   const roomKey = await importRoomKey(roomKeyBytes);
   const sharedTerminalId = crypto.randomUUID();
 
-  room = newRoom({
+  const room = newRoom({
     mode: "hosting",
     roomId,
     deviceId: identity.deviceId,
@@ -287,11 +296,12 @@ export async function startSharing(sessionId: string): Promise<{ roomId: string 
     ownerSessionId: sessionId,
     displaySessionId: null,
   });
+  rooms.set(roomId, room);
   room.roleByMemberId.set(created.memberId, "owner");
 
   // Tap output bytes → encrypt → broadcast, and accumulate the rolling snapshot.
   terminalManager.setOutputTap(sessionId, (bytes) => {
-    if (!room || room.roomId !== roomId) return;
+    if (rooms.get(roomId) !== room) return;
     appendSnapshot(room, bytes);
     void encryptAndSend(room, "terminal.output", bytes, sharedTerminalId).catch(() => {});
   });
@@ -303,7 +313,13 @@ export async function startSharing(sessionId: string): Promise<{ roomId: string 
 
 /** Stop sharing and tear down the room (owner). */
 export async function stopSharing(): Promise<void> {
-  await leaveRoom();
+  const hosted = [...rooms.values()].find((candidate) => candidate.mode === "hosting");
+  if (hosted) await leaveRoom(hosted.roomId);
+}
+
+export async function stopSharingRoom(roomId: string): Promise<void> {
+  const target = rooms.get(roomId);
+  if (target?.mode === "hosting") await leaveRoom(roomId);
 }
 
 // -- Owner: add a participant from their invite token -----------------------
@@ -316,7 +332,9 @@ export async function stopSharing(): Promise<void> {
 export async function addParticipant(
   token: string,
   role: InvitedRoomRole,
+  roomId?: string,
 ): Promise<void> {
+  const room = roomId ? rooms.get(roomId) : [...rooms.values()].find((r) => r.mode === "hosting");
   if (!room || room.mode !== "hosting" || !room.roomKeyBytes) {
     throw new Error("Start sharing a terminal before adding participants.");
   }
@@ -357,7 +375,8 @@ function roomKeyFromBase64(value: string): Uint8Array {
  * room key stays inside this module except within the returned link, which the
  * caller shows once for the owner to hand out over a trusted channel.
  */
-export async function createJoinLink(role: InvitedRoomRole): Promise<string> {
+export async function createJoinLink(role: InvitedRoomRole, roomId?: string): Promise<string> {
+  const room = roomId ? rooms.get(roomId) : [...rooms.values()].find((r) => r.mode === "hosting");
   if (!room || room.mode !== "hosting" || !room.roomKeyBytes) {
     throw new Error("Start sharing a terminal before creating a join link.");
   }
@@ -409,7 +428,7 @@ export async function joinRoomByCapability(payload: JoinLinkPayload): Promise<vo
  * xterm (viewer/controller). Call `attachViewer` to mount it.
  */
 export async function joinRoom(roomId: string): Promise<void> {
-  if (room) await leaveRoom();
+  if (viewingRoomId) await leaveRoom(viewingRoomId);
   const identity = await registerDevice();
   const details = await collabGetRoom(roomId, identity.deviceId);
   const roomKeyBytes = await openRoomKey(details.keyEnvelope, identity.privateKey, {
@@ -420,7 +439,7 @@ export async function joinRoom(roomId: string): Promise<void> {
   const roomKey = await importRoomKey(roomKeyBytes);
   const displaySessionId = `${VIEWER_DISPLAY_PREFIX}${roomId}`;
 
-  room = newRoom({
+  const room = newRoom({
     mode: "viewing",
     roomId,
     deviceId: identity.deviceId,
@@ -433,6 +452,8 @@ export async function joinRoom(roomId: string): Promise<void> {
     ownerSessionId: null,
     displaySessionId,
   });
+  rooms.set(roomId, room);
+  viewingRoomId = roomId;
   room.roleByMemberId.set(details.memberId, details.role);
 
   terminalManager.createDisplaySession(displaySessionId, {
@@ -443,8 +464,9 @@ export async function joinRoom(roomId: string): Promise<void> {
 }
 
 /** Leave the current room (viewer or owner) and release every resource. */
-export async function leaveRoom(): Promise<void> {
-  const r = room;
+export async function leaveRoom(roomId?: string): Promise<void> {
+  const targetId = roomId ?? viewingRoomId ?? rooms.keys().next().value;
+  const r = targetId ? rooms.get(targetId) : undefined;
   if (!r) return;
   r.closing = true;
   clearTimers(r);
@@ -457,33 +479,38 @@ export async function leaveRoom(): Promise<void> {
       // ignore
     }
   }
-  room = null;
-  setStatus("idle");
+  rooms.delete(r.roomId);
+  if (viewingRoomId === r.roomId) viewingRoomId = null;
+  notify();
 }
 
 // -- Viewer terminal attach / control ---------------------------------------
 
 /** The local xterm session id for the shared viewer terminal, or null. */
 export function viewerDisplaySessionId(): string | null {
-  return room?.displaySessionId ?? null;
+  return viewingRoomId ? rooms.get(viewingRoomId)?.displaySessionId ?? null : null;
 }
 
 export function attachViewer(host: HTMLElement): void {
+  const room = viewingRoomId ? rooms.get(viewingRoomId) : null;
   if (room?.displaySessionId) terminalManager.attach(room.displaySessionId, host);
 }
 
 export function detachViewer(): void {
+  const room = viewingRoomId ? rooms.get(viewingRoomId) : null;
   if (room?.displaySessionId) terminalManager.detach(room.displaySessionId);
 }
 
 /** Request the shared terminal's control lease (controller role only). */
 export function requestControl(): void {
+  const room = viewingRoomId ? rooms.get(viewingRoomId) : null;
   if (!room || room.role !== "controller" || !room.sharedTerminalId) return;
   send(room, { type: "control.acquire", terminalId: room.sharedTerminalId });
 }
 
 /** Release the control lease held by this connection. */
 export function releaseControl(): void {
+  const room = viewingRoomId ? rooms.get(viewingRoomId) : null;
   if (!room || !room.sharedTerminalId) return;
   send(room, { type: "control.release", terminalId: room.sharedTerminalId });
 }
@@ -491,27 +518,27 @@ export function releaseControl(): void {
 // -- Connection lifecycle ----------------------------------------------------
 
 async function connect(r: Room): Promise<void> {
-  setStatus(r.reconnectAttempt > 0 ? "reconnecting" : "connecting");
+  setStatus(r, r.reconnectAttempt > 0 ? "reconnecting" : "connecting");
   let ticket: { realtimeUrl: string };
   try {
     ticket = await collabIssueRealtimeTicket(r.roomId, r.deviceId);
   } catch (error) {
-    if (room !== r) return;
+    if (rooms.get(r.roomId) !== r) return;
     r.errorMessage = parseCollaborationError(error).message;
-    setStatus("error");
+    setStatus(r, "error");
     scheduleReconnect(r);
     return;
   }
-  if (room !== r || r.closing) return;
+  if (rooms.get(r.roomId) !== r || r.closing) return;
 
   const ws = new WebSocket(ticket.realtimeUrl);
   r.ws = ws;
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-    if (room !== r) return;
+    if (rooms.get(r.roomId) !== r) return;
     r.reconnectAttempt = 0;
-    setStatus("connected");
+    setStatus(r, "connected");
     startHeartbeat(r);
     if (r.mode === "hosting" && r.sharedTerminalId) {
       // Advertise the shared terminal id so viewers can learn it immediately.
@@ -521,7 +548,7 @@ async function connect(r: Room): Promise<void> {
   };
 
   ws.onmessage = (event) => {
-    if (room !== r || typeof event.data !== "string") return;
+    if (rooms.get(r.roomId) !== r || typeof event.data !== "string") return;
     let message: ServerMessage;
     try {
       message = JSON.parse(event.data) as ServerMessage;
@@ -532,13 +559,13 @@ async function connect(r: Room): Promise<void> {
   };
 
   ws.onclose = (event) => {
-    if (room !== r) return;
+    if (rooms.get(r.roomId) !== r) return;
     stopHeartbeat(r);
     r.ws = null;
     if (r.closing) return;
     if (event.code === 4003) {
       // Room key rotated: fetch the new envelope/key and reconnect fresh.
-      setStatus("key-rotating");
+      setStatus(r, "key-rotating");
       void rekeyAndReconnect(r);
       return;
     }
@@ -560,7 +587,7 @@ async function rekeyAndReconnect(r: Room): Promise<void> {
       keyEpoch: details.keyEpoch,
       recipientDeviceId: r.deviceId,
     });
-    if (room !== r) return;
+    if (rooms.get(r.roomId) !== r) return;
     r.roomKey = await importRoomKey(roomKeyBytes);
     r.roomKeyBytes = r.mode === "hosting" ? roomKeyBytes : null;
     r.keyEpoch = details.keyEpoch;
@@ -570,17 +597,17 @@ async function rekeyAndReconnect(r: Room): Promise<void> {
     notify();
     await connect(r);
   } catch (error) {
-    if (room !== r) return;
+    if (rooms.get(r.roomId) !== r) return;
     r.errorMessage = parseCollaborationError(error).message;
-    setStatus("error");
+    setStatus(r, "error");
     scheduleReconnect(r);
   }
 }
 
 function scheduleReconnect(r: Room): void {
-  if (r.closing || room !== r) return;
+  if (r.closing || rooms.get(r.roomId) !== r) return;
   r.reconnectAttempt += 1;
-  setStatus("reconnecting");
+  setStatus(r, "reconnecting");
   const delay = Math.min(
     MAX_RECONNECT_DELAY_MS,
     1000 * 2 ** (r.reconnectAttempt - 1),
@@ -589,7 +616,7 @@ function scheduleReconnect(r: Room): void {
   if (r.reconnectTimer) clearTimeout(r.reconnectTimer);
   r.reconnectTimer = setTimeout(() => {
     r.reconnectTimer = null;
-    if (room === r && !r.closing) void connect(r);
+    if (rooms.get(r.roomId) === r && !r.closing) void connect(r);
   }, delay + jitter);
 }
 
@@ -662,7 +689,7 @@ async function handleServerMessage(r: Room, message: ServerMessage): Promise<voi
     case "room.key-epoch": {
       // The connection will be closed with 4003 next; surface the rotation now.
       r.lastRoomSequence = message.roomSequence;
-      setStatus("key-rotating");
+      setStatus(r, "key-rotating");
       break;
     }
     case "history.complete": {
@@ -742,7 +769,7 @@ function applyControlLease(r: Room, terminalId: string): void {
     r.displaySessionId,
     holds
       ? (data) => {
-          if (!room || room !== r) return;
+          if (rooms.get(r.roomId) !== r) return;
           void encryptAndSend(r, "terminal.input", data, terminalId).catch(() => {});
         }
       : null,
@@ -764,11 +791,11 @@ async function seedFromSnapshot(r: Room): Promise<void> {
   if (!r.displaySessionId) return;
   try {
     const snap = await collabGetSnapshot(r.roomId);
-    if (room !== r || r.renderedAnyOutput) return;
+    if (rooms.get(r.roomId) !== r || r.renderedAnyOutput) return;
     const json = fromBase64(snap.dataBase64);
     const event = JSON.parse(json) as EncryptedEventMessage;
     const plaintext = await decryptRoomEvent(r.roomKey, event);
-    if (room !== r || r.renderedAnyOutput) return;
+    if (rooms.get(r.roomId) !== r || r.renderedAnyOutput) return;
     terminalManager.writeOutput(r.displaySessionId, plaintext);
     r.renderedAnyOutput = true;
   } catch (error) {
@@ -876,15 +903,14 @@ function newRoom(fields: {
     snapshotBytes: 0,
     snapshotEtag: null,
     errorMessage: null,
+    status: "idle",
   };
 }
 
 /** Test-only: drop the active room without touching the network. */
 export function resetCollabClientForTests(): void {
-  if (room) {
-    clearTimers(room);
-    room = null;
-  }
-  currentStatus = "idle";
+  for (const room of rooms.values()) clearTimers(room);
+  rooms.clear();
+  viewingRoomId = null;
   observer = null;
 }
