@@ -39,7 +39,7 @@ jobs:
           - platform: macos
             os: macos-latest
           - platform: linux
-            os: ubuntu-22.04
+            os: blacksmith-4vcpu-ubuntu-2204
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
