@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.13.0](https://github.com/LuminescentDev/Luma/compare/v0.12.0...v0.13.0) (2026-07-25)
+
+
+### Features
+
+* add encrypted multi-instance collaboration infrastructure ([eb201b1](https://github.com/LuminescentDev/Luma/commit/eb201b14b5dad1918f1d7814815f58e7c197d9b2))
+* add Luma theme for Keycloak login ([2423511](https://github.com/LuminescentDev/Luma/commit/2423511d53cd69d7ea7aaa5404bf6739bb486305))
+* **collaboration:** implement collaboration features including device identity management, room invites, and capability handling ([d5ac989](https://github.com/LuminescentDev/Luma/commit/d5ac989a239f45bb91ceb70ed190606fd9f16148))
+* enhance collaboration store to manage multiple runtimes ([580482c](https://github.com/LuminescentDev/Luma/commit/580482c6518b25fa85a513bf5e25b2d686cc5ea5))
+* enhance tab drag functionality ([580482c](https://github.com/LuminescentDev/Luma/commit/580482c6518b25fa85a513bf5e25b2d686cc5ea5))
+* implement pane movement and detachment functionality ([580482c](https://github.com/LuminescentDev/Luma/commit/580482c6518b25fa85a513bf5e25b2d686cc5ea5))
+* improve UI store for new tab handling ([580482c](https://github.com/LuminescentDev/Luma/commit/580482c6518b25fa85a513bf5e25b2d686cc5ea5))
+* remove iCloud Drive support and update sync provider options ([5d3005b](https://github.com/LuminescentDev/Luma/commit/5d3005b325f706b0868ed103a0edef0052cb255b))
+
+
+### Bug Fixes
+
+* update website metadata for better SEO ([580482c](https://github.com/LuminescentDev/Luma/commit/580482c6518b25fa85a513bf5e25b2d686cc5ea5))
+
 ## [0.12.0](https://github.com/LuminescentDev/Luma/compare/v0.11.0...v0.12.0) (2026-07-24)
 
 
