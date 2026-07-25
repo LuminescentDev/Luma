@@ -1,0 +1,32 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    command: ["start"]
+    restart: unless-stopped
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: ${KC_DB_URL:?}
+      KC_DB_USERNAME: ${KC_DB_USERNAME:?}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:?}
+      KC_HOSTNAME: ${KC_HOSTNAME:?}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-}
+    expose:
+      - "8080"
+      - "9000"
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - >-
+          { printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&0;
+          grep 'HTTP/1.0 200'; } 0<>/dev/tcp/127.0.0.1/9000
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
