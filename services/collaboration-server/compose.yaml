@@ -1,0 +1,52 @@
+services:
+  migrate:
+    build:
+      context: ../..
+      dockerfile: services/collaboration-server/Dockerfile
+    command: ["node", "services/collaboration-server/dist/migrate.js"]
+    env_file: ${LUMA_ENV_FILE:-.env}
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  collaboration:
+    build:
+      context: ../..
+      dockerfile: services/collaboration-server/Dockerfile
+    env_file: ${LUMA_ENV_FILE:-.env}
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: luma
+      POSTGRES_USER: luma
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U luma"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:

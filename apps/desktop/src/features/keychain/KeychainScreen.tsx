@@ -1,0 +1,153 @@
+import { useEffect, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { Check, ChevronDown, Copy, Eye, EyeOff, Fingerprint, Grid2X2, KeyRound, List, Loader2, Plus, Save, Search, ShieldCheck, X } from "lucide-react";
+import { useIdentities, useInvalidateHosts, useKeyReferences } from "../../hooks/useHosts";
+import { createIdentity, createKeyReference, derivePublicKey, getKeyReferenceSecrets, getVaultStatus, parseLumaError, setVaultPolicy, setupVault, unlockVault, updateIdentity, updateKeyReference, type DerivedPublicKey, type Identity, type KeyReference, type VaultStatus } from "../../lib/hosts";
+import { GenerateKeyDialog } from "./GenerateKeyDialog";
+import { InstallKeyDialog } from "./InstallKeyDialog";
+import { UploadCloud } from "lucide-react";
+
+type KeyDraft = { id: string | null; label: string; privateKey: string; passphrase: string; certificate: string };
+const blankKey = (): KeyDraft => ({ id: null, label: "", privateKey: "", passphrase: "", certificate: "" });
+const editKey = (key: KeyReference): KeyDraft => ({ id: key.id, label: key.name, privateKey: "", passphrase: "", certificate: key.certificate ?? "" });
+type IdentityDraft = { id: string | null; label: string; username: string; keyId: string; password: string };
+const blankIdentity = (): IdentityDraft => ({ id: null, label: "", username: "", keyId: "", password: "" });
+const editIdentity = (identity: Identity): IdentityDraft => ({ id: identity.id, label: identity.name, username: identity.username, keyId: identity.keyId ?? "", password: "" });
+
+export function KeychainScreen() {
+  const { data: identities = [] } = useIdentities();
+  const { data: keys = [] } = useKeyReferences();
+  const [draft, setDraft] = useState<KeyDraft | null>(null);
+  const [identityDraft, setIdentityDraft] = useState<IdentityDraft | null>(null);
+  const [vaultStatus, setVaultStatus] = useState<VaultStatus | null>(null);
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [installKey, setInstallKey] = useState<{ id: string; name: string } | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const q = query.trim().toLowerCase();
+  const filteredKeys = q ? keys.filter(k => k.name.toLowerCase().includes(q)) : keys;
+  const filteredIdentities = q ? identities.filter(i => i.name.toLowerCase().includes(q) || i.username.toLowerCase().includes(q)) : identities;
+  const closeSearch = () => { setSearchOpen(false); setQuery(""); };
+  useEffect(() => { void getVaultStatus().then(setVaultStatus); }, []);
+  const invalidate = useInvalidateHosts();
+  // publicKey/fingerprint are intentionally sent as null: the backend derives
+  // them authoritatively from privateKey on save, so the frontend must never
+  // send a free-text public key that could mismatch the stored private key.
+  const save = useMutation({ mutationFn: (value: KeyDraft) => { const input = { name: value.label.trim(), storageMode: "encrypted-vault" as const, localPath: null, publicKey: null, fingerprint: null, certificate: value.certificate.trim() || null, privateKey: value.privateKey || (value.id ? null : ""), passphrase: value.passphrase || (value.id ? null : "") }; return value.id ? updateKeyReference(value.id, input) : createKeyReference(input); }, onSuccess: () => { invalidate(); setDraft(null); } });
+  const saveIdentity = useMutation({ mutationFn: (value: IdentityDraft) => { const input = { name: value.label.trim(), username: value.username.trim(), keyId: value.keyId || null, password: value.password || (value.id ? null : "") }; return value.id ? updateIdentity(value.id, input) : createIdentity(input); }, onSuccess: () => { invalidate(); setIdentityDraft(null); } });
+  if (vaultStatus && !vaultStatus.unlocked) return <VaultGate status={vaultStatus} onReady={() => void getVaultStatus().then(setVaultStatus)} />;
+  const editing = draft !== null || identityDraft !== null;
+  return <div className="keychain-screen flex h-full bg-background">
+  <div className={`${editing ? "hidden md:block" : "block"} min-w-0 flex-1 overflow-y-auto`}>
+    <div className="px-4 py-4 pt-safe md:mx-auto md:max-w-375 md:px-7 md:mt-5 md:pb-0">
+      <h1 className="mb-4 text-lg font-semibold md:hidden">Keys</h1>
+      <div className="keychain-mobile-search mb-5 flex h-11 items-center gap-2 rounded-xl border border-border bg-raised px-4 md:hidden">
+        <Search size={15} className="shrink-0 text-muted" />
+        <input aria-label="Search keychain" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search keys and identities…" className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted" />
+        {query && <button type="button" aria-label="Clear search" onClick={() => setQuery("")} className="rounded p-1 text-muted active:text-foreground"><X size={14} /></button>}
+      </div>
+      <div className="keychain-toolbar mx-auto flex max-w-375 items-center gap-2 md:border-b md:border-border md:pb-4">
+      <div className="flex overflow-hidden rounded-lg bg-accent text-accent-foreground"><button onClick={() => { setIdentityDraft(null); setDraft(blankKey()); }} className="flex items-center gap-2 px-4 py-2 text-sm font-medium"><Plus size={15}/> New key</button><DropdownMenu.Root><DropdownMenu.Trigger asChild><button aria-label="New key options" className="border-l border-white/20 px-2 hover:bg-white/10"><ChevronDown size={14}/></button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content align="start" sideOffset={5} className="z-50 min-w-48 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"><DropdownMenu.Item onSelect={() => { setDraft(null); setIdentityDraft(null); setGenerateOpen(true); }} className="cursor-default rounded-md px-3 py-2 outline-none data-highlighted:bg-surface data-highlighted:text-accent">Generate key</DropdownMenu.Item><DropdownMenu.Item onSelect={() => { setDraft(null); setIdentityDraft(blankIdentity()); }} className="cursor-default rounded-md px-3 py-2 outline-none data-highlighted:bg-surface data-highlighted:text-accent">Add new identity</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></div>
+      <div className="flex-1"/>{searchOpen ? <div className="flex items-center gap-1 rounded-lg border border-border bg-background px-2 focus-within:border-accent"><Search size={15} className="text-muted"/><input autoFocus aria-label="Search keychain" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") closeSearch(); }} placeholder="Search…" className="w-44 bg-transparent py-1.5 text-xs text-foreground outline-none placeholder:text-muted"/><button aria-label="Clear search" onClick={closeSearch} className="rounded p-0.5 text-muted hover:text-foreground"><X size={14}/></button></div> : <button aria-label="Search keychain" onClick={() => setSearchOpen(true)} className="rounded-lg p-2 text-muted hover:bg-raised hover:text-foreground"><Search size={17}/></button>}<button aria-label={viewMode === "grid" ? "Switch to list view" : "Switch to grid view"} onClick={() => setViewMode(m => m === "grid" ? "list" : "grid")} className="rounded-lg bg-raised p-2">{viewMode === "grid" ? <List size={17}/> : <Grid2X2 size={17}/>}</button>
+      {vaultStatus && <button onClick={() => void setVaultPolicy(!vaultStatus.rememberOnDevice).then(() => getVaultStatus()).then(setVaultStatus)} className="rounded-lg px-3 py-2 text-xs text-muted hover:bg-raised hover:text-foreground">{vaultStatus.rememberOnDevice ? "Remembered on device" : "Lock on close"}</button>}
+      </div>
+    </div>
+    <div className="mx-auto max-w-375 space-y-8 px-4 py-5 md:px-7">
+      <VaultSection title="Keys" view={viewMode}>{filteredKeys.length ? filteredKeys.map(key => <VaultCard key={key.id} selected={draft?.id === key.id} icon={<KeyRound size={19}/>} title={key.name} detail={key.storageMode === "ssh-agent" ? "SSH agent" : "SSH key reference"} onClick={() => { setIdentityDraft(null); setDraft(editKey(key)); }}/>) : q ? <Empty text="No matching keys"/> : <Empty text="No SSH keys" action="Add a key reference" onClick={() => { setIdentityDraft(null); setDraft(blankKey()); }}/>}</VaultSection>
+      <VaultSection title="Identities" view={viewMode}>{filteredIdentities.length ? filteredIdentities.map(identity => <VaultCard key={identity.id} selected={identityDraft?.id === identity.id} icon={<Fingerprint size={19}/>} title={identity.name} detail={`${identity.username} · ${identity.keyId ? "password and key" : "password authentication"}`} onClick={() => { setDraft(null); setIdentityDraft(editIdentity(identity)); }}/>) : q ? <Empty text="No matching identities"/> : <Empty text="No identities yet" action="Create your first identity" onClick={() => { setDraft(null); setIdentityDraft(blankIdentity()); }}/>}</VaultSection>
+    </div>
+  </div>
+  {draft && <KeyInspector draft={draft} setDraft={setDraft} onClose={() => { save.reset(); setDraft(null); }} onSave={() => save.mutate(draft)} busy={save.isPending} error={save.isError ? parseLumaError(save.error).message : null} onInstall={draft.id ? () => setInstallKey({ id: draft.id!, name: draft.label }) : undefined} />}
+  {identityDraft && <IdentityInspector draft={identityDraft} setDraft={setIdentityDraft} keys={keys} onClose={() => { saveIdentity.reset(); setIdentityDraft(null); }} onSave={() => saveIdentity.mutate(identityDraft)} busy={saveIdentity.isPending} error={saveIdentity.isError ? parseLumaError(saveIdentity.error).message : null} />}
+  <GenerateKeyDialog open={generateOpen} onOpenChange={setGenerateOpen} />
+  <InstallKeyDialog open={installKey !== null} keyReferenceId={installKey?.id ?? null} keyName={installKey?.name ?? ""} onOpenChange={(open) => { if (!open) setInstallKey(null); }} />
+  </div>;
+}
+
+function VaultSection({title,view,children}:{title:string;view:"grid"|"list";children:React.ReactNode}){return <section><h2 className="mb-3 text-sm font-semibold">{title}</h2><div className={view==="list"?"flex flex-col gap-2":"grid gap-3 md:grid-cols-2 xl:grid-cols-3"}>{children}</div></section>}
+function VaultCard({icon,title,detail,onClick,selected=false}:{icon:React.ReactNode;title:string;detail:string;onClick:()=>void;selected?:boolean}){return <button onClick={onClick} className={`flex min-h-15 items-center gap-3 rounded-xl bg-raised px-3 py-2 text-left hover:ring-1 hover:ring-accent ${selected ? "ring-2 ring-accent" : ""}`}><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/20 text-accent">{icon}</span><span className="min-w-0"><span className="block truncate text-sm font-semibold">{title}</span><span className="block truncate text-xs text-muted">{detail}</span></span></button>}
+function Empty({text,action,onClick}:{text:string;action?:string;onClick?:()=>void}){return <div className="col-span-full rounded-xl border border-dashed border-border px-5 py-8 text-center"><p className="text-sm font-medium">{text}</p>{action&&<button onClick={onClick} className="mt-1 text-xs text-accent">{action}</button>}</div>}
+
+function KeyInspector({draft,setDraft,onClose,onSave,busy,error,onInstall}:{draft:KeyDraft;setDraft:(draft:KeyDraft)=>void;onClose:()=>void;onSave:()=>void;busy:boolean;error:string|null;onInstall?:()=>void}) {
+  const [showPrivateKey,setShowPrivateKey]=useState(false);
+  const [showPassphrase,setShowPassphrase]=useState(false);
+  const [loadingSecrets,setLoadingSecrets]=useState(false);
+  const [secretError,setSecretError]=useState<string|null>(null);
+  useEffect(()=>{
+    if(!draft.id)return;
+    let active=true;
+    setLoadingSecrets(true);
+    setSecretError(null);
+    void getKeyReferenceSecrets(draft.id).then(secrets=>{
+      if(active)setDraft({...draft,privateKey:secrets.privateKey??"",passphrase:secrets.passphrase??""});
+    }).catch(e=>{if(active)setSecretError(parseLumaError(e).message)}).finally(()=>{if(active)setLoadingSecrets(false)});
+    return()=>{active=false};
+    // Only reload when a different key is selected.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[draft.id]);
+  const ready = draft.label.trim() && (draft.id || draft.privateKey.trim());
+  return <KeyInspectorView draft={draft} setDraft={setDraft} onClose={onClose} onSave={onSave} busy={busy} ready={Boolean(ready)} error={error} secretError={secretError} loadingSecrets={loadingSecrets} showPrivateKey={showPrivateKey} setShowPrivateKey={setShowPrivateKey} showPassphrase={showPassphrase} setShowPassphrase={setShowPassphrase} onInstall={onInstall}/>;
+}
+function InspectorField({label,value,onChange,placeholder,type="text"}:{label:string;value:string;onChange:(value:string)=>void;placeholder?:string;type?:string}){return <label className="block text-xs text-muted">{label}<input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-accent"/></label>}
+function InspectorArea({label,value,onChange}:{label:string;value:string;onChange:(value:string)=>void}){return <label className="block text-xs text-muted">{label}<textarea value={value} onChange={e=>onChange(e.target.value)} rows={7} className="mt-1 w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-xs text-foreground outline-none focus:border-accent"/></label>}
+
+function KeyInspectorView({draft,setDraft,onClose,onSave,busy,ready,error,secretError,loadingSecrets,showPrivateKey,setShowPrivateKey,showPassphrase,setShowPassphrase,onInstall}:{draft:KeyDraft;setDraft:(draft:KeyDraft)=>void;onClose:()=>void;onSave:()=>void;busy:boolean;ready:boolean;error:string|null;secretError:string|null;loadingSecrets:boolean;showPrivateKey:boolean;setShowPrivateKey:(value:boolean)=>void;showPassphrase:boolean;setShowPassphrase:(value:boolean)=>void;onInstall?:()=>void}) {
+  const privateKey=draft.privateKey;
+  const passphrase=draft.passphrase;
+  const [derived,setDerived]=useState<DerivedPublicKey|null>(null);
+  const [deriving,setDeriving]=useState(false);
+  const [deriveError,setDeriveError]=useState<string|null>(null);
+  // Debounced derivation: whenever the private key (or passphrase) changes,
+  // ask the backend for the authoritative public key + fingerprint. Encrypted
+  // OpenSSH keys derive without a passphrase, so we never gate on one.
+  useEffect(()=>{
+    if(!privateKey.trim()){setDerived(null);setDeriveError(null);setDeriving(false);return;}
+    let active=true;
+    setDeriving(true);
+    setDeriveError(null);
+    const timer=window.setTimeout(()=>{
+      derivePublicKey(privateKey,passphrase||undefined)
+        .then(result=>{if(active){setDerived(result);setDeriveError(null);}})
+        .catch(e=>{if(active){setDerived(null);setDeriveError(parseLumaError(e).message);}})
+        .finally(()=>{if(active)setDeriving(false);});
+    },400);
+    return()=>{active=false;window.clearTimeout(timer);};
+  },[privateKey,passphrase]);
+  return <aside className="flex w-90 shrink-0 flex-col border-l border-border bg-surface"><header className="flex h-14 items-center border-b border-border px-4"><div className="flex-1"><h2 className="text-sm font-semibold">{draft.id?"Edit key":"New key"}</h2><p className="text-xs text-muted">Personal vault</p></div><button onClick={onClose} className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header><div className="flex-1 space-y-4 overflow-y-auto p-4"><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><SecretArea label="Private key" value={draft.privateKey} onChange={privateKey=>setDraft({...draft,privateKey})} revealed={showPrivateKey} onToggle={()=>setShowPrivateKey(!showPrivateKey)} loading={loadingSecrets}/><DerivedPublicKeyView derived={derived} busy={deriving||loadingSecrets} error={deriveError}/><SecretField label="Passphrase" value={draft.passphrase} onChange={passphrase=>setDraft({...draft,passphrase})} revealed={showPassphrase} onToggle={()=>setShowPassphrase(!showPassphrase)} loading={loadingSecrets}/><InspectorArea label="Certificate" value={draft.certificate} onChange={certificate=>setDraft({...draft,certificate})}/>{secretError&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not load secrets: {secretError}</div>}{error&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save key: {error}</div>}</div><footer className="space-y-2 border-t border-border p-4"><button disabled={!ready||busy||loadingSecrets} onClick={onSave} className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save"}</button>{onInstall&&<button type="button" onClick={onInstall} className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium text-foreground hover:border-accent hover:text-accent"><UploadCloud size={14}/>Install on host…</button>}</footer></aside>;
+}
+// Read-only display of the public key + fingerprint the backend derives from
+// the private key. This replaces the old free-text public-key field so Luma can
+// never show or export a public key that mismatches the stored private key.
+function DerivedPublicKeyView({derived,busy,error}:{derived:DerivedPublicKey|null;busy:boolean;error:string|null}){
+  const [copied,setCopied]=useState(false);
+  const copy=()=>{if(!derived)return;void navigator.clipboard.writeText(derived.publicKey).then(()=>{setCopied(true);window.setTimeout(()=>setCopied(false),1500);});};
+  const passphraseHint=error!=null&&/passphrase/i.test(error);
+  return <div className="block text-xs text-muted"><span className="flex items-center gap-2"><span>Public key</span><span className="text-[10px] font-normal text-muted/60">derived from private key</span>{busy&&derived&&<Loader2 aria-label="Deriving public key" size={12} className="animate-spin text-muted"/>}</span>
+    {busy&&!derived&&!error
+      ? <p className="mt-1 flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-3 text-muted"><Loader2 aria-label="Deriving public key" size={13} className="animate-spin"/> Deriving public key…</p>
+      : error
+      ? <div role="alert" className="mt-1 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">Couldn&apos;t read this private key: {error}{passphraseHint&&<span className="mt-1 block text-danger/80">Enter the correct passphrase below and Luma will derive the matching public key.</span>}</div>
+      : derived
+      ? <div className="mt-1 space-y-2">
+          <div className="rounded-lg border border-border bg-background px-3 py-2"><span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted"><Fingerprint size={12}/> Fingerprint</span><span className="mt-0.5 block select-all break-all font-mono text-xs text-foreground">{derived.fingerprint}</span></div>
+          <span className="relative block"><textarea readOnly aria-label="Derived public key (authorized_keys line)" value={derived.publicKey} rows={4} className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 pr-10 font-mono text-xs text-foreground outline-none"/><button type="button" aria-label="Copy public key" disabled={!derived.publicKey} onClick={copy} className="absolute right-2 top-2 rounded p-1 text-muted hover:bg-raised hover:text-foreground disabled:opacity-40">{copied?<Check size={14}/>:<Copy size={14}/>}</button></span>
+        </div>
+      : <p className="mt-1 rounded-lg border border-dashed border-border px-3 py-3 text-muted">Add a private key above to derive its public key and fingerprint.</p>}
+  </div>;
+}
+function SecretButtons({value,revealed,onToggle}:{value:string;revealed:boolean;onToggle:()=>void}){const[copied,setCopied]=useState(false);const copy=()=>void navigator.clipboard.writeText(value).then(()=>{setCopied(true);window.setTimeout(()=>setCopied(false),1500)});return <span className="absolute right-2 top-2 flex gap-1"><button type="button" aria-label={revealed?"Hide secret":"Show secret"} onClick={onToggle} className="rounded p-1 text-muted hover:bg-raised hover:text-foreground">{revealed?<EyeOff size={14}/>:<Eye size={14}/>}</button><button type="button" aria-label="Copy secret" disabled={!value} onClick={copy} className="rounded p-1 text-muted hover:bg-raised hover:text-foreground disabled:opacity-40">{copied?<Check size={14}/>:<Copy size={14}/>}</button></span>}
+function SecretArea({label,value,onChange,revealed,onToggle,loading}:{label:string;value:string;onChange:(value:string)=>void;revealed:boolean;onToggle:()=>void;loading:boolean}){return <label className="block text-xs text-muted">{label}<span className="relative mt-1 block"><textarea aria-label={label} value={value} onChange={e=>onChange(e.target.value)} rows={7} disabled={loading} placeholder={loading?"Loading…":""} style={revealed?undefined:({WebkitTextSecurity:"disc"} as React.CSSProperties)} className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 pr-16 font-mono text-xs text-foreground outline-none focus:border-accent disabled:opacity-60"/><SecretButtons value={value} revealed={revealed} onToggle={onToggle}/></span></label>}
+function SecretField({label,value,onChange,revealed,onToggle,loading}:{label:string;value:string;onChange:(value:string)=>void;revealed:boolean;onToggle:()=>void;loading:boolean}){return <label className="block text-xs text-muted">{label}<span className="relative mt-1 block"><input aria-label={label} type={revealed?"text":"password"} value={value} onChange={e=>onChange(e.target.value)} disabled={loading} placeholder={loading?"Loading…":""} className="w-full rounded-lg border border-border bg-background px-3 py-2 pr-16 text-sm text-foreground outline-none focus:border-accent disabled:opacity-60"/><SecretButtons value={value} revealed={revealed} onToggle={onToggle}/></span></label>}
+
+function IdentityInspector({draft,setDraft,keys,onClose,onSave,busy,error}:{draft:IdentityDraft;setDraft:(draft:IdentityDraft)=>void;keys:KeyReference[];onClose:()=>void;onSave:()=>void;busy:boolean;error:string|null}) {
+  const ready=draft.label.trim()&&draft.username.trim();
+  return <aside className="flex w-90 shrink-0 flex-col border-l border-border bg-surface"><header className="flex h-14 items-center border-b border-border px-4"><div className="flex-1"><h2 className="text-sm font-semibold">{draft.id?"Edit identity":"New identity"}</h2><p className="text-xs text-muted">Reusable host credentials</p></div><button onClick={onClose} className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header><div className="flex-1 space-y-4 overflow-y-auto p-4"><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><InspectorField label="Username" value={draft.username} onChange={username=>setDraft({...draft,username})}/><label className="block text-xs text-muted">SSH key<select value={draft.keyId} onChange={e=>setDraft({...draft,keyId:e.target.value})} className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-accent"><option value="">None</option>{keys.map(key=><option key={key.id} value={key.id}>{key.name}</option>)}</select></label><InspectorField label={draft.id?"New password (blank keeps current)":"Password (optional)"} type="password" value={draft.password} onChange={password=>setDraft({...draft,password})}/>{error&&<div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save identity: {error}</div>}</div><footer className="border-t border-border p-4"><button disabled={!ready||busy} onClick={onSave} className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save identity"}</button></footer></aside>;
+}
+
+function VaultGate({status,onReady}:{status:VaultStatus;onReady:()=>void}) {
+  const [password,setPassword]=useState(""); const [remember,setRemember]=useState(false); const [error,setError]=useState<string|null>(null); const [busy,setBusy]=useState(false);
+  const submit=async()=>{setBusy(true);setError(null);try{if(status.configured)await unlockVault(password);else await setupVault(password,remember);onReady()}catch(e){setError(parseLumaError(e).message)}finally{setBusy(false)}};
+  return <div className="flex h-full items-center justify-center bg-background p-8"><div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6"><div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 text-accent"><ShieldCheck size={22}/></div><h1 className="text-xl font-semibold">{status.configured?"Unlock Luma Vault":"Create Luma Vault"}</h1><p className="mt-1 text-sm text-muted">{status.configured?"Enter your master password to access encrypted keys.":"Your private keys and passphrases will be encrypted in a portable vault."}</p><label className="mt-5 block text-xs text-muted">Master password<input autoFocus type="password" value={password} onChange={e=>setPassword(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void submit()}} className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-foreground outline-none focus:border-accent"/></label>{!status.configured&&<label className="mt-4 flex items-start gap-2 text-sm"><input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} className="mt-1"/><span>Remember on this device<span className="block text-xs text-muted">Otherwise the vault locks when Luma closes.</span></span></label>}{error&&<p className="mt-3 text-xs text-danger">{error}</p>}<button disabled={password.length<8||busy} onClick={()=>void submit()} className="mt-5 w-full rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-foreground disabled:opacity-40">{busy?"Please wait…":status.configured?"Unlock vault":"Create vault"}</button></div></div>;
+}

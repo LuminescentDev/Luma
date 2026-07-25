@@ -38,7 +38,7 @@ if (!binaryPath) {
 }
 
 function candidateBinaries() {
-  const target = resolve(root, 'src-tauri', 'target', 'release');
+  const target = resolve(root, 'apps', 'desktop', 'src-tauri', 'target', 'release');
   if (process.platform === 'win32') {
     return [resolve(target, 'luma.exe')];
   }

@@ -1,0 +1,55 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "luma-sync",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-24",
+	"workers_dev": false,
+  "routes": [
+    {
+      "pattern": "sync.luma.bwmp.dev",
+      "custom_domain": true
+    }
+  ],
+"vars": {
+    "JWT_ISSUER": "https://auth.luma.bwmp.dev/realms/luma",
+    "JWT_AUDIENCE": "luma-api",
+    "JWT_JWKS_URL": "https://auth.luma.bwmp.dev/realms/luma/protocol/openid-connect/certs",
+
+    "OIDC_CLIENT_ID": "luma-desktop",
+    "OIDC_DEVICE_AUTHORIZATION_ENDPOINT": "https://auth.luma.bwmp.dev/realms/luma/protocol/openid-connect/auth/device",
+    "OIDC_TOKEN_ENDPOINT": "https://auth.luma.bwmp.dev/realms/luma/protocol/openid-connect/token",
+
+    "DEFAULT_QUOTA_BYTES": "26214400",
+    "MAX_BLOB_BYTES": "67108864",
+    "REVISION_LIMIT": "20"
+  },
+	"r2_buckets": [
+		{
+			"binding": "SYNC_BUCKET",
+			"bucket_name": "luma-sync-production"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "luma-sync-production",
+			"database_id": "2298a7d9-349c-402c-ba88-4a8068a417b2",
+			"migrations_dir": "migrations"
+		}
+	],
+	"observability": {
+		"enabled": false,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"persist": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": false,
+			"persist": true,
+			"head_sampling_rate": 1
+		}
+	}
+}

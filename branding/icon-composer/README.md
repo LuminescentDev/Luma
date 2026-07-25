@@ -2,7 +2,7 @@
 
 Layered source art for building a **Liquid Glass** app icon (macOS 26 / iOS 26
 `.icon` format) with Apple's **Icon Composer**. These are decomposed, unstyled
-layers derived from `src-tauri/icons/icon.svg` — the system applies the squircle
+layers derived from `apps/desktop/src-tauri/icons/icon.svg` — the system applies the squircle
 mask, specular highlights, shadows, and translucency, so the baked-in glow,
 sheen, and stroke from the original are intentionally removed here.
 
@@ -37,6 +37,6 @@ SVG is preferred so the vector shape stays crisp.
 ## Where the `.icon` goes
 
 On macOS 26+ / iOS 26+, drop the exported `.icon` into the Xcode / Tauri app
-bundle to get the layered Liquid Glass icon. `src-tauri/icons/icon.icns` (and
-the other rasters under `src-tauri/icons/`) remain the fallback for older OS
+bundle to get the layered Liquid Glass icon. `apps/desktop/src-tauri/icons/icon.icns` (and
+the other rasters under `apps/desktop/src-tauri/icons/`) remain the fallback for older OS
 versions and must stay in place.

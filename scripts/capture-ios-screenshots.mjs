@@ -7,12 +7,13 @@ import { build, preview } from "vite";
 import { chromium } from "playwright";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const configFile = resolve(repoRoot, "showcase.vite.config.ts");
+const desktopRoot = resolve(repoRoot, "apps", "desktop");
+const configFile = resolve(desktopRoot, "showcase.vite.config.ts");
 const views = ["terminal", "hosts", "snippets", "settings"];
 const themes = ["dark", "light"];
 
-await build({ configFile, root: repoRoot, logLevel: "warn" });
-const server = await preview({ configFile, root: repoRoot, logLevel: "warn" });
+await build({ configFile, root: desktopRoot, logLevel: "warn" });
+const server = await preview({ configFile, root: desktopRoot, logLevel: "warn" });
 const base = server.resolvedUrls?.local?.[0] ?? `http://localhost:${server.config.preview.port}/`;
 const browser = await chromium.launch();
 

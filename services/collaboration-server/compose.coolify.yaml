@@ -1,0 +1,58 @@
+services:
+  migrate:
+    build:
+      context: ../..
+      dockerfile: services/collaboration-server/Dockerfile
+    command: ["node", "services/collaboration-server/dist/migrate.js"]
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?}
+
+  collaboration:
+    build:
+      context: ../..
+      dockerfile: services/collaboration-server/Dockerfile
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8788"
+      INSTANCE_ID: ${INSTANCE_ID:-collaboration-1}
+      DATABASE_URL: ${DATABASE_URL:?}
+      REDIS_URL: ${REDIS_URL:?}
+      JWT_ISSUER: ${JWT_ISSUER:?}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:?}
+      JWT_JWKS_URL: ${JWT_JWKS_URL:?}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?}
+      OIDC_DEVICE_AUTHORIZATION_ENDPOINT: ${OIDC_DEVICE_AUTHORIZATION_ENDPOINT:?}
+      OIDC_TOKEN_ENDPOINT: ${OIDC_TOKEN_ENDPOINT:?}
+      R2_ENDPOINT: ${R2_ENDPOINT:?}
+      R2_REGION: ${R2_REGION:-auto}
+      R2_BUCKET: ${R2_BUCKET:?}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?}
+      ROOM_HISTORY_LIMIT: ${ROOM_HISTORY_LIMIT:-10000}
+      MAX_EVENT_BYTES: ${MAX_EVENT_BYTES:-262144}
+      MAX_SNAPSHOT_BYTES: ${MAX_SNAPSHOT_BYTES:-67108864}
+      TICKET_TTL_SECONDS: ${TICKET_TTL_SECONDS:-30}
+      PRESENCE_TTL_SECONDS: ${PRESENCE_TTL_SECONDS:-45}
+      CONTROL_LEASE_TTL_SECONDS: ${CONTROL_LEASE_TTL_SECONDS:-15}
+      HTTP_REQUESTS_PER_MINUTE: ${HTTP_REQUESTS_PER_MINUTE:-600}
+      WEBSOCKET_MESSAGES_PER_SECOND: ${WEBSOCKET_MESSAGES_PER_SECOND:-100}
+    expose:
+      - "8788"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:8788/ready')
+          .then(response => process.exit(response.ok ? 0 : 1))
+          .catch(() => process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
