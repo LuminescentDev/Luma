@@ -18,7 +18,7 @@ jobs:
       matrix:
         include:
           - platform: windows
-            os: windows-latest
+            os: blacksmith-4vcpu-windows-2025
           - platform: macos
             os: macos-latest
           - platform: linux
@@ -86,7 +86,7 @@ jobs:
       matrix:
         include:
           - platform: windows
-            os: windows-latest
+            os: blacksmith-4vcpu-windows-2025
           - platform: macos
             os: macos-latest
           - platform: linux
