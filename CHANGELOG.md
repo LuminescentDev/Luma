@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/LuminescentDev/Luma/compare/v0.13.0...v0.14.0) (2026-07-25)
+
+
+### Features
+
+* add script to compile Apple icon and update destination path ([b66a1c2](https://github.com/LuminescentDev/Luma/commit/b66a1c2ada87d898b731acc2de68552ec35c518c))
+
 ## [0.13.0](https://github.com/LuminescentDev/Luma/compare/v0.12.0...v0.13.0) (2026-07-25)
 
 
