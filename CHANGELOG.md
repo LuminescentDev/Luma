@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/LuminescentDev/Luma/compare/v0.14.1...v0.14.2) (2026-07-25)
+
+
+### Bug Fixes
+
+* z-index values for broadcast and logging indicators in PaneView component ([67492de](https://github.com/LuminescentDev/Luma/commit/67492deb96f42a6ca253aac5ae383f5a180bcfcd))
+
 ## [0.14.1](https://github.com/LuminescentDev/Luma/compare/v0.14.0...v0.14.1) (2026-07-25)
 
 
