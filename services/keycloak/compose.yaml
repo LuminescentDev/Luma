@@ -1,6 +1,9 @@
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luma-keycloak:26.7.0
     command: ["start"]
     restart: unless-stopped
     environment:

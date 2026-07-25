@@ -18,7 +18,8 @@
     "android:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/android-dev.ps1",
     "ios:dev": "tauri ios dev",
     "ios:build": "tauri ios build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev"
   },
   "dependencies": {
     "@luma/collaboration-encryption": "workspace:*",

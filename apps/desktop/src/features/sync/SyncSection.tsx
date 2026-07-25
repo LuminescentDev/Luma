@@ -56,6 +56,8 @@ const PROVIDER_LABELS: Record<SyncProvider, string> = {
   "luma-cloud": "Luma Cloud",
 };
 
+const DEFAULT_LUMA_CLOUD_URL = "https://sync.luma.bwmp.dev";
+
 export function SyncSection() {
   const { data: config, isLoading } = useSyncConfig();
 
@@ -100,7 +102,9 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const [password, setPassword] = useState("");
   const [gistId, setGistId] = useState(config.gistId ?? "");
   const [token, setToken] = useState("");
-  const [cloudUrl, setCloudUrl] = useState(config.cloudUrl ?? "");
+  const [cloudUrl, setCloudUrl] = useState(
+    config.cloudUrl ?? DEFAULT_LUMA_CLOUD_URL,
+  );
   const [cloudAuth, setCloudAuth] = useState<CloudAuthStart | null>(null);
   const [cloudAuthBusy, setCloudAuthBusy] = useState(false);
   const [cloudAuthError, setCloudAuthError] = useState<string | null>(null);
@@ -370,7 +374,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
               <TextInput
                 value={cloudUrl}
                 onChange={setCloudUrl}
-                placeholder="https://sync.example.com"
+                placeholder={DEFAULT_LUMA_CLOUD_URL}
                 mono
               />
             </Field>

@@ -1,0 +1,296 @@
+/*
+ * Luma login theme.
+ *
+ * Layered on top of keycloak.v2 (PatternFly v5). The strategy is to override
+ * PatternFly's design tokens (CSS custom properties) rather than fight component
+ * markup with deep selectors. Tokens are declared on :root so they win over both
+ * PatternFly's light `:root` defaults and its `.pf-v5-theme-dark` overrides
+ * (equal specificity, later source order), giving a consistent dark-first Luma
+ * identity regardless of the visitor's OS colour-scheme preference.
+ *
+ * Palette mirrors apps/desktop/src/styles/globals.css (product dark theme);
+ * typography mirrors apps/website/src/styles.css.
+ */
+
+:root {
+  /* Luma product palette (dark) */
+  --luma-background: #101217;
+  --luma-surface: #17191f;
+  --luma-raised: #22252d;
+  --luma-border: #2c3039;
+  --luma-foreground: #f2f3f5;
+  --luma-muted: #969ba6;
+  --luma-accent: #7c6cf2;
+  --luma-accent-hover: #8d7ff4;
+  --luma-accent-active: #6c5ce8;
+  --luma-accent-foreground: #ffffff;
+  --luma-glow: rgba(124, 108, 242, 0.24);
+  --luma-danger: #f87171;
+  --luma-warning: #fbbf24;
+  --luma-success: #4ade80;
+  --luma-info: #60a5fa;
+  --luma-radius: 6px;
+
+  /* Typography — degrades gracefully to system fonts (no network font loads) */
+  --pf-v5-global--FontFamily--text: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --pf-v5-global--FontFamily--heading: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --pf-v5-global--FontFamily--text--vf: var(--pf-v5-global--FontFamily--text);
+  --pf-v5-global--FontFamily--heading--vf: var(--pf-v5-global--FontFamily--heading);
+  --pf-v5-global--FontFamily--monospace: "Cascadia Code", "JetBrains Mono", "SF Mono", Consolas, monospace;
+  --pf-v5-global--FontFamily--monospace--vf: var(--pf-v5-global--FontFamily--monospace);
+
+  /* Core semantic surfaces & text */
+  --pf-v5-global--BackgroundColor--100: var(--luma-surface);
+  --pf-v5-global--BackgroundColor--200: var(--luma-background);
+  --pf-v5-global--Color--100: var(--luma-foreground);
+  --pf-v5-global--Color--light-100: var(--luma-foreground);
+  --pf-v5-global--Color--200: var(--luma-muted);
+  --pf-v5-global--BorderColor--100: var(--luma-border);
+  --pf-v5-global--BorderColor--200: var(--luma-border);
+  --pf-v5-global--BorderColor--300: var(--luma-border);
+
+  /* Accent / interactive */
+  --pf-v5-global--primary-color--100: var(--luma-accent);
+  --pf-v5-global--primary-color--200: var(--luma-accent-active);
+  --pf-v5-global--primary-color--dark-100: var(--luma-accent);
+  --pf-v5-global--link--Color: var(--luma-accent);
+  --pf-v5-global--link--Color--hover: var(--luma-accent-hover);
+  --pf-v5-global--link--Color--dark: var(--luma-accent);
+  --pf-v5-global--link--Color--dark--hover: var(--luma-accent-hover);
+  --pf-v5-global--link--Color--light: var(--luma-accent);
+  --pf-v5-global--active-color--100: var(--luma-accent);
+
+  /* Status */
+  --pf-v5-global--danger-color--100: var(--luma-danger);
+  --pf-v5-global--warning-color--100: var(--luma-warning);
+  --pf-v5-global--success-color--100: var(--luma-success);
+  --pf-v5-global--info-color--100: var(--luma-info);
+
+  /* Consistent, modest radius across inputs, buttons, alerts */
+  --pf-v5-global--BorderRadius--sm: var(--luma-radius);
+
+  /* Login card */
+  --pf-v5-c-login__main--BackgroundColor: var(--luma-surface);
+
+  /* Inputs (the .pf-v5-c-form-control span wraps the <input>) */
+  --pf-v5-c-form-control--BackgroundColor: var(--luma-raised);
+  --pf-v5-c-form-control--Color: var(--luma-foreground);
+  --pf-v5-c-form-control--m-placeholder--Color: var(--luma-muted);
+  --pf-v5-c-form-control--before--BorderTopColor: var(--luma-border);
+  --pf-v5-c-form-control--before--BorderRightColor: var(--luma-border);
+  --pf-v5-c-form-control--before--BorderLeftColor: var(--luma-border);
+  --pf-v5-c-form-control--after--BorderBottomColor: var(--luma-border);
+  --pf-v5-c-form-control--hover--after--BorderBottomColor: var(--luma-accent);
+  --pf-v5-c-form-control--focus--after--BorderBottomColor: var(--luma-accent);
+  --pf-v5-c-form-control--m-error--after--BorderBottomColor: var(--luma-danger);
+  --pf-v5-c-form-control--m-success--after--BorderBottomColor: var(--luma-success);
+  --pf-v5-c-form-control--m-readonly--BackgroundColor: var(--luma-surface);
+  --pf-v5-c-form-control--m-disabled--BackgroundColor: var(--luma-surface);
+  --pf-v5-c-form-control--m-disabled--Color: var(--luma-muted);
+
+  /* Primary button — the single primary action */
+  --pf-v5-c-button--BorderRadius: var(--luma-radius);
+  --pf-v5-c-button--m-primary--BackgroundColor: var(--luma-accent);
+  --pf-v5-c-button--m-primary--Color: var(--luma-accent-foreground);
+  --pf-v5-c-button--m-primary--hover--BackgroundColor: var(--luma-accent-hover);
+  --pf-v5-c-button--m-primary--hover--Color: var(--luma-accent-foreground);
+  --pf-v5-c-button--m-primary--focus--BackgroundColor: var(--luma-accent-hover);
+  --pf-v5-c-button--m-primary--focus--Color: var(--luma-accent-foreground);
+  --pf-v5-c-button--m-primary--active--BackgroundColor: var(--luma-accent-active);
+  --pf-v5-c-button--m-primary--active--Color: var(--luma-accent-foreground);
+
+  /* Secondary button (social/idp, "try another way", "switch organization") */
+  --pf-v5-c-button--m-secondary--Color: var(--luma-foreground);
+  --pf-v5-c-button--m-secondary--BackgroundColor: transparent;
+  --pf-v5-c-button--m-secondary--after--BorderColor: var(--luma-border);
+  --pf-v5-c-button--m-secondary--hover--Color: var(--luma-foreground);
+  --pf-v5-c-button--m-secondary--hover--BackgroundColor: var(--luma-raised);
+  --pf-v5-c-button--m-secondary--hover--after--BorderColor: var(--luma-accent);
+  --pf-v5-c-button--m-secondary--focus--Color: var(--luma-foreground);
+  --pf-v5-c-button--m-secondary--focus--BackgroundColor: var(--luma-raised);
+  --pf-v5-c-button--m-secondary--focus--after--BorderColor: var(--luma-accent);
+  --pf-v5-c-button--m-secondary--active--Color: var(--luma-foreground);
+  --pf-v5-c-button--m-secondary--active--BackgroundColor: var(--luma-raised);
+
+  /* Link button (forgot password, register) */
+  --pf-v5-c-button--m-link--Color: var(--luma-accent);
+  --pf-v5-c-button--m-link--hover--Color: var(--luma-accent-hover);
+  --pf-v5-c-button--m-link--focus--Color: var(--luma-accent-hover);
+  --pf-v5-c-button--m-link--active--Color: var(--luma-accent-active);
+
+  /* Disabled buttons */
+  --pf-v5-c-button--disabled--BackgroundColor: var(--luma-raised);
+  --pf-v5-c-button--disabled--Color: var(--luma-muted);
+
+  /* Password visibility toggle (pf-m-control) */
+  --pf-v5-c-button--m-control--BackgroundColor: var(--luma-raised);
+  --pf-v5-c-button--m-control--Color: var(--luma-muted);
+  --pf-v5-c-button--m-control--after--BorderColor: var(--luma-border);
+  --pf-v5-c-button--m-control--hover--Color: var(--luma-foreground);
+  --pf-v5-c-button--m-control--hover--after--BorderBottomColor: var(--luma-accent);
+
+  /* Alerts */
+  --pf-v5-c-alert--m-inline--BackgroundColor: var(--luma-raised);
+  --pf-v5-c-alert__title--Color: var(--luma-foreground);
+
+  --pf-v5-c-alert--m-danger--BorderTopColor: var(--luma-danger);
+  --pf-v5-c-alert--m-danger__icon--Color: var(--luma-danger);
+  --pf-v5-c-alert--m-danger__title--Color: var(--luma-foreground);
+  --pf-v5-c-alert--m-inline--m-danger--BackgroundColor: rgba(248, 113, 113, 0.12);
+
+  --pf-v5-c-alert--m-warning--BorderTopColor: var(--luma-warning);
+  --pf-v5-c-alert--m-warning__icon--Color: var(--luma-warning);
+  --pf-v5-c-alert--m-warning__title--Color: var(--luma-foreground);
+  --pf-v5-c-alert--m-inline--m-warning--BackgroundColor: rgba(251, 191, 36, 0.12);
+
+  --pf-v5-c-alert--m-success--BorderTopColor: var(--luma-success);
+  --pf-v5-c-alert--m-success__icon--Color: var(--luma-success);
+  --pf-v5-c-alert--m-success__title--Color: var(--luma-foreground);
+  --pf-v5-c-alert--m-inline--m-success--BackgroundColor: rgba(74, 222, 128, 0.12);
+
+  --pf-v5-c-alert--m-info--BorderTopColor: var(--luma-info);
+  --pf-v5-c-alert--m-info__icon--Color: var(--luma-info);
+  --pf-v5-c-alert--m-info__title--Color: var(--luma-foreground);
+  --pf-v5-c-alert--m-inline--m-info--BackgroundColor: rgba(96, 165, 250, 0.12);
+}
+
+/* Flat Luma page background (replaces the keycloak.v2 background image) */
+.login-pf body {
+  background: var(--luma-background);
+}
+
+/* Single centred, product-like card */
+.pf-v5-c-login__container {
+  grid-template-columns: min(100%, 25rem);
+}
+
+.pf-v5-c-login__main {
+  background-color: var(--luma-surface);
+  border: 1px solid var(--luma-border);
+  border-radius: 12px;
+  box-shadow: 0 0 24px 0 var(--luma-glow);
+  overflow: hidden;
+}
+
+/* Drop the parent theme's coloured top stripe; the card border + glow carry the identity */
+.pf-v5-c-login__main-header {
+  border-top: none;
+}
+
+/* Brand header (logo + wordmark), matching the website navbar treatment */
+#kc-header-wrapper.kc-luma-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  padding: 0;
+  font-size: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.kc-luma-brand-logo {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  display: block;
+}
+
+.kc-luma-brand-name {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--luma-foreground);
+  text-transform: none;
+}
+
+/* Page title ("Sign in to …") */
+#kc-page-title {
+  color: var(--luma-foreground);
+}
+
+/* Labels, helper text, required markers */
+.pf-v5-c-form__label-text {
+  color: var(--luma-foreground);
+}
+
+.pf-v5-c-form__helper-text,
+.pf-v5-c-helper-text__item-text {
+  color: var(--luma-muted);
+}
+
+.pf-v5-c-form__label-required,
+.pf-v5-c-form__group-label-required {
+  color: var(--luma-danger);
+}
+
+/* Error message text under invalid fields */
+.pf-v5-c-helper-text__item.pf-m-error .pf-v5-c-helper-text__item-text,
+.kc-feedback-text.pf-m-error {
+  color: var(--luma-danger);
+}
+
+/* Ensure the actual input text/caret read on the raised surface */
+.pf-v5-c-form-control input,
+.pf-v5-c-form-control select,
+.pf-v5-c-form-control textarea {
+  color: var(--luma-foreground);
+  caret-color: var(--luma-accent);
+}
+
+/* Keyboard focus ring on the input wrapper (accent glow, in addition to the
+   PatternFly accent underline) */
+.pf-v5-c-form-control:focus-within {
+  box-shadow: 0 0 0 3px var(--luma-glow);
+  border-radius: var(--luma-radius);
+}
+
+/* Remember-me and other native checkboxes */
+.pf-v5-c-check__input {
+  accent-color: var(--luma-accent);
+}
+
+.pf-v5-c-check__label {
+  color: var(--luma-foreground);
+}
+
+/* Password visibility toggle */
+.pf-v5-c-button.pf-m-control {
+  background-color: var(--luma-raised);
+  color: var(--luma-muted);
+}
+
+.pf-v5-c-button.pf-m-control:hover,
+.pf-v5-c-button.pf-m-control:focus {
+  color: var(--luma-foreground);
+}
+
+/* Social / identity-provider icons: keep them neutral (inherit button text
+   colour) instead of the parent theme's blue recolour filter */
+#kc-social-providers svg:not(.google) {
+  filter: none;
+  fill: currentColor;
+}
+
+/* Visible keyboard focus for all interactive controls */
+.pf-v5-c-button:focus-visible,
+.pf-v5-c-login__main a:focus-visible,
+#kc-social-providers a:focus-visible,
+.pf-v5-c-check__input:focus-visible,
+#login-select-toggle:focus-visible {
+  outline: 2px solid var(--luma-accent);
+  outline-offset: 2px;
+  border-radius: var(--luma-radius);
+}
+
+/* Subtle, purposeful transitions (respect reduced-motion) */
+@media (prefers-reduced-motion: no-preference) {
+  .pf-v5-c-button,
+  .pf-v5-c-form-control {
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      box-shadow 120ms ease;
+  }
+}
