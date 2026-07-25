@@ -2,8 +2,6 @@
 
 Lightweight cross-platform terminal and SSH client (Tauri 2 + Rust backend, React 19 + TypeScript + Vite frontend).
 
-**The authoritative spec is [docs/BUILD_PLAN.md](docs/BUILD_PLAN.md).** Read it before implementing features — it defines the architecture, phases, completion criteria, security requirements, and non-goals. Its "Decisions Log" and "Progress" sections record project-specific choices; keep them updated as phases complete.
-
 ## Commands
 
 ```sh
@@ -17,7 +15,7 @@ cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml      # CI enforces f
 
 ## Architecture invariants
 
-- Terminal bytes NEVER pass through React state. Rust PTY → Tauri channel (`InvokeResponseBody::Raw`) → xterm.js, managed by `src/features/terminal/terminalManager.ts` outside React. React stores hold session metadata only.
+- Terminal bytes NEVER pass through React state. Rust PTY → Tauri channel (`InvokeResponseBody::Raw`) → xterm.js, managed by `apps/desktop/src/features/terminal/terminalManager.ts` outside React. React stores hold session metadata only.
 - The frontend never passes raw executable paths to spawn; `pty_spawn` accepts only detected shell ids or stored profile ids.
 - Secrets never go in plain SQLite columns or logs (logger redacts; see `apps/desktop/src-tauri/src/logging/`). Schema changes are new files in `apps/desktop/src-tauri/migrations/`, never edits to shipped migrations.
 - Tauri capabilities stay strict (`apps/desktop/src-tauri/capabilities/`); no unrestricted fs/process APIs exposed to the frontend.

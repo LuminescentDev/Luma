@@ -18,6 +18,7 @@
     "screenshots": "node scripts/capture-screenshots.mjs",
     "screenshots:ios": "node scripts/capture-ios-screenshots.mjs",
     "screenshots:ipad": "node scripts/capture-ipad-screenshots.mjs",
+    "screenshots:website-mobile": "node scripts/capture-website-mobile-screenshots.mjs",
     "android:dev": "pnpm --dir apps/desktop android:dev",
     "ios:dev": "pnpm --dir apps/desktop ios:dev",
     "ios:build": "pnpm --dir apps/desktop ios:build",

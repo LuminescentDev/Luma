@@ -3,7 +3,7 @@
  *
  * Drives the showcase harness at iPhone 12 Pro Max logical geometry
  * (428 x 926 CSS px) with the mobile shell enabled (platform=ios), writing
- * web-sized assets to website/public/screenshots/mobile/<theme>/<view>.png
+ * web-sized assets to apps/website/public/screenshots/mobile/<theme>/<view>.png
  * plus an "@2x" variant (856 x 1852).
  *
  * These are deliberately smaller than the App Store deliverables produced by
@@ -24,13 +24,14 @@ import { chromium } from "playwright";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
+const desktopRoot = resolve(repoRoot, "apps", "desktop");
 
 const VIEWS = ["terminal", "hosts", "snippets", "settings"];
 const THEMES = ["dark", "light"];
 const VIEWPORT = { width: 428, height: 926 };
 const SCALES = [1, 2];
 
-const CONFIG = resolve(repoRoot, "showcase.vite.config.ts");
+const CONFIG = resolve(desktopRoot, "showcase.vite.config.ts");
 
 async function waitForReady(page, view) {
   await page.waitForSelector('html[data-showcase-ready="true"]', {
@@ -51,9 +52,9 @@ async function waitForReady(page, view) {
 
 async function main() {
   console.log("[capture:website-mobile] building harness…");
-  await build({ configFile: CONFIG, root: repoRoot, logLevel: "warn" });
+  await build({ configFile: CONFIG, root: desktopRoot, logLevel: "warn" });
 
-  const server = await preview({ configFile: CONFIG, root: repoRoot, logLevel: "warn" });
+  const server = await preview({ configFile: CONFIG, root: desktopRoot, logLevel: "warn" });
   const base = server.resolvedUrls?.local?.[0] ?? `http://localhost:${server.config.preview.port}/`;
   console.log(`[capture:website-mobile] harness server: ${base}`);
 
@@ -71,7 +72,15 @@ async function main() {
       const page = await context.newPage();
       page.setDefaultNavigationTimeout(90000);
       for (const theme of THEMES) {
-        const outDir = resolve(repoRoot, "website", "public", "screenshots", "mobile", theme);
+        const outDir = resolve(
+          repoRoot,
+          "apps",
+          "website",
+          "public",
+          "screenshots",
+          "mobile",
+          theme,
+        );
         await mkdir(outDir, { recursive: true });
         for (const view of VIEWS) {
           const url = `${base}showcase.html?view=${view}&theme=${theme}&platform=ios`;

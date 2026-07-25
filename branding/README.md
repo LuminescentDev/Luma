@@ -1,7 +1,8 @@
 # Branding assets
 
 Marketing / branding screenshots of the real Luma UI, rendered by the isolated
-**showcase harness** (`showcase.html` + `src/showcase/`) with deterministic,
+**showcase harness** (`apps/desktop/showcase.html` +
+`apps/desktop/src/showcase/`) with deterministic,
 seeded demo data and a mocked Tauri bridge. No backend is required.
 
 ## Regenerate the screenshots
@@ -47,11 +48,13 @@ accepts `dark | light`. Defaults are `view=terminal&theme=dark`.
 
 ## How it stays isolated
 
-- The harness has its own Vite config (`showcase.vite.config.ts`) and entry
-  (`showcase.html` -> `src/showcase/main.tsx`); it is never bundled into the
-  Tauri production app (`index.html` -> `src/main.tsx`, built by `pnpm build`).
+- The harness has its own Vite config (`apps/desktop/showcase.vite.config.ts`)
+  and entry (`apps/desktop/showcase.html` ->
+  `apps/desktop/src/showcase/main.tsx`); it is never bundled into the Tauri
+  production app (`apps/desktop/index.html` -> `apps/desktop/src/main.tsx`,
+  built by `pnpm build`).
 - `@tauri-apps/*` and `@xterm/addon-webgl` are aliased to browser mocks under
-  `src/showcase/mocks/` for this build only.
+  `apps/desktop/src/showcase/mocks/` for this build only.
 - Terminal output is streamed through the real xterm pipeline (mock spawn ->
   mocked `Channel` -> `terminalManager`), so terminal bytes never pass through
   React state — the same architecture invariant the app enforces.

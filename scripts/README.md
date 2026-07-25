@@ -50,5 +50,5 @@ fabricated. Each JSON report includes manual procedures for memory per terminal,
 CPU during high output, memory after opening/closing 20 sessions, large
 scrollback, and SFTP transfer memory.
 
-Updater release-key setup and release artifact details are documented in
-`docs/RELEASING.md`.
+Updater release-key setup and release artifact details are summarized in the
+[release section](../README.md#releases).
