@@ -20,6 +20,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/services/collaboration-server/package.json services/collaboration-server/package.json
 COPY --from=build /app/services/collaboration-server/node_modules services/collaboration-server/node_modules
 COPY --from=build /app/services/collaboration-server/dist services/collaboration-server/dist
+COPY --from=build /app/services/collaboration-server/drizzle services/collaboration-server/drizzle
 COPY --from=build /app/packages/collaboration-protocol packages/collaboration-protocol
 COPY --from=build /app/packages/collaboration-encryption packages/collaboration-encryption
 USER node

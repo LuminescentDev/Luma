@@ -1,4 +1,13 @@
 services:
+  migrate:
+    build:
+      context: ../..
+      dockerfile: services/collaboration-server/Dockerfile
+    command: ["node", "services/collaboration-server/dist/migrate.js"]
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?}
+
   collaboration:
     build:
       context: ../..
@@ -31,6 +40,9 @@ services:
       WEBSOCKET_MESSAGES_PER_SECOND: ${WEBSOCKET_MESSAGES_PER_SECOND:-100}
     expose:
       - "8788"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD
@@ -44,4 +56,3 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
-

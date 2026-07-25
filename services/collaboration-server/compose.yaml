@@ -1,4 +1,15 @@
 services:
+  migrate:
+    build:
+      context: ../..
+      dockerfile: services/collaboration-server/Dockerfile
+    command: ["node", "services/collaboration-server/dist/migrate.js"]
+    env_file: ${LUMA_ENV_FILE:-.env}
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   collaboration:
     build:
       context: ../..
@@ -6,8 +17,8 @@ services:
     env_file: ${LUMA_ENV_FILE:-.env}
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -19,7 +30,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./migrations/0001_collaboration.sql:/docker-entrypoint-initdb.d/0001_collaboration.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U luma"]
       interval: 5s
