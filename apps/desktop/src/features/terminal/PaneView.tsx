@@ -330,8 +330,8 @@ export function PaneView({
           terminal or the pane's context menu. */}
       {broadcasting && (
         <>
-          <div className="pointer-events-none absolute inset-0 z-[5] rounded-md ring-2 ring-inset ring-accent/60" />
-          <div className="pointer-events-none absolute right-2 top-1.5 z-[6] flex items-center gap-1 rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent shadow-sm backdrop-blur-sm">
+          <div className="pointer-events-none absolute inset-0 z-5 rounded-md ring-2 ring-inset ring-accent/60" />
+          <div className="pointer-events-none absolute right-2 top-1.5 z-6 flex items-center gap-1 rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent shadow-sm backdrop-blur-sm">
             <RadioTower size={11} />
             Broadcast
           </div>
@@ -341,7 +341,7 @@ export function PaneView({
       {/* Recording indicator: a small pulsing badge while the pane is being
           logged. Pointer-events-none so it never blocks the terminal. */}
       {logEntry?.active && (
-        <div className="pointer-events-none absolute bottom-1.5 right-2 z-[6] flex items-center gap-1 rounded bg-danger/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger shadow-sm backdrop-blur-sm">
+        <div className="pointer-events-none absolute bottom-1.5 right-2 z-6 flex items-center gap-1 rounded bg-danger/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger shadow-sm backdrop-blur-sm">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-danger" />
           {logEntry.mode === "asciicast" ? "Rec" : "Log"}
         </div>
@@ -349,7 +349,7 @@ export function PaneView({
 
       {/* Resolved-path notice shown once logging starts. */}
       {logNotice && logEntry?.active && (
-        <div className="absolute inset-x-2 top-2 z-[8] flex items-start gap-2 rounded-lg border border-border bg-surface/95 px-3 py-2 text-xs shadow-glow backdrop-blur">
+        <div className="absolute inset-x-2 top-2 z-8 flex items-start gap-2 rounded-lg border border-border bg-surface/95 px-3 py-2 text-xs shadow-glow backdrop-blur">
           <ScrollText size={14} className="mt-0.5 shrink-0 text-accent" />
           <div className="min-w-0 flex-1">
             <div className="font-medium text-foreground">
@@ -390,7 +390,7 @@ export function PaneView({
       {logError && (
         <div
           role="alert"
-          className="absolute inset-x-2 top-2 z-[8] flex items-start gap-2 rounded-lg border border-danger/40 bg-surface/95 px-3 py-2 text-xs text-danger shadow-glow backdrop-blur"
+          className="absolute inset-x-2 top-2 z-8 flex items-start gap-2 rounded-lg border border-danger/40 bg-surface/95 px-3 py-2 text-xs text-danger shadow-glow backdrop-blur"
         >
           <span className="min-w-0 flex-1">Could not start logging: {logError}</span>
           <button
