@@ -10,7 +10,14 @@ if (process.platform !== "darwin") {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(root, "branding", "icon-composer", "star.icon");
-const destination = join(root, "src-tauri", "icons", "star.icns");
+const destination = join(
+  root,
+  "apps",
+  "desktop",
+  "src-tauri",
+  "icons",
+  "star.icns",
+);
 const output = mkdtempSync(join(tmpdir(), "luma-apple-icon-"));
 
 try {
