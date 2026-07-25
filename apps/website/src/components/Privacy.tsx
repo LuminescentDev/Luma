@@ -30,21 +30,42 @@ export function Privacy() {
           </div>
           <h1 className='text-4xl font-semibold tracking-tight sm:text-5xl'>Privacy Policy</h1>
           <p className='mt-5 text-lg leading-8 text-muted'>
-            Luma is designed to keep your data on your devices and does not require an account.
+            Luma keeps your data on your devices by default. An account is required only for optional Luma Cloud services.
           </p>
-          <p className='mt-3 text-sm text-muted'>Last updated: July 22, 2026</p>
+          <p className='mt-3 text-sm text-muted'>Last updated: July 24, 2026</p>
         </div>
 
         <div className='space-y-10 leading-7 text-muted'>
           <PolicySection title='The Luma app'>
             <p>
-              Luma does not include advertising, tracking, or product-usage telemetry. Your hosts, settings, snippets, credentials, keys, and session data are stored locally on your device by default. We do not operate Luma accounts or servers that receive this data.
+              Luma does not include advertising, tracking, or product-usage telemetry. Your hosts, settings, snippets, credentials, keys, and session data are stored locally on your device by default. You can use the app without creating a Luma account or sending this data to us.
             </p>
           </PolicySection>
 
-          <PolicySection title='Optional sync and network features'>
+          <PolicySection title='Optional sync'>
             <p>
-              If you enable sync, Luma sends an end-to-end encrypted copy of the data you choose to the provider you configure, such as WebDAV, GitHub Gist, or a local folder. That provider processes data under its own privacy policy. Luma also contacts remote hosts when you initiate a connection and may contact the update server when checking for app updates. These requests necessarily reveal technical information such as your IP address to the service you contact.
+              If you enable sync, Luma creates an end-to-end encrypted copy of the data selected for sync. Depending on your settings, that may include hosts, usernames, snippets, terminal profiles, port forwards, settings, credentials, and private keys. Your sync passphrase stays on your devices and is not sent with the encrypted copy.
+            </p>
+            <p className='mt-3'>
+              With Luma Cloud, we store the current encrypted sync copy and up to 20 prior encrypted revisions. We also store an account identifier, a random storage identifier, storage usage and quota, and account creation, update, and deletion timestamps. We cannot read the contents of the encrypted copies without your sync passphrase.
+            </p>
+            <p className='mt-3'>
+              If you instead configure a local folder, WebDAV, or GitHub Gist, the selected provider stores the encrypted copy and processes related account and request information under its own privacy policy.
+            </p>
+          </PolicySection>
+
+          <PolicySection title='Accounts and collaboration'>
+            <p>
+              When you create or use a Luma Cloud account, our identity service processes the account and authentication information needed to sign you in. Luma stores authentication tokens in your device's protected credential storage. Signing out removes the local cloud session but does not delete the cloud account or its stored data.
+            </p>
+            <p className='mt-3'>
+              If you use collaborative terminal features, the service stores account identifiers, device identifiers and public encryption keys, room identifiers, room membership and roles, encrypted room-key envelopes, and related creation, revocation, and deletion timestamps. It also stores encrypted room snapshots and temporarily processes encrypted terminal events, presence, and control state to operate the live session. Other room members receive the encrypted session information their role permits them to access.
+            </p>
+          </PolicySection>
+
+          <PolicySection title='Service operation and logs'>
+            <p>
+              When you use Luma Cloud, collaboration, the website, app updates, or connect to a remote host, the service you contact necessarily receives network and request information such as your IP address, request time, route, response status, and user agent or device information. We and our infrastructure providers process operational logs to deliver, secure, troubleshoot, and prevent abuse of the services. Luma's cloud infrastructure uses service providers, including Cloudflare, for application, database, object-storage, and network services.
             </p>
           </PolicySection>
 
@@ -62,13 +83,19 @@ export function Privacy() {
 
           <PolicySection title='Data sharing and retention'>
             <p>
-              We do not sell personal information. Information you send for support is shared only when needed to operate or protect the project, comply with law, or with service providers acting on our behalf. We keep it only as long as reasonably necessary for those purposes. You can request deletion of support correspondence, subject to legal and security requirements.
+              We do not sell personal information. We disclose information only to provide a feature you request, to service providers acting on our behalf, to protect Luma and its users, or when required by law. Cloud data remains until you delete it or request account deletion, except for short-lived operational data, backups, records we must retain for legal or security reasons, and data retained by another provider you selected. Operational logs and support correspondence are kept only as long as reasonably necessary for their purposes.
             </p>
           </PolicySection>
 
-          <PolicySection title='Your choices and changes'>
+          <PolicySection title='Your choices and deletion'>
             <p>
-              You can avoid website analytics by using browser tracking protection or a content blocker, and you can use Luma without enabling sync. We may update this policy as Luma changes; the date above will show the latest revision.
+              You can use Luma without an account, cloud sync, or collaboration. You can disable sync or sign out at any time. To delete a Luma Cloud account and its encrypted sync copies, or to request deletion of support correspondence, contact us at the address below. Deleting a cloud account does not delete copies already downloaded to your devices, shared with collaborators, or stored with a third-party sync provider. You can avoid website analytics by using browser tracking protection or a content blocker.
+            </p>
+          </PolicySection>
+
+          <PolicySection title='Changes to this policy'>
+            <p>
+              We may update this policy as Luma changes. The date above shows the latest revision.
             </p>
           </PolicySection>
 

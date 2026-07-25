@@ -8,6 +8,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -53,6 +54,29 @@ export const rooms = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
   },
   (table) => [check("collaboration_rooms_key_epoch_check", sql`${table.keyEpoch} > 0`)],
+);
+
+export const roomInvites = pgTable(
+  "collaboration_room_invites",
+  {
+    id: uuid().primaryKey().defaultRandom(),
+    roomId: uuid("room_id")
+      .notNull()
+      .references(() => rooms.id, { onDelete: "cascade" }),
+    secretHash: text("secret_hash").notNull(),
+    role: text().$type<Exclude<RoomRole, "owner">>().notNull(),
+    keyEpoch: integer("key_epoch").notNull(),
+    createdBySubject: text("created_by_subject"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    check(
+      "collaboration_room_invites_role_check",
+      sql`${table.role} IN ('controller', 'viewer')`,
+    ),
+    uniqueIndex("collaboration_room_invites_secret_hash_idx").on(table.secretHash),
+  ],
 );
 
 export const roomMembers = pgTable(

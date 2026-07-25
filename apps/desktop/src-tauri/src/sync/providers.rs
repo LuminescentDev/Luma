@@ -783,7 +783,7 @@ fn check_auth_or_status(response: &reqwest::Response) -> Result<()> {
 fn check_cloud_status(response: &reqwest::Response) -> Result<()> {
     match response.status() {
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => Err(
-            LumaError::SyncAuthFailed("Luma Cloud session expired; sign in again".into()),
+            LumaError::SyncAuthFailed("Luma Cloud rejected the access token".into()),
         ),
         reqwest::StatusCode::PRECONDITION_FAILED => Err(LumaError::SyncConflict(
             "Luma Cloud data changed during upload".into(),

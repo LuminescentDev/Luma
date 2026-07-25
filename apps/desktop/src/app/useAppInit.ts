@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { terminalManager } from "../features/terminal/terminalManager";
 import { startLatencyMonitor } from "../features/terminal/latencyMonitor";
 import { useUiStore } from "../stores/uiStore";
@@ -19,7 +20,75 @@ import { useTerminalStyleStore } from "../stores/terminalStyleStore";
 import { resolveAction, type KeymapActionId } from "../lib/keymap";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useCapabilityStore } from "../stores/capabilityStore";
+import { useCollabStore } from "../stores/collabStore";
+import {
+  collabGetConfig,
+  parseCollaborationError,
+  parseJoinToken,
+  type JoinLinkPayload,
+} from "../lib/collab";
+import { joinRoomByCapability } from "../features/collaboration/collabClient";
 import { hasPlatformModifier } from "../lib/platform";
+
+/**
+ * Handle a `luma://join?t=…` capability deep link. Parses the token, verifies it
+ * targets the configured collaboration server, and either auto-redeems it (when
+ * signed in) or stashes it for the collaboration dialog to retry after sign-in.
+ * The token and its embedded secret are never logged.
+ */
+async function handleJoinDeepLink(url: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== "luma:" || parsed.host !== "join") return;
+  const token = parsed.searchParams.get("t");
+  if (!token) return;
+
+  const ui = useUiStore.getState();
+
+  let payload: JoinLinkPayload;
+  try {
+    payload = parseJoinToken(token);
+  } catch (error) {
+    ui.openCollab({
+      mode: "join",
+      error: error instanceof Error ? error.message : "This join link is invalid.",
+    });
+    return;
+  }
+
+  try {
+    const config = await collabGetConfig();
+    if (payload.serverUrl !== config.serverUrl) {
+      ui.openCollab({
+        mode: "join",
+        error:
+          "This join link is for a different collaboration server than the one you are signed in to.",
+      });
+      return;
+    }
+  } catch (error) {
+    ui.openCollab({ mode: "join", error: parseCollaborationError(error).message });
+    return;
+  }
+
+  await useCollabStore.getState().refreshAuthStatus();
+  const signedIn = useCollabStore.getState().auth?.status === "signedIn";
+  if (!signedIn) {
+    ui.openCollab({ mode: "join", joinToken: token });
+    return;
+  }
+
+  try {
+    await joinRoomByCapability(payload);
+    ui.openCollab({ mode: "join" });
+  } catch (error) {
+    ui.openCollab({ mode: "join", error: parseCollaborationError(error).message });
+  }
+}
 
 /**
  * Shared application initialization, extracted from Layout so both the desktop
@@ -52,6 +121,31 @@ export function useAppInit(): void {
 
   // Poll connection health (latency) for connected SSH sessions.
   useEffect(() => startLatencyMonitor(), []);
+
+  // Wire the collaboration client → store observer once (no network) so a
+  // share/join started from anywhere reflects into React immediately. Auth
+  // status is loaded lazily when the collaboration UI is opened.
+  useEffect(() => {
+    useCollabStore.getState().wire();
+  }, []);
+
+  // Subscribe once to `luma://join?t=…` capability deep links delivered as a
+  // window event, cleaning up the listener on unmount.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void (async () => {
+      const un = await getCurrentWindow().listen<string>("deep-link", (event) => {
+        void handleJoinDeepLink(event.payload);
+      });
+      if (cancelled) un();
+      else unlisten = un;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Reflect any tunnels the backend already has running. Skipped on platforms
   // without the port-forwarding feature (mobile): its `tunnels_list` command is

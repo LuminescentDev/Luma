@@ -22,7 +22,7 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         ),
         (
             Regex::new(
-                r#"(?i)\b(password|passwd|passphrase|token|secret|api[_-]?key|authorization|bearer)\b(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)"#,
+                r#"(?i)\b(password|passwd|passphrase|token|secret|api[_-]?key|authorization|bearer|pkcs8|private[_-]?key)\b(["']?\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)"#,
             )
             .unwrap(),
             "$1$2[REDACTED]",
@@ -111,6 +111,8 @@ mod tests {
             ("passphrase: my secret", "passphrase: [REDACTED] secret"),
             ("token = abc.def.ghi", "token = [REDACTED]"),
             ("api_key=XYZ123", "api_key=[REDACTED]"),
+            ("pkcs8: sensitive-key-bytes", "pkcs8: [REDACTED]"),
+            ("privateKey=serialized", "privateKey=[REDACTED]"),
             (
                 "Authorization: Bearer abc123",
                 "Authorization: [REDACTED] abc123",

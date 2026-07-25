@@ -46,6 +46,22 @@ type UiState = {
   openPalette: () => void;
   closePalette: () => void;
   togglePalette: () => void;
+  /** Collaboration (share/join) dialog visibility. */
+  collabOpen: boolean;
+  /** Why the collab dialog was opened: a pending capability join or an error to
+   * surface. Never carries secrets beyond the opaque join token. */
+  collabIntent: CollabIntent | null;
+  openCollab: (intent?: CollabIntent) => void;
+  closeCollab: () => void;
+  clearCollabIntent: () => void;
+};
+
+export type CollabIntent = {
+  mode: "join";
+  /** Opaque capability token to auto-redeem once the account is signed in. */
+  joinToken?: string;
+  /** User-facing error to show in the dialog (bad link, wrong server, join failure). */
+  error?: string;
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -72,4 +88,23 @@ export const useUiStore = create<UiState>((set) => ({
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),
   togglePalette: () => set((state) => ({ paletteOpen: !state.paletteOpen })),
+  collabOpen: false,
+  collabIntent: null,
+  // A no-arg open preserves any pending intent (e.g. a join token awaiting
+  // sign-in) so reopening the dialog after signing in still auto-retries.
+  openCollab: (intent) =>
+    set((state) => ({
+      collabOpen: true,
+      collabIntent: intent ?? state.collabIntent,
+    })),
+  // Reset the transient intent on close, but keep a pending join token alive so
+  // the sign-in → reopen → auto-join flow survives leaving for settings.
+  closeCollab: () =>
+    set((state) => ({
+      collabOpen: false,
+      collabIntent: state.collabIntent?.joinToken
+        ? { mode: "join", joinToken: state.collabIntent.joinToken }
+        : null,
+    })),
+  clearCollabIntent: () => set({ collabIntent: null }),
 }));

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, KeyRound, LoaderCircle, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, KeyRound, LoaderCircle, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -49,6 +49,7 @@ export function PaneView({
   const closeActivePane = useSessionStore((s) => s.closeActivePane);
   const setPaneBroadcast = useSessionStore((s) => s.setPaneBroadcast);
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
+  const openCollab = useUiStore((s) => s.openCollab);
   const startLog = useSessionLogStore((s) => s.start);
   const stopLog = useSessionLogStore((s) => s.stop);
   const logEntry = useSessionLogStore((s) => s.logs[session.id]);
@@ -205,6 +206,16 @@ export function PaneView({
       onSelect: () => {
         onFocus();
         setTerminalSearchOpen(true);
+      },
+    },
+    { separator: true },
+    {
+      label: "Share terminal…",
+      icon: <Share2 size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openCollab();
       },
     },
   ];

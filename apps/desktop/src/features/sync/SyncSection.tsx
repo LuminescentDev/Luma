@@ -1,10 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   AlertTriangle,
   Check,
-  Cloud,
   CloudOff,
   FolderOpen,
   KeyRound,
@@ -16,21 +14,16 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { PassphrasePrompt } from "./PassphrasePrompt";
 import { parseLumaError } from "../../lib/hosts";
 import {
-  cloudAuthLogout,
-  cloudAuthPoll,
-  cloudAuthStart,
   formatRelativeTime,
   truncateVersion,
   SYNC_INCLUDE_PRIVATE_KEYS_KEY,
   type SyncConfig,
   type SyncConfigureInput,
   type SyncProvider,
-  type CloudAuthStart,
 } from "../../lib/sync";
 import {
   useConfigureSync,
   useDisableSync,
-  useInvalidateSyncConfig,
   useSetSyncPassphrase,
   useSyncConfig,
 } from "../../hooks/useSync";
@@ -80,7 +73,6 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const configure = useConfigureSync();
   const disable = useDisableSync();
   const setPassphrase = useSetSyncPassphrase();
-  const invalidateSyncConfig = useInvalidateSyncConfig();
 
   const { data: settings } = useSettings();
   const setSetting = useSetSetting();
@@ -105,9 +97,6 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const [cloudUrl, setCloudUrl] = useState(
     config.cloudUrl ?? DEFAULT_LUMA_CLOUD_URL,
   );
-  const [cloudAuth, setCloudAuth] = useState<CloudAuthStart | null>(null);
-  const [cloudAuthBusy, setCloudAuthBusy] = useState(false);
-  const [cloudAuthError, setCloudAuthError] = useState<string | null>(null);
 
   const [confirmChange, setConfirmChange] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
@@ -159,73 +148,6 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const clearSecrets = () => {
     setPassword("");
     setToken("");
-  };
-
-  useEffect(() => {
-    if (!cloudAuth) return;
-    let cancelled = false;
-    const timeout = window.setTimeout(async () => {
-      try {
-        const result = await cloudAuthPoll();
-        if (cancelled) return;
-        if (result.status === "complete") {
-          setCloudAuth(null);
-          setCloudAuthError(null);
-          await invalidateSyncConfig();
-        } else {
-          setCloudAuth((current) =>
-            current
-              ? {
-                  ...current,
-                  retryAfterSeconds:
-                    result.retryAfterSeconds ?? current.retryAfterSeconds,
-                }
-              : null,
-          );
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setCloudAuth(null);
-          setCloudAuthError(parseLumaError(error).message);
-        }
-      }
-    }, cloudAuth.retryAfterSeconds * 1000);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
-    };
-  }, [cloudAuth, invalidateSyncConfig]);
-
-  const startCloudLogin = async () => {
-    if (!cloudUrl.trim() || cloudAuthBusy) return;
-    setCloudAuthBusy(true);
-    setCloudAuthError(null);
-    try {
-      const authorization = await cloudAuthStart(cloudUrl.trim());
-      setCloudAuth(authorization);
-      await openUrl(
-        authorization.verificationUriComplete ?? authorization.verificationUri,
-      );
-    } catch (error) {
-      setCloudAuthError(parseLumaError(error).message);
-    } finally {
-      setCloudAuthBusy(false);
-    }
-  };
-
-  const logoutCloud = async () => {
-    if (cloudAuthBusy) return;
-    setCloudAuthBusy(true);
-    setCloudAuthError(null);
-    try {
-      await cloudAuthLogout();
-      setCloudAuth(null);
-      await invalidateSyncConfig();
-    } catch (error) {
-      setCloudAuthError(parseLumaError(error).message);
-    } finally {
-      setCloudAuthBusy(false);
-    }
   };
 
   const submitConfigure = () => {
@@ -330,7 +252,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
               <button
                 type="button"
                 onClick={() => void pickFolder()}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:text-foreground"
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-accent/60 hover:bg-surface"
               >
                 <FolderOpen size={14} /> Browse
               </button>
@@ -378,60 +300,21 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
                 mono
               />
             </Field>
-            <div className="rounded-lg border border-border bg-background p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="flex items-center gap-1.5 text-sm font-medium">
-                    <Cloud size={14} /> Cloud account
-                  </p>
-                  <p className="text-xs text-muted">
-                    {config.cloudSignedIn
-                      ? "Signed in. Your sync data remains client-side encrypted."
-                      : "Sign in before enabling Luma Cloud sync."}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  disabled={!cloudUrl.trim() || cloudAuthBusy}
-                  onClick={() =>
-                    void (config.cloudSignedIn ? logoutCloud() : startCloudLogin())
-                  }
-                  className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:text-foreground disabled:opacity-50"
-                >
-                  {cloudAuthBusy
-                    ? "Please wait…"
-                    : config.cloudSignedIn
-                      ? "Sign out"
-                      : "Sign in"}
-                </button>
-              </div>
-              {cloudAuth && (
-                <div className="mt-3 border-t border-border pt-3 text-xs text-muted">
-                  <p>
-                    Enter code{" "}
-                    <strong className="font-mono text-foreground">
-                      {cloudAuth.userCode}
-                    </strong>{" "}
-                    in the browser. Luma will finish signing in automatically.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void openUrl(
-                        cloudAuth.verificationUriComplete ??
-                          cloudAuth.verificationUri,
-                      )
-                    }
-                    className="mt-2 text-accent hover:underline"
-                  >
-                    Reopen sign-in page
-                  </button>
-                </div>
-              )}
-              {cloudAuthError && (
-                <p role="alert" className="mt-3 text-xs text-danger">
-                  {cloudAuthError}
-                </p>
+            <div className="flex items-start gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-xs text-muted">
+              {config.cloudSignedIn ? (
+                <>
+                  <Check size={14} className="mt-0.5 shrink-0 text-accent" />
+                  Uses your Luma account. Sync data stays client-side encrypted.
+                </>
+              ) : (
+                <>
+                  <AlertTriangle
+                    size={14}
+                    className="mt-0.5 shrink-0 text-amber-400"
+                  />
+                  Sign in to your Luma account under Settings → Account before
+                  enabling Luma Cloud sync.
+                </>
               )}
             </div>
           </div>
@@ -455,7 +338,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
               <button
                 type="button"
                 onClick={() => setConfirmDisable(true)}
-                className="rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:text-danger"
+                className="rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-danger/60 hover:text-danger disabled:opacity-50"
               >
                 Disable sync
               </button>
@@ -467,7 +350,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
           <button
             type="button"
             onClick={() => setConfirmDisable(true)}
-            className="rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:text-danger"
+            className="rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-danger/60 hover:text-danger disabled:opacity-50"
           >
             Disable sync
           </button>
@@ -499,7 +382,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
           <button
             type="button"
             onClick={() => setPassphraseOpen(true)}
-            className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm text-muted hover:text-foreground"
+            className="shrink-0 rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-accent/60 hover:bg-surface"
           >
             Set passphrase
           </button>

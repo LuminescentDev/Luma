@@ -16,8 +16,10 @@ import {
   SquarePlus,
   Rows2,
   Server,
+  Users,
   X,
 } from "lucide-react";
+import { useCollabStore } from "../../stores/collabStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useSessionLogStore } from "../../stores/sessionLogStore";
@@ -168,6 +170,8 @@ export function TabBar() {
   const openNewTab = useUiStore((s) => s.openNewTab);
   const closeNewTab = useUiStore((s) => s.closeNewTab);
   const newTabOpen = useUiStore((s) => s.newTabOpen);
+  const openCollab = useUiStore((s) => s.openCollab);
+  const collabMode = useCollabStore((s) => s.runtime.mode);
   const logs = useSessionLogStore((s) => s.logs);
 
   // Pointer-based drag state. Native HTML drag/drop is unreliable inside a
@@ -604,6 +608,21 @@ export function TabBar() {
             <RadioTower size={15} />
           </button>
         )}
+        <button
+          type="button"
+          aria-label={collabMode === "idle" ? "Collaborate" : "Collaboration active"}
+          aria-pressed={collabMode !== "idle"}
+          title="Share or join a collaborative terminal"
+          onClick={() => openCollab()}
+          className={cn(
+            "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+            collabMode !== "idle"
+              ? "bg-accent/15 text-accent hover:bg-accent/25"
+              : "text-muted hover:bg-raised hover:text-foreground",
+          )}
+        >
+          <Users size={15} />
+        </button>
         <button
           type="button"
           aria-label="New tab"

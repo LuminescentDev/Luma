@@ -39,7 +39,7 @@ use chrono::{SecondsFormat, Utc};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use keyring::Entry;
 use rand::{rngs::OsRng, RngCore};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -64,6 +64,13 @@ const HEADER_LEN: usize = 13 + SALT_LEN + NONCE_LEN;
 const FORMAT_VERSION: u8 = 1;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const KEYCHAIN_SERVICE: &str = "luma.sync";
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const KEYCHAIN_CHUNK_MANIFEST_PREFIX: &str = "luma-chunks-v1:";
+// Windows stores password text as UTF-16 in a credential blob capped at 2560 bytes.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const KEYCHAIN_CHUNK_UTF16_LIMIT: usize = 1200;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const KEYCHAIN_MAX_CHUNKS: usize = 64;
 const KEYCHAIN_PASSPHRASE: &str = "sync-passphrase";
 const KEYCHAIN_WEBDAV_PASSWORD: &str = "webdav-password";
 const KEYCHAIN_GIST_TOKEN: &str = "github-gist-token";
@@ -80,7 +87,6 @@ pub(crate) const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
 pub struct SyncRuntimeState {
     passphrase: Mutex<Option<Zeroizing<String>>>,
     pending: Mutex<Option<PendingSync>>,
-    cloud_auth: Mutex<Option<PendingCloudAuth>>,
 }
 
 impl Default for SyncRuntimeState {
@@ -88,7 +94,6 @@ impl Default for SyncRuntimeState {
         Self {
             passphrase: Mutex::new(None),
             pending: Mutex::new(None),
-            cloud_auth: Mutex::new(None),
         }
     }
 }
@@ -342,75 +347,6 @@ struct StoredSyncState {
 }
 
 #[derive(Clone)]
-struct PendingCloudAuth {
-    api_url: String,
-    token_endpoint: String,
-    client_id: String,
-    device_code: Zeroizing<String>,
-    interval_seconds: u64,
-    next_poll_at: i64,
-    expires_at: i64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CloudAuthStart {
-    pub user_code: String,
-    pub verification_uri: String,
-    pub verification_uri_complete: Option<String>,
-    pub expires_at: i64,
-    pub retry_after_seconds: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CloudAuthPoll {
-    pub status: String,
-    pub retry_after_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct CloudSession {
-    api_url: String,
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_at: i64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CloudClientConfig {
-    audience: String,
-    client_id: String,
-    device_authorization_endpoint: String,
-    token_endpoint: String,
-    issuer: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceAuthorizationResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    verification_uri_complete: Option<String>,
-    expires_in: u64,
-    interval: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OAuthTokenResponse {
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: u64,
-    token_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct OAuthErrorResponse {
-    error: String,
-}
-
-#[derive(Clone)]
 struct PendingSync {
     provider: String,
     remote_version: String,
@@ -577,7 +513,7 @@ pub async fn get_config(pool: &SqlitePool, vault_state: &VaultState) -> Result<S
         username: stored.username,
         gist_id: stored.gist_id,
         cloud_url: stored.cloud_url,
-        cloud_signed_in: load_cloud_session(pool, vault_state).await.is_ok(),
+        cloud_signed_in: crate::collaboration::account_is_signed_in(pool, vault_state).await,
         last_sync_at: row.get("last_synced_at"),
         last_remote_version: stored.last_remote_version,
         passphrase_remembered: credential_get(pool, vault_state, KEYCHAIN_PASSPHRASE)
@@ -627,16 +563,14 @@ pub async fn configure(
         "luma-cloud" => {
             let cloud_url = required_trimmed(input.cloud_url.take(), "cloudUrl")?;
             providers::validate_cloud_api_url(&cloud_url)?;
-            let session = load_cloud_session(pool, vault_state).await.map_err(|_| {
-                LumaError::SyncAuthFailed("sign in to Luma Cloud before enabling sync".into())
-            })?;
-            if session.api_url != cloud_url.trim_end_matches('/') {
+            if !crate::collaboration::account_is_signed_in(pool, vault_state).await {
                 return Err(LumaError::SyncAuthFailed(
-                    "cloud login belongs to a different server; sign in again".into(),
+                    "sign in to your Luma account before enabling Luma Cloud sync".into(),
                 ));
             }
             clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
             clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
+            clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
             stored.cloud_url = Some(cloud_url.trim_end_matches('/').to_string());
         }
         _ => {
@@ -676,180 +610,6 @@ pub async fn set_passphrase(
     Ok(())
 }
 
-pub async fn cloud_auth_start(
-    runtime: &SyncRuntimeState,
-    api_url: String,
-) -> Result<CloudAuthStart> {
-    let api_url = api_url.trim().trim_end_matches('/').to_string();
-    providers::validate_cloud_api_url(&api_url)?;
-    let config = fetch_cloud_client_config(&api_url).await?;
-    validate_external_https_url(&config.issuer, "identity issuer")?;
-    validate_external_https_url(
-        &config.device_authorization_endpoint,
-        "device authorization endpoint",
-    )?;
-    validate_external_https_url(&config.token_endpoint, "token endpoint")?;
-
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| LumaError::SyncUnavailable("could not initialize cloud login".into()))?
-        .post(&config.device_authorization_endpoint)
-        .form(&[
-            ("client_id", config.client_id.as_str()),
-            ("scope", "openid profile offline_access"),
-            ("audience", config.audience.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|_| LumaError::SyncUnavailable("identity provider could not be reached".into()))?;
-    if !response.status().is_success() {
-        return Err(LumaError::SyncAuthFailed(
-            "identity provider rejected the login request".into(),
-        ));
-    }
-    reject_large_auth_response(&response)?;
-    let authorization: DeviceAuthorizationResponse = parse_auth_json(
-        response,
-        "identity provider returned an invalid login response",
-    )
-    .await?;
-    if authorization.device_code.is_empty()
-        || authorization.user_code.is_empty()
-        || authorization.expires_in == 0
-    {
-        return Err(LumaError::SyncUnavailable(
-            "identity provider returned an incomplete login response".into(),
-        ));
-    }
-    let now = Utc::now().timestamp();
-    let interval = authorization.interval.unwrap_or(5).clamp(1, 60);
-    let expires_at = now.saturating_add(authorization.expires_in as i64);
-    *runtime.cloud_auth.lock().unwrap() = Some(PendingCloudAuth {
-        api_url,
-        token_endpoint: config.token_endpoint,
-        client_id: config.client_id,
-        device_code: Zeroizing::new(authorization.device_code),
-        interval_seconds: interval,
-        next_poll_at: now.saturating_add(interval as i64),
-        expires_at,
-    });
-    Ok(CloudAuthStart {
-        user_code: authorization.user_code,
-        verification_uri: authorization.verification_uri,
-        verification_uri_complete: authorization.verification_uri_complete,
-        expires_at,
-        retry_after_seconds: interval,
-    })
-}
-
-pub async fn cloud_auth_poll(
-    pool: &SqlitePool,
-    runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
-) -> Result<CloudAuthPoll> {
-    let pending = runtime
-        .cloud_auth
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| LumaError::InvalidInput("there is no pending cloud login".into()))?;
-    let now = Utc::now().timestamp();
-    if now >= pending.expires_at {
-        *runtime.cloud_auth.lock().unwrap() = None;
-        return Err(LumaError::SyncAuthFailed(
-            "cloud login expired; try again".into(),
-        ));
-    }
-    if now < pending.next_poll_at {
-        return Ok(CloudAuthPoll {
-            status: "pending".into(),
-            retry_after_seconds: Some((pending.next_poll_at - now) as u64),
-        });
-    }
-
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| LumaError::SyncUnavailable("could not continue cloud login".into()))?
-        .post(&pending.token_endpoint)
-        .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("device_code", pending.device_code.as_str()),
-            ("client_id", pending.client_id.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|_| LumaError::SyncUnavailable("identity provider could not be reached".into()))?;
-    reject_large_auth_response(&response)?;
-    if response.status().is_success() {
-        let token: OAuthTokenResponse =
-            parse_auth_json(response, "identity provider returned an invalid token").await?;
-        validate_oauth_token(&token)?;
-        let session = CloudSession {
-            api_url: pending.api_url,
-            access_token: token.access_token,
-            refresh_token: token.refresh_token,
-            expires_at: now.saturating_add(token.expires_in as i64),
-        };
-        save_cloud_session(pool, vault_state, &session).await?;
-        *runtime.cloud_auth.lock().unwrap() = None;
-        return Ok(CloudAuthPoll {
-            status: "complete".into(),
-            retry_after_seconds: None,
-        });
-    }
-
-    let error: OAuthErrorResponse =
-        parse_auth_json(response, "identity provider rejected the login request").await?;
-    match error.error.as_str() {
-        "authorization_pending" => {
-            let next = now.saturating_add(pending.interval_seconds as i64);
-            if let Some(active) = runtime.cloud_auth.lock().unwrap().as_mut() {
-                active.next_poll_at = next;
-            }
-            Ok(CloudAuthPoll {
-                status: "pending".into(),
-                retry_after_seconds: Some(pending.interval_seconds),
-            })
-        }
-        "slow_down" => {
-            let interval = pending.interval_seconds.saturating_add(5).min(60);
-            if let Some(active) = runtime.cloud_auth.lock().unwrap().as_mut() {
-                active.interval_seconds = interval;
-                active.next_poll_at = now.saturating_add(interval as i64);
-            }
-            Ok(CloudAuthPoll {
-                status: "pending".into(),
-                retry_after_seconds: Some(interval),
-            })
-        }
-        "access_denied" => {
-            *runtime.cloud_auth.lock().unwrap() = None;
-            Err(LumaError::SyncAuthFailed("cloud login was denied".into()))
-        }
-        "expired_token" => {
-            *runtime.cloud_auth.lock().unwrap() = None;
-            Err(LumaError::SyncAuthFailed(
-                "cloud login expired; try again".into(),
-            ))
-        }
-        _ => Err(LumaError::SyncAuthFailed(
-            "identity provider rejected the login request".into(),
-        )),
-    }
-}
-
-pub async fn cloud_auth_logout(
-    pool: &SqlitePool,
-    runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
-) -> Result<()> {
-    clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
-    *runtime.cloud_auth.lock().unwrap() = None;
-    Ok(())
-}
-
 pub async fn disable(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
@@ -866,7 +626,6 @@ pub async fn disable(
     clear_credential(pool, vault_state, KEYCHAIN_PASSPHRASE).await?;
     *runtime.passphrase.lock().unwrap() = None;
     *runtime.pending.lock().unwrap() = None;
-    *runtime.cloud_auth.lock().unwrap() = None;
     Ok(())
 }
 
@@ -874,12 +633,20 @@ pub async fn sync_now(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
     vault_state: &VaultState,
+    collab_runtime: &crate::collaboration::CollaborationRuntimeState,
     app_data_dir: &Path,
 ) -> Result<SyncReport> {
     let (provider_name, mut stored) = load_enabled_config(pool).await?;
     let passphrase = current_passphrase(runtime)?;
-    let provider =
-        create_provider(pool, vault_state, &provider_name, &stored, app_data_dir).await?;
+    let provider = create_provider(
+        pool,
+        vault_state,
+        collab_runtime,
+        &provider_name,
+        &stored,
+        app_data_dir,
+    )
+    .await?;
     let remote = provider.download().await?;
     let local = assemble_bundle(pool, vault_state, &passphrase).await?;
 
@@ -973,6 +740,7 @@ pub async fn sync_resolve(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
     vault_state: &VaultState,
+    collab_runtime: &crate::collaboration::CollaborationRuntimeState,
     app_data_dir: &Path,
     resolutions: &[ConflictResolution],
 ) -> Result<SyncReport> {
@@ -1056,8 +824,15 @@ pub async fn sync_resolve(
             .await?;
     pulled |= private_keys.applied > 0 || identity_passwords > 0;
 
-    let provider =
-        create_provider(pool, vault_state, &provider_name, &stored, app_data_dir).await?;
+    let provider = create_provider(
+        pool,
+        vault_state,
+        collab_runtime,
+        &provider_name,
+        &stored,
+        app_data_dir,
+    )
+    .await?;
     let merged = assemble_bundle(pool, vault_state, &passphrase).await?;
     let blob = encrypt_bundle(&merged, &passphrase)?;
     let uploaded = provider
@@ -2943,20 +2718,135 @@ fn keychain_entry(account: &str) -> Result<Entry> {
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn keychain_set(account: &str, secret: &str) -> Result<()> {
-    keychain_entry(account)?
-        .set_password(secret)
-        .map_err(|_| LumaError::SyncUnavailable("could not store sync credential".into()))
+    let chunks = split_keychain_secret(secret);
+    let previous_chunk_count = keychain_entry(account)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+        .and_then(|value| keychain_chunk_count(&value));
+
+    if chunks.len() == 1 {
+        keychain_entry(account)?
+            .set_password(secret)
+            .map_err(|_| LumaError::SyncUnavailable("could not store sync credential".into()))?;
+        if let Some(count) = previous_chunk_count {
+            delete_keychain_chunks(account, count);
+        }
+        return Ok(());
+    }
+
+    if chunks.len() > KEYCHAIN_MAX_CHUNKS {
+        return Err(LumaError::SyncUnavailable(
+            "sync credential is too large".into(),
+        ));
+    }
+
+    for (index, chunk) in chunks.iter().enumerate() {
+        let chunk_account = format!("{account}:chunk:{index}");
+        if keychain_entry(&chunk_account)
+            .and_then(|entry| {
+                entry.set_password(chunk).map_err(|_| {
+                    LumaError::SyncUnavailable("could not store sync credential".into())
+                })
+            })
+            .is_err()
+        {
+            delete_keychain_chunks(account, index + 1);
+            return Err(LumaError::SyncUnavailable(
+                "could not store sync credential".into(),
+            ));
+        }
+    }
+
+    let manifest = format!("{KEYCHAIN_CHUNK_MANIFEST_PREFIX}{}", chunks.len());
+    if keychain_entry(account)
+        .and_then(|entry| {
+            entry
+                .set_password(&manifest)
+                .map_err(|_| LumaError::SyncUnavailable("could not store sync credential".into()))
+        })
+        .is_err()
+    {
+        delete_keychain_chunks(account, chunks.len());
+        return Err(LumaError::SyncUnavailable(
+            "could not store sync credential".into(),
+        ));
+    }
+    if let Some(previous_count) = previous_chunk_count {
+        for index in chunks.len()..previous_count {
+            clear_keychain_entry(&format!("{account}:chunk:{index}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn keychain_get(account: &str) -> Result<String> {
-    keychain_entry(account)?
-        .get_password()
-        .map_err(|_| LumaError::SyncAuthFailed("required sync credential is not available".into()))
+    let stored = keychain_entry(account)?.get_password().map_err(|_| {
+        LumaError::SyncAuthFailed("required sync credential is not available".into())
+    })?;
+    let Some(chunk_count) = keychain_chunk_count(&stored) else {
+        return Ok(stored);
+    };
+    let mut secret = String::new();
+    for index in 0..chunk_count {
+        let chunk = keychain_entry(&format!("{account}:chunk:{index}"))?
+            .get_password()
+            .map_err(|_| {
+                LumaError::SyncAuthFailed("required sync credential is not available".into())
+            })?;
+        secret.push_str(&chunk);
+    }
+    Ok(secret)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn clear_keychain(account: &str) {
+    let chunk_count = keychain_entry(account)
+        .ok()
+        .and_then(|entry| entry.get_password().ok())
+        .and_then(|value| keychain_chunk_count(&value));
+    if let Some(count) = chunk_count {
+        delete_keychain_chunks(account, count);
+    }
+    clear_keychain_entry(account);
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn split_keychain_secret(secret: &str) -> Vec<Zeroizing<String>> {
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    let mut utf16_units = 0;
+    for character in secret.chars() {
+        let character_units = character.len_utf16();
+        if utf16_units + character_units > KEYCHAIN_CHUNK_UTF16_LIMIT && !chunk.is_empty() {
+            chunks.push(Zeroizing::new(std::mem::take(&mut chunk)));
+            utf16_units = 0;
+        }
+        chunk.push(character);
+        utf16_units += character_units;
+    }
+    chunks.push(Zeroizing::new(chunk));
+    chunks
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn keychain_chunk_count(value: &str) -> Option<usize> {
+    value
+        .strip_prefix(KEYCHAIN_CHUNK_MANIFEST_PREFIX)?
+        .parse::<usize>()
+        .ok()
+        .filter(|count| (2..=KEYCHAIN_MAX_CHUNKS).contains(count))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn delete_keychain_chunks(account: &str, count: usize) {
+    for index in 0..count.min(KEYCHAIN_MAX_CHUNKS) {
+        clear_keychain_entry(&format!("{account}:chunk:{index}"));
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn clear_keychain_entry(account: &str) {
     if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, account) {
         let _ = entry.delete_credential();
     }
@@ -3029,146 +2919,6 @@ async fn clear_credential(
     }
 }
 
-async fn fetch_cloud_client_config(api_url: &str) -> Result<CloudClientConfig> {
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| LumaError::SyncUnavailable("could not initialize cloud login".into()))?
-        .get(format!(
-            "{}/v1/client-config",
-            api_url.trim_end_matches('/')
-        ))
-        .send()
-        .await
-        .map_err(|_| LumaError::SyncUnavailable("Luma Cloud could not be reached".into()))?;
-    if !response.status().is_success() {
-        return Err(LumaError::SyncUnavailable(format!(
-            "Luma Cloud returned HTTP {}",
-            response.status().as_u16()
-        )));
-    }
-    parse_auth_json(response, "Luma Cloud returned invalid login configuration").await
-}
-
-fn validate_external_https_url(value: &str, label: &str) -> Result<()> {
-    let url = reqwest::Url::parse(value)
-        .map_err(|_| LumaError::SyncUnavailable(format!("{label} is invalid")))?;
-    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
-        return Err(LumaError::SyncUnavailable(format!(
-            "{label} must use HTTPS without embedded credentials"
-        )));
-    }
-    Ok(())
-}
-
-fn reject_large_auth_response(response: &reqwest::Response) -> Result<()> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > 64 * 1024)
-    {
-        return Err(LumaError::SyncUnavailable(
-            "identity provider response is too large".into(),
-        ));
-    }
-    Ok(())
-}
-
-async fn parse_auth_json<T: DeserializeOwned>(
-    response: reqwest::Response,
-    invalid_message: &str,
-) -> Result<T> {
-    reject_large_auth_response(&response)?;
-    let bytes = response.bytes().await.map_err(|_| {
-        LumaError::SyncUnavailable("could not read identity provider response".into())
-    })?;
-    if bytes.len() > 64 * 1024 {
-        return Err(LumaError::SyncUnavailable(
-            "identity provider response is too large".into(),
-        ));
-    }
-    serde_json::from_slice(&bytes).map_err(|_| LumaError::SyncUnavailable(invalid_message.into()))
-}
-
-fn validate_oauth_token(token: &OAuthTokenResponse) -> Result<()> {
-    if token.access_token.is_empty()
-        || token.expires_in == 0
-        || !token.token_type.eq_ignore_ascii_case("bearer")
-    {
-        return Err(LumaError::SyncUnavailable(
-            "identity provider returned an incomplete token".into(),
-        ));
-    }
-    Ok(())
-}
-
-async fn load_cloud_session(pool: &SqlitePool, vault_state: &VaultState) -> Result<CloudSession> {
-    let encoded = credential_get(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
-    serde_json::from_str(&encoded)
-        .map_err(|_| LumaError::SyncAuthFailed("stored cloud session is invalid".into()))
-}
-
-async fn save_cloud_session(
-    pool: &SqlitePool,
-    vault_state: &VaultState,
-    session: &CloudSession,
-) -> Result<()> {
-    let encoded = serde_json::to_string(session)
-        .map_err(|_| LumaError::SyncUnavailable("could not store cloud session".into()))?;
-    credential_set(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION, &encoded).await
-}
-
-async fn cloud_access_token(
-    pool: &SqlitePool,
-    vault_state: &VaultState,
-    api_url: &str,
-) -> Result<String> {
-    let mut session = load_cloud_session(pool, vault_state).await?;
-    if session.api_url != api_url.trim_end_matches('/') {
-        return Err(LumaError::SyncAuthFailed(
-            "cloud login belongs to a different server; sign in again".into(),
-        ));
-    }
-    let now = Utc::now().timestamp();
-    if session.expires_at > now.saturating_add(60) {
-        return Ok(session.access_token);
-    }
-
-    let refresh_token = session.refresh_token.as_deref().ok_or_else(|| {
-        LumaError::SyncAuthFailed("Luma Cloud session expired; sign in again".into())
-    })?;
-    let config = fetch_cloud_client_config(api_url).await?;
-    validate_external_https_url(&config.token_endpoint, "token endpoint")?;
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|_| LumaError::SyncUnavailable("could not refresh cloud login".into()))?
-        .post(&config.token_endpoint)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", config.client_id.as_str()),
-        ])
-        .send()
-        .await
-        .map_err(|_| LumaError::SyncUnavailable("identity provider could not be reached".into()))?;
-    reject_large_auth_response(&response)?;
-    if !response.status().is_success() {
-        return Err(LumaError::SyncAuthFailed(
-            "Luma Cloud session expired; sign in again".into(),
-        ));
-    }
-    let token: OAuthTokenResponse =
-        parse_auth_json(response, "identity provider returned an invalid token").await?;
-    validate_oauth_token(&token)?;
-    session.access_token = token.access_token;
-    if token.refresh_token.is_some() {
-        session.refresh_token = token.refresh_token;
-    }
-    session.expires_at = now.saturating_add(token.expires_in as i64);
-    save_cloud_session(pool, vault_state, &session).await?;
-    Ok(session.access_token)
-}
-
 fn current_passphrase(runtime: &SyncRuntimeState) -> Result<Zeroizing<String>> {
     runtime
         .passphrase
@@ -3206,6 +2956,7 @@ fn parse_stored_state(raw: Option<String>) -> Result<StoredSyncState> {
 async fn create_provider(
     pool: &SqlitePool,
     vault_state: &VaultState,
+    collab_runtime: &crate::collaboration::CollaborationRuntimeState,
     provider: &str,
     stored: &StoredSyncState,
     app_data_dir: &Path,
@@ -3238,7 +2989,10 @@ async fn create_provider(
             let api_url = stored.cloud_url.clone().ok_or_else(|| {
                 LumaError::SyncUnavailable("Luma Cloud URL is not configured".into())
             })?;
-            let access_token = cloud_access_token(pool, vault_state, &api_url).await?;
+            let access_token =
+                crate::collaboration::account_access_token(pool, collab_runtime, vault_state)
+                    .await
+                    .map_err(|e| LumaError::SyncAuthFailed(e.message))?;
             Ok(Box::new(LumaCloudProvider::new(api_url, access_token)?))
         }
         _ => Err(LumaError::SyncUnavailable(
@@ -3338,6 +3092,39 @@ mod tests {
             value: json!(value),
             updated_at,
         }
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn keychain_secret_chunks_respect_windows_utf16_limit() {
+        let secret = format!(
+            "{}{}{}",
+            "a".repeat(KEYCHAIN_CHUNK_UTF16_LIMIT - 1),
+            "😀",
+            "b".repeat(KEYCHAIN_CHUNK_UTF16_LIMIT),
+        );
+        let chunks = split_keychain_secret(&secret);
+
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.encode_utf16().count() <= KEYCHAIN_CHUNK_UTF16_LIMIT));
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| chunk.as_str())
+                .collect::<String>(),
+            secret,
+        );
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn keychain_manifest_is_distinct_from_regular_credentials() {
+        assert_eq!(keychain_chunk_count("1234"), None);
+        assert_eq!(keychain_chunk_count("luma-chunks-v1:1"), None);
+        assert_eq!(keychain_chunk_count("luma-chunks-v1:2"), Some(2));
+        assert_eq!(keychain_chunk_count("luma-chunks-v1:invalid"), None);
     }
 
     #[test]

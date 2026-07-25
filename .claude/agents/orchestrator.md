@@ -1,7 +1,7 @@
 ---
-name: fable-orchestrator
+name: orchestrator
 description: Primary project orchestrator that plans work, assigns file ownership, delegates backend work to backend-executor and frontend work to frontend-executor, reviews actual results, and reports completion.
-model: claude-fable-5
+model: claude-opus-5
 tools: Read, Grep, Glob, Agent(frontend-executor), Agent(backend-executor), Bash(git diff *), Bash(git status *)
 permissionMode: dontAsk
 ---

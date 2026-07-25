@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; font-src 'self' data:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; font-src 'self' data:; connect-src 'self' https://collab.luma.bwmp.dev wss://collab.luma.bwmp.dev"
     }
   },
   "bundle": {
@@ -44,6 +44,11 @@
     ]
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["luma"]
+      }
+    },
     "updater": {
       "active": true,
       "pubkey": "PLACEHOLDER_CI_INJECTS_TAURI_UPDATER_PUBLIC_KEY",

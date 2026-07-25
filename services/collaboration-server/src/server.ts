@@ -25,6 +25,9 @@ const tickets = new TicketStore(redis, config);
 const snapshots = new SnapshotStorage(config);
 const roomRouter = new RoomRouter(redis, subscriber, config);
 const webSockets = new WebSocketServer({ noServer: true, maxPayload: config.maxEventBytes });
+const DEFAULT_CAPABILITY_TTL_SECONDS = 86_400;
+const MIN_CAPABILITY_TTL_SECONDS = 60;
+const MAX_CAPABILITY_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 redis.on("error", (error) => console.error("redis command connection error", error.message));
 subscriber.on("error", (error) => console.error("redis subscriber connection error", error.message));
@@ -133,6 +136,54 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       parseDeviceKeys(body.deviceKeys, roomId),
     );
     sendJson(response, 201, member);
+    return;
+  }
+
+  const capabilitiesMatch = url.pathname.match(
+    /^\/v1\/rooms\/([0-9a-f-]+)\/capabilities$/i,
+  );
+  if (method === "POST" && capabilitiesMatch) {
+    const roomId = validatedRoomId(capabilitiesMatch[1]);
+    const body = await readJson(request, 16 * 1024);
+    if (body.role !== "controller" && body.role !== "viewer") {
+      throw new HttpError(400, "role must be controller or viewer");
+    }
+    const invite = await database.createInvite(
+      roomId,
+      user.subject,
+      body.role,
+      validatedCapabilityTtlSeconds(body.ttlSeconds),
+    );
+    sendJson(response, 201, {
+      capabilityId: invite.capabilityId,
+      secret: invite.secret,
+      keyEpoch: invite.keyEpoch,
+      expiresAt: invite.expiresAt,
+    });
+    return;
+  }
+
+  const joinMatch = url.pathname.match(/^\/v1\/rooms\/([0-9a-f-]+)\/join$/i);
+  if (method === "POST" && joinMatch) {
+    const roomId = validatedRoomId(joinMatch[1]);
+    const body = await readJson(request, 128 * 1024);
+    if (typeof body.secret !== "string" || body.secret.length < 1 || body.secret.length > 512) {
+      throw new HttpError(400, "secret is invalid");
+    }
+    const deviceId = validatedUuid(body.deviceId, "device id");
+    const keyEnvelope = parsedRoomKeyEnvelope(body.keyEnvelope);
+    const member = await database.redeemInvite(
+      roomId,
+      user.subject,
+      body.secret,
+      deviceId,
+      keyEnvelope,
+    );
+    sendJson(response, 200, {
+      memberId: member.memberId,
+      role: member.role,
+      keyEpoch: member.keyEpoch,
+    });
     return;
   }
 
@@ -248,6 +299,26 @@ async function readBytes(request: IncomingMessage, maxBytes: number): Promise<Bu
   }
   if (length === 0) throw new HttpError(400, "request body is required");
   return Buffer.concat(chunks, length);
+}
+
+function validatedCapabilityTtlSeconds(value: unknown): number {
+  if (value === undefined) return DEFAULT_CAPABILITY_TTL_SECONDS;
+  if (!Number.isSafeInteger(value)) {
+    throw new HttpError(400, "ttlSeconds must be an integer");
+  }
+  return Math.min(
+    MAX_CAPABILITY_TTL_SECONDS,
+    Math.max(MIN_CAPABILITY_TTL_SECONDS, value as number),
+  );
+}
+
+function parsedRoomKeyEnvelope(value: unknown): RoomKeyEnvelope {
+  try {
+    return parseRoomKeyEnvelope(value);
+  } catch (error) {
+    if (error instanceof CollaborationCryptoError) throw new HttpError(400, error.message);
+    throw error;
+  }
 }
 
 function parseDeviceKeys(

@@ -12,6 +12,7 @@
     "core:window:allow-start-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
+    "deep-link:default",
     "opener:default",
     "process:allow-restart",
     "updater:default",

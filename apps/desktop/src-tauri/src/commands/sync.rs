@@ -1,9 +1,10 @@
 use tauri::State;
 
+use crate::collaboration::CollaborationRuntimeState;
 use crate::errors::Result;
 use crate::sync::{
-    self, CloudAuthPoll, CloudAuthStart, ConflictResolution, ExportSummary, ImportPreview,
-    ImportSummary, SyncConfig, SyncConfigureInput, SyncReport, SyncRuntimeState,
+    self, ConflictResolution, ExportSummary, ImportPreview, ImportSummary, SyncConfig,
+    SyncConfigureInput, SyncReport, SyncRuntimeState,
 };
 use crate::vault::VaultState;
 use crate::AppState;
@@ -23,32 +24,6 @@ pub async fn export_encrypted(
         &passphrase,
     )
     .await
-}
-
-#[tauri::command]
-pub async fn cloud_auth_start(
-    runtime: State<'_, SyncRuntimeState>,
-    api_url: String,
-) -> Result<CloudAuthStart> {
-    sync::cloud_auth_start(&runtime, api_url).await
-}
-
-#[tauri::command]
-pub async fn cloud_auth_poll(
-    state: State<'_, AppState>,
-    runtime: State<'_, SyncRuntimeState>,
-    vault_state: State<'_, VaultState>,
-) -> Result<CloudAuthPoll> {
-    sync::cloud_auth_poll(&state.pool, &runtime, &vault_state).await
-}
-
-#[tauri::command]
-pub async fn cloud_auth_logout(
-    state: State<'_, AppState>,
-    runtime: State<'_, SyncRuntimeState>,
-    vault_state: State<'_, VaultState>,
-) -> Result<()> {
-    sync::cloud_auth_logout(&state.pool, &runtime, &vault_state).await
 }
 
 #[tauri::command]
@@ -129,8 +104,16 @@ pub async fn sync_now(
     state: State<'_, AppState>,
     runtime: State<'_, SyncRuntimeState>,
     vault_state: State<'_, VaultState>,
+    collab_runtime: State<'_, CollaborationRuntimeState>,
 ) -> Result<SyncReport> {
-    sync::sync_now(&state.pool, &runtime, &vault_state, &state.app_data_dir).await
+    sync::sync_now(
+        &state.pool,
+        &runtime,
+        &vault_state,
+        &collab_runtime,
+        &state.app_data_dir,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -138,12 +121,14 @@ pub async fn sync_resolve(
     state: State<'_, AppState>,
     runtime: State<'_, SyncRuntimeState>,
     vault_state: State<'_, VaultState>,
+    collab_runtime: State<'_, CollaborationRuntimeState>,
     resolutions: Vec<ConflictResolution>,
 ) -> Result<SyncReport> {
     sync::sync_resolve(
         &state.pool,
         &runtime,
         &vault_state,
+        &collab_runtime,
         &state.app_data_dir,
         &resolutions,
     )

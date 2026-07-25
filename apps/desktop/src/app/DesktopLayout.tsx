@@ -10,6 +10,8 @@ import { SnippetRunner } from "../features/snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../features/snippets/MultiHostRunDialog";
 import { CommandPalette } from "../features/palette/CommandPalette";
 import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
+import { CollaborationDialog } from "../features/collaboration/CollaborationDialog";
+import { CollaborationViewer } from "../features/collaboration/CollaborationViewer";
 
 /*
  * Desktop application shell — the original Luma layout, unchanged. Heavier,
@@ -57,6 +59,8 @@ function ScreenFallback() {
 export function DesktopLayout() {
   const mainView = useUiStore((s) => s.mainView);
   const navOpen = useUiStore((s) => s.navOpen);
+  const collabOpen = useUiStore((s) => s.collabOpen);
+  const closeCollab = useUiStore((s) => s.closeCollab);
 
   return (
     <div className="flex h-full flex-col">
@@ -100,10 +104,15 @@ export function DesktopLayout() {
                 <KnownHostsScreen />
               </Suspense>
             )}
+            {/* Shared-terminal viewer overlay: shown only while joining a room,
+                covering whichever main view is active (a viewer has no local
+                tabs of its own). */}
+            <CollaborationViewer />
           </div>
         </main>
       </div>
       <CommandPalette />
+      <CollaborationDialog open={collabOpen} onOpenChange={(o) => !o && closeCollab()} />
       <SerialConnectDialog />
       <SnippetRunner />
       <MultiHostRunDialog />

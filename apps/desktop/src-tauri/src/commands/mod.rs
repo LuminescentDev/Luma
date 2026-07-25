@@ -21,6 +21,7 @@ use crate::storage::settings;
 use crate::terminal::{PtyManager, ResolvedShell};
 use crate::AppState;
 
+mod collaboration;
 mod hosts;
 mod import;
 mod known_hosts;
@@ -35,6 +36,7 @@ mod ssh;
 mod sync;
 mod vault;
 
+pub use collaboration::*;
 pub use hosts::*;
 pub use import::*;
 pub use known_hosts::*;

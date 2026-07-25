@@ -82,19 +82,6 @@ export type SyncConfigureInput =
   | { provider: "github-gist"; token: string; gistId: string | null }
   | { provider: "luma-cloud"; cloudUrl: string };
 
-export type CloudAuthStart = {
-  userCode: string;
-  verificationUri: string;
-  verificationUriComplete: string | null;
-  expiresAt: number;
-  retryAfterSeconds: number;
-};
-
-export type CloudAuthPoll = {
-  status: "pending" | "complete";
-  retryAfterSeconds: number | null;
-};
-
 export type SyncReport = {
   pulled: boolean;
   pushed: boolean;
@@ -148,18 +135,6 @@ export function importApply(
 
 export function syncGetConfig(): Promise<SyncConfig> {
   return invoke<SyncConfig>("sync_get_config", {});
-}
-
-export function cloudAuthStart(apiUrl: string): Promise<CloudAuthStart> {
-  return invoke<CloudAuthStart>("cloud_auth_start", { apiUrl });
-}
-
-export function cloudAuthPoll(): Promise<CloudAuthPoll> {
-  return invoke<CloudAuthPoll>("cloud_auth_poll", {});
-}
-
-export function cloudAuthLogout(): Promise<null> {
-  return invoke<null>("cloud_auth_logout", {});
 }
 
 export function syncConfigure(input: SyncConfigureInput): Promise<null> {

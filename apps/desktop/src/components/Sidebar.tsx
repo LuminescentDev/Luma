@@ -5,7 +5,6 @@ import type { SidebarSection } from "../types";
 import { cn } from "../lib/utils";
 
 const ITEMS: { section: SidebarSection; label: string; icon: typeof Server }[] = [
-  { section: "hosts", label: "Hosts", icon: Server },
   { section: "logs", label: "Logs", icon: ScrollText },
   { section: "snippets", label: "Snippets", icon: SquareCode },
 ];
@@ -26,6 +25,7 @@ export function Sidebar() {
   const openKnownHosts = useUiStore((s) => s.openKnownHosts);
 
   const items: RailItem[] = [
+    { key: "hosts", label: "Hosts", icon: Server, active: mainView === "hosts", onClick: () => selectSection("hosts") },
     { key: "keychain", label: "Keychain", icon: KeyRound, active: mainView === "keychain", onClick: openKeychain },
     { key: "known-hosts", label: "Known hosts", icon: ShieldCheck, active: mainView === "known-hosts", onClick: openKnownHosts },
     ...ITEMS.map((item) => ({

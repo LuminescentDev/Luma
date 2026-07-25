@@ -291,6 +291,20 @@ type ManagedSession = {
   /** Notified (once) when an armed pendingModifier is consumed by typed input, so
    * the accessory bar can drop its visual "sticky" highlight. */
   onModifierConsumed: (() => void) | null;
+  /** Collaboration output tap. When set, every chunk of backend output (the same
+   * bytes written into xterm) is ALSO handed to this observer so the collab
+   * client can encrypt + broadcast it to a room. Bytes flow manager → tap
+   * directly and never cross into React state. Null when the session is not
+   * being shared. */
+  outputTap: ((data: Uint8Array) => void) | null;
+  /** A display-only session has no backend PTY: it renders decrypted remote
+   * output (viewer/controller of a shared terminal) and forwards local typing to
+   * `onInput` instead of a PTY. */
+  display: boolean;
+  /** For a display session, where locally-typed input is delivered (the collab
+   * client encrypts it as terminal.input for the owner). Null for viewers with no
+   * control lease and for normal backend sessions. */
+  onInput: ((data: string) => void) | null;
 };
 
 // Split-pane and window drags can produce dozens of xterm sizes per second.
@@ -401,6 +415,14 @@ export function applyModifier(mod: "ctrl" | "alt", data: string): string {
 }
 
 function routeUserInput(session: ManagedSession, data: string): void {
+  // Display-only (shared-terminal viewer/controller) sessions have no backend
+  // PTY: forward typed input to the collab client, which encrypts it as a
+  // terminal.input event for the owner (only when this member holds control —
+  // onInput is null for viewers without a lease, making them read-only).
+  if (session.display) {
+    session.onInput?.(data);
+    return;
+  }
   // Consume a one-shot Ctrl/Alt armed from the mobile accessory bar. It applies
   // to the first character of the next typed chunk, then releases.
   if (session.pendingModifier && data) {
@@ -726,6 +748,14 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
 
   const handleData = (data: Uint8Array | string) => {
     term.write(data);
+    // Collaboration tap: hand the SAME bytes to the room broadcaster (if this
+    // session is being shared) before any SSH transcript scraping. Bytes go
+    // manager → tap directly; they never enter React state.
+    if (session.outputTap) {
+      const bytes =
+        typeof data === "string" ? new TextEncoder().encode(data) : data;
+      session.outputTap(bytes);
+    }
     if (descriptor.kind !== "ssh") return;
     const text = typeof data === "string" ? data : new TextDecoder().decode(data);
     session.sshTranscript = (session.sshTranscript + text).slice(-16_384);
@@ -1034,6 +1064,9 @@ export const terminalManager = {
       lastReportedCwd: null,
       pendingModifier: null,
       onModifierConsumed: null,
+      outputTap: null,
+      display: false,
+      onInput: null,
     };
     sessions.set(sessionId, session);
 
@@ -1338,6 +1371,140 @@ export const terminalManager = {
   clearBroadcastGroup(sessionId: string): void {
     const session = sessions.get(sessionId);
     if (session) detachFromBroadcast(session);
+  },
+
+  /** Whether a managed session (backend or display-only) exists for this id. */
+  isKnown(sessionId: string): boolean {
+    return sessions.has(sessionId);
+  },
+
+  /**
+   * Install a collaboration output tap on a live backend session: every chunk of
+   * output bytes written into xterm is also delivered to `tap` so the collab
+   * client can encrypt + broadcast it. No-op for a display-only session (it has
+   * no backend output to tap). Bytes flow manager → tap directly and never enter
+   * React state.
+   */
+  setOutputTap(sessionId: string, tap: (data: Uint8Array) => void): void {
+    const session = sessions.get(sessionId);
+    if (!session || session.display) return;
+    session.outputTap = tap;
+  },
+
+  /** Remove a session's collaboration output tap (stop sharing). */
+  clearOutputTap(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (session) session.outputTap = null;
+  },
+
+  /**
+   * Inject remote controller input into a shared backend session's PTY. Mirrors
+   * the local typing path (coalesced write lane) but never steals focus, so the
+   * owner keeps typing while a controller's keystrokes are applied. The PTY's
+   * echo flows back through the normal output tap to every room member.
+   */
+  injectInput(sessionId: string, data: string): void {
+    const session = sessions.get(sessionId);
+    if (!session || session.display) return;
+    enqueueInput(session, data);
+  },
+
+  /**
+   * Create a display-only terminal for a shared-terminal viewer/controller. It
+   * has NO backend PTY: it renders decrypted remote output written via
+   * `writeOutput` and forwards locally-typed input to `onInput` (the collab
+   * client encrypts it as terminal.input; pass a no-op or leave input unhandled
+   * for a read-only viewer). Attach/detach/fit/dispose reuse the normal manager
+   * plumbing.
+   */
+  createDisplaySession(
+    sessionId: string,
+    options: { onInput?: (data: string) => void } = {},
+  ): void {
+    if (sessions.has(sessionId)) return;
+    const term = new Terminal({
+      allowProposedApi: true,
+      cursorBlink: false,
+      disableStdin: true,
+      fontFamily: config.fontFamily,
+      fontSize: config.fontSize,
+      scrollback: config.scrollback,
+      theme: currentTheme(),
+    });
+    const fit = new FitAddon();
+    const search = new SearchAddon();
+    term.loadAddon(fit);
+    term.loadAddon(search);
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        void openUrl(uri);
+      }),
+    );
+
+    const session: ManagedSession = {
+      id: sessionId,
+      term,
+      fit,
+      search,
+      backendId: null,
+      descriptor: { kind: "local", ref: undefined },
+      callbacks: {
+        onTitle: () => {},
+        onExit: () => {},
+        onSearchRequested: () => {},
+        onSshAuthenticated: () => {},
+        onSshPrompt: () => {},
+        onSshProgress: () => {},
+        onSshIssue: () => {},
+        onRemoteOs: () => {},
+      },
+      broadcastPeers: null,
+      pendingInput: [],
+      queuedInput: [],
+      writeInFlight: false,
+      exited: false,
+      spawnGeneration: 0,
+      disposed: false,
+      sshTranscript: "",
+      lastPromptSignature: "",
+      sshStage: "starting",
+      sshIssueReported: false,
+      sshFinalizing: false,
+      resizeTimer: null,
+      marks: [],
+      lastReportedCwd: null,
+      pendingModifier: null,
+      onModifierConsumed: null,
+      outputTap: null,
+      display: true,
+      onInput: options.onInput ?? null,
+    };
+    sessions.set(sessionId, session);
+
+    term.onData((data) => routeUserInput(session, data));
+
+    const pendingHost = pendingHosts.get(sessionId);
+    if (pendingHost) {
+      pendingHosts.delete(sessionId);
+      this.attach(sessionId, pendingHost);
+    }
+  },
+
+  /** Write decrypted remote output bytes into a display-only session's xterm.
+   * No-op for a backend session (its output comes from the PTY). */
+  writeOutput(sessionId: string, data: Uint8Array | string): void {
+    const session = sessions.get(sessionId);
+    if (!session || !session.display) return;
+    session.term.write(data);
+  },
+
+  /** Update a display session's control-input handler: pass a function when this
+   * member gains the control lease, or null to make the viewer read-only. */
+  setDisplayInput(sessionId: string, onInput: ((data: string) => void) | null): void {
+    const session = sessions.get(sessionId);
+    if (!session || !session.display) return;
+    session.onInput = onInput;
+    session.term.options.disableStdin = onInput === null;
   },
 
   dispose(sessionId: string): void {

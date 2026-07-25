@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
@@ -10,6 +11,7 @@ import { HttpError } from "./auth.js";
 import {
   accounts,
   devices,
+  roomInvites,
   roomMemberKeys,
   roomMembers,
   rooms,
@@ -36,6 +38,19 @@ export interface DeviceEnvelopeInput {
 export interface RegisteredDevice {
   deviceId: string;
   publicKey: DevicePublicKey;
+}
+
+export interface CreatedInvite {
+  capabilityId: string;
+  secret: string;
+  keyEpoch: number;
+  expiresAt: string;
+}
+
+export interface RedeemedInvite {
+  memberId: string;
+  role: Exclude<RoomRole, "owner">;
+  keyEpoch: number;
 }
 
 type Transaction = Parameters<
@@ -104,18 +119,7 @@ export class Database {
   }
 
   async authorizeDevice(subject: string, deviceId: string): Promise<void> {
-    const [device] = await this.orm
-      .select({ id: devices.id })
-      .from(devices)
-      .where(
-        and(
-          eq(devices.id, deviceId),
-          eq(devices.subject, subject),
-          isNull(devices.revokedAt),
-        ),
-      )
-      .limit(1);
-    if (!device) throw new HttpError(403, "device is not registered");
+    await authorizeDevice(this.orm, subject, deviceId);
   }
 
   async membership(roomId: string, subject: string): Promise<RoomMembership> {
@@ -271,6 +275,120 @@ export class Database {
     });
   }
 
+  async createInvite(
+    roomId: string,
+    ownerSubject: string,
+    role: Exclude<RoomRole, "owner">,
+    ttlSeconds: number,
+  ): Promise<CreatedInvite> {
+    return await this.orm.transaction(async (tx) => {
+      const [owner] = await tx
+        .select({ role: roomMembers.role, keyEpoch: rooms.keyEpoch })
+        .from(roomMembers)
+        .innerJoin(rooms, eq(rooms.id, roomMembers.roomId))
+        .where(
+          and(
+            eq(roomMembers.roomId, roomId),
+            eq(roomMembers.subject, ownerSubject),
+            isNull(roomMembers.revokedAt),
+            isNull(rooms.deletedAt),
+          ),
+        )
+        .for("update", { of: rooms })
+        .limit(1);
+      if (!owner || owner.role !== "owner") {
+        throw new HttpError(403, "only the room owner can create capabilities");
+      }
+
+      const secret = randomBytes(32).toString("base64url");
+      const expiresAt = new Date(Date.now() + ttlSeconds * 1_000);
+      const [invite] = await tx
+        .insert(roomInvites)
+        .values({
+          roomId,
+          secretHash: hashCapabilitySecret(secret),
+          role,
+          keyEpoch: owner.keyEpoch,
+          createdBySubject: ownerSubject,
+          expiresAt,
+        })
+        .returning({ id: roomInvites.id });
+      if (!invite) throw new Error("capability insert returned no id");
+
+      return {
+        capabilityId: invite.id,
+        secret,
+        keyEpoch: owner.keyEpoch,
+        expiresAt: expiresAt.toISOString(),
+      };
+    });
+  }
+
+  async redeemInvite(
+    roomId: string,
+    subject: string,
+    secret: string,
+    deviceId: string,
+    keyEnvelope: RoomKeyEnvelope,
+  ): Promise<RedeemedInvite> {
+    return await this.orm.transaction(async (tx) => {
+      const [invite] = await tx
+        .select({
+          role: roomInvites.role,
+          keyEpoch: roomInvites.keyEpoch,
+          expiresAt: roomInvites.expiresAt,
+          revokedAt: roomInvites.revokedAt,
+          currentKeyEpoch: rooms.keyEpoch,
+        })
+        .from(roomInvites)
+        .innerJoin(rooms, eq(rooms.id, roomInvites.roomId))
+        .where(
+          and(
+            eq(roomInvites.roomId, roomId),
+            eq(roomInvites.secretHash, hashCapabilitySecret(secret)),
+            isNull(rooms.deletedAt),
+          ),
+        )
+        .for("update", { of: rooms })
+        .limit(1);
+      if (!invite || invite.revokedAt !== null) {
+        throw new HttpError(403, "capability is invalid or revoked");
+      }
+      if (invite.expiresAt.getTime() <= Date.now()) {
+        throw new HttpError(410, "capability has expired");
+      }
+      if (invite.keyEpoch !== invite.currentKeyEpoch) {
+        throw new HttpError(409, "capability expired, request a new link");
+      }
+
+      await authorizeDevice(tx, subject, deviceId);
+      validateDeviceEnvelopeContexts(
+        [{ deviceId, envelope: keyEnvelope }],
+        roomId,
+        invite.keyEpoch,
+      );
+
+      const [member] = await tx
+        .insert(roomMembers)
+        .values({ roomId, subject, role: invite.role })
+        .onConflictDoUpdate({
+          target: [roomMembers.roomId, roomMembers.subject],
+          set: { role: invite.role, revokedAt: null },
+        })
+        .returning({ id: roomMembers.id });
+      if (!member) throw new Error("member upsert returned no id");
+
+      await insertDeviceEnvelopes(
+        tx,
+        roomId,
+        member.id,
+        invite.keyEpoch,
+        [{ deviceId, envelope: keyEnvelope }],
+      );
+      return { memberId: member.id, role: invite.role, keyEpoch: invite.keyEpoch };
+    });
+  }
+
   async rotateRoomKey(
     roomId: string,
     ownerSubject: string,
@@ -336,6 +454,25 @@ export class Database {
   }
 }
 
+async function authorizeDevice(
+  database: NodePgDatabase<typeof schema>,
+  subject: string,
+  deviceId: string,
+): Promise<void> {
+  const [device] = await database
+    .select({ id: devices.id })
+    .from(devices)
+    .where(
+      and(
+        eq(devices.id, deviceId),
+        eq(devices.subject, subject),
+        isNull(devices.revokedAt),
+      ),
+    )
+    .limit(1);
+  if (!device) throw new HttpError(403, "device is not registered");
+}
+
 async function requireAllActiveDevices(
   tx: Transaction,
   subject: string,
@@ -388,6 +525,10 @@ async function insertDeviceEnvelopes(
         },
       });
   }
+}
+
+function hashCapabilitySecret(secret: string): string {
+  return createHash("sha256").update(secret, "utf8").digest("hex");
 }
 
 function samePublicKey(left: DevicePublicKey, right: DevicePublicKey): boolean {

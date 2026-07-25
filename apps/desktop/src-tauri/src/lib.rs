@@ -1,3 +1,4 @@
+mod collaboration;
 mod commands;
 mod errors;
 mod import;
@@ -19,7 +20,11 @@ mod vault;
 use std::path::PathBuf;
 
 use sqlx::SqlitePool;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::Emitter;
 use tauri::Manager;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serial::SerialManager;
@@ -38,9 +43,21 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+        if let Some(url) = argv.iter().find(|arg| arg.starts_with("luma://")) {
+            let _ = app.emit("deep-link", url);
+        }
+    }));
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_deep_link::init());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder
         .plugin(tauri_plugin_process::init())
@@ -50,6 +67,21 @@ pub fn run() {
         let log_dir = app.path().app_log_dir()?;
         logging::init(&log_dir);
         tracing::info!("luma {} starting", env!("CARGO_PKG_VERSION"));
+
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    let _ = app_handle.emit("deep-link", url.as_str());
+                }
+            });
+
+            #[cfg(debug_assertions)]
+            if let Err(error) = app.deep_link().register_all() {
+                tracing::warn!(%error, "could not register development deep links");
+            }
+        }
 
         let app_data_dir = app.path().app_data_dir()?;
         let db_path = app_data_dir.join("luma.db");
@@ -73,6 +105,7 @@ pub fn run() {
             &app.state::<vault::VaultState>(),
         ))?;
         app.manage(sync_state);
+        app.manage(collaboration::CollaborationRuntimeState::default());
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         app.manage(PtyManager::default());
         app.manage(EmbeddedSshManager::default());
@@ -187,10 +220,28 @@ pub fn run() {
         commands::export_encrypted,
         commands::import_preview,
         commands::import_apply,
+        commands::collab_get_config,
+        commands::collab_set_server_url,
+        commands::collab_auth_start,
+        commands::collab_auth_poll,
+        commands::collab_auth_status,
+        commands::collab_auth_sign_out,
+        commands::collab_get_device_identity,
+        commands::collab_set_device_identity,
+        commands::collab_register_device,
+        commands::collab_list_devices,
+        commands::collab_create_room,
+        commands::collab_add_room_member,
+        commands::collab_mint_room_capability,
+        commands::collab_join_room_with_capability,
+        commands::collab_get_room,
+        commands::collab_issue_realtime_ticket,
+        commands::collab_rotate_room_key,
+        commands::collab_get_snapshot,
+        commands::collab_put_snapshot,
+        commands::collab_create_invite,
+        commands::collab_parse_invite,
         commands::sync_get_config,
-        commands::cloud_auth_start,
-        commands::cloud_auth_poll,
-        commands::cloud_auth_logout,
         commands::sync_configure,
         commands::sync_set_passphrase,
         commands::sync_disable,
@@ -266,10 +317,28 @@ pub fn run() {
         commands::export_encrypted,
         commands::import_preview,
         commands::import_apply,
+        commands::collab_get_config,
+        commands::collab_set_server_url,
+        commands::collab_auth_start,
+        commands::collab_auth_poll,
+        commands::collab_auth_status,
+        commands::collab_auth_sign_out,
+        commands::collab_get_device_identity,
+        commands::collab_set_device_identity,
+        commands::collab_register_device,
+        commands::collab_list_devices,
+        commands::collab_create_room,
+        commands::collab_add_room_member,
+        commands::collab_mint_room_capability,
+        commands::collab_join_room_with_capability,
+        commands::collab_get_room,
+        commands::collab_issue_realtime_ticket,
+        commands::collab_rotate_room_key,
+        commands::collab_get_snapshot,
+        commands::collab_put_snapshot,
+        commands::collab_create_invite,
+        commands::collab_parse_invite,
         commands::sync_get_config,
-        commands::cloud_auth_start,
-        commands::cloud_auth_poll,
-        commands::cloud_auth_logout,
         commands::sync_configure,
         commands::sync_set_passphrase,
         commands::sync_disable,
