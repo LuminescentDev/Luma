@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-showcase
+# Rust build cache accidentally created at the workspace root.
+/src-tauri/target/
 termius-vault-export*.json
 dist-ssr
 .vite/
