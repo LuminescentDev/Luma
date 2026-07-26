@@ -32,8 +32,10 @@ targets:
     sources:
       - path: Sources
       - path: Assets.xcassets
-      - path: ../../../branding/icon-composer/star.icon
+      - path: ../../../../../branding/icon-composer/star.icon
       - path: Externals
+        excludes:
+          - "**/*.a"
       - path: luma_iOS
       - path: assets
         buildPhase: resources
