@@ -1,5 +1,6 @@
+import { MessageCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { GITHUB_REPO_URL } from '../config';
+import { DISCORD_INVITE_URL, GITHUB_REPO_URL } from '../config';
 import { GithubIcon } from './GithubIcon';
 
 export function Footer() {
@@ -40,6 +41,15 @@ export function Footer() {
             >
               Privacy
             </Link>
+            <a
+              href={DISCORD_INVITE_URL}
+              target='_blank'
+              rel='noreferrer noopener'
+              className='inline-flex items-center gap-2 rounded-sm transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent'
+            >
+              <MessageCircle className='h-4 w-4' aria-hidden='true' />
+              Discord
+            </a>
             <a
               href={GITHUB_REPO_URL}
               target='_blank'

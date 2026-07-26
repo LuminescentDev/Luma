@@ -1,6 +1,6 @@
-import { ExternalLink, LifeBuoy, MessageSquareWarning, ShieldCheck } from 'lucide-react';
+import { ExternalLink, LifeBuoy, MessageCircle, MessageSquareWarning, ShieldCheck } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { GITHUB_ISSUES_URL, GITHUB_REPO_URL, SUPPORT_EMAIL } from '../config';
+import { DISCORD_INVITE_URL, GITHUB_ISSUES_URL, GITHUB_REPO_URL, SUPPORT_EMAIL } from '../config';
 import { Footer } from './Footer';
 
 const troubleshooting = [
@@ -57,9 +57,14 @@ export function Support() {
             <MessageSquareWarning className='mb-4 h-6 w-6 text-accent' aria-hidden='true' />
             <h2 id='contact-heading' className='text-xl font-semibold'>Contact support</h2>
             <p className='mt-3 leading-7 text-muted'>
-              Email us for help with Luma. Include your device, operating system version, Luma version, and the steps that caused the problem. Do not include passwords, private keys, or other secrets.
+              Join the Luma Discord for help from the community, or email us directly. Include your device, operating system version, Luma version, and the steps that caused the problem. Do not include passwords, private keys, or other secrets.
             </p>
             <div className='mt-5 flex flex-col items-start gap-3'>
+              <a href={DISCORD_INVITE_URL} target='_blank' rel='noreferrer noopener' className='inline-flex items-center gap-2 font-medium text-accent hover:text-accent-strong'>
+                <MessageCircle className='h-4 w-4' aria-hidden='true' />
+                Join the Luma Discord
+                <ExternalLink className='h-4 w-4' aria-hidden='true' />
+              </a>
               <a href={`mailto:${SUPPORT_EMAIL}`} className='font-medium text-accent hover:text-accent-strong'>
                 {SUPPORT_EMAIL}
               </a>

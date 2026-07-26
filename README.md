@@ -14,24 +14,6 @@ account or paid cloud service.
 > project has not reached a stable release. Expect rough edges and breaking
 > changes.
 
-## Screenshots
-
-*Screenshots coming soon.*
-
-<!--
-  Drop PNGs into .github/assets/ with the names below, delete the
-  "coming soon" line above, and uncomment the block below.
--->
-<!--
-<img src=".github/assets/terminal.png" alt="Local terminal with split panes and tabs" width="800" />
-
-<img src=".github/assets/hosts.png" alt="Saved hosts and connection manager" width="800" />
-
-<img src=".github/assets/sftp.png" alt="Dual-pane SFTP browser" width="800" />
-
-<img src=".github/assets/sync.png" alt="Settings and encrypted sync" width="800" />
--->
-
 ## Features
 
 ### Terminals
@@ -212,6 +194,11 @@ scripts/                Benchmark, Termius export, and Android dev helpers
 
 The Termius export and benchmark helpers are documented in
 [scripts/README.md](scripts/README.md).
+
+## Community
+
+Join the [Luma Discord server](https://discord.gg/ebJVw3pXm6) for help,
+questions, and project discussion.
 
 ## Releases
 
