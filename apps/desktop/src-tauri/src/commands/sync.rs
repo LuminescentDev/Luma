@@ -57,9 +57,10 @@ pub async fn import_apply(
 #[tauri::command]
 pub async fn sync_get_config(
     state: State<'_, AppState>,
+    runtime: State<'_, SyncRuntimeState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<SyncConfig> {
-    sync::get_config(&state.pool, &vault_state).await
+    sync::get_config(&state.pool, &runtime, &vault_state).await
 }
 
 #[tauri::command]

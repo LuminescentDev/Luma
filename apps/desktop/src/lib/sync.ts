@@ -73,6 +73,7 @@ export type SyncConfig = {
   /** Unix seconds of the last successful sync, or null. */
   lastSyncAt: number | null;
   lastRemoteVersion: string | null;
+  passphraseSet: boolean;
   passphraseRemembered: boolean;
 };
 

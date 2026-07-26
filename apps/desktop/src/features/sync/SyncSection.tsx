@@ -101,6 +101,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const [confirmChange, setConfirmChange] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
   const [passphraseOpen, setPassphraseOpen] = useState(false);
+  const [confirmPassphraseChange, setConfirmPassphraseChange] = useState(false);
   const [confirmIncludeKeys, setConfirmIncludeKeys] = useState(false);
 
   // Turning the private-key toggle ON requires an explicit confirmation of the
@@ -381,10 +382,14 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
           </div>
           <button
             type="button"
-            onClick={() => setPassphraseOpen(true)}
+            onClick={() =>
+              config.passphraseSet
+                ? setConfirmPassphraseChange(true)
+                : setPassphraseOpen(true)
+            }
             className="shrink-0 rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-accent/60 hover:bg-surface"
           >
-            Set passphrase
+            {config.passphraseSet ? "Change passphrase" : "Set passphrase"}
           </button>
         </div>
       </div>
@@ -415,8 +420,12 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
       <PassphrasePrompt
         open={passphraseOpen}
         onOpenChange={setPassphraseOpen}
-        title="Set sync passphrase"
-        description="Data is encrypted with this passphrase before it ever leaves your device. Every device must use the same passphrase."
+        title={config.passphraseSet ? "Change sync passphrase" : "Set sync passphrase"}
+        description={
+          config.passphraseSet
+            ? "Enter the replacement passphrase. Every device must use the same passphrase."
+            : "Data is encrypted with this passphrase before it ever leaves your device. Every device must use the same passphrase."
+        }
         confirm
         rememberOption
         rememberDefault={config.passphraseRemembered}
@@ -428,6 +437,28 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
             { passphrase, remember },
             { onSuccess: () => setPassphraseOpen(false) },
           )
+        }
+      />
+
+      <ConfirmDialog
+        open={confirmPassphraseChange}
+        onOpenChange={setConfirmPassphraseChange}
+        title="Change sync passphrase?"
+        confirmLabel="Continue"
+        destructive
+        onConfirm={() => {
+          setConfirmPassphraseChange(false);
+          setPassphraseOpen(true);
+        }}
+        message={
+          <div className="space-y-2">
+            <p>
+              Changing this passphrase does not re-encrypt data already stored by
+              your sync provider. That data and devices using the old passphrase
+              will no longer be readable with the new one.
+            </p>
+            <p>Only continue if you intend to replace the passphrase on every device.</p>
+          </div>
         }
       />
 

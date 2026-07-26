@@ -57,8 +57,8 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.10.0
-        CFBundleVersion: "0.10.0"
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
     entitlements:
       path: luma_iOS/luma_iOS.entitlements
       properties: {}
@@ -69,6 +69,8 @@ targets:
     settings:
       base:
         ENABLE_BITCODE: false
+        MARKETING_VERSION: 0.14.2
+        CURRENT_PROJECT_VERSION: 1
         ASSETCATALOG_COMPILER_APPICON_NAME: star
         ARCHS: [arm64]
         VALID_ARCHS: arm64 
@@ -89,6 +91,9 @@ targets:
       - sdk: WebKit.framework
     preBuildScripts:
       - script: |
+          if command -v brew >/dev/null 2>&1; then
+            export PATH="$(brew --prefix node@22)/bin:$HOME/.cargo/bin:$PATH"
+          fi
           export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
           if [ -s "$NVM_DIR/nvm.sh" ]; then
             . "$NVM_DIR/nvm.sh"

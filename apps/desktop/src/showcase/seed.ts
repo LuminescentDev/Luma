@@ -256,5 +256,6 @@ export const SYNC_CONFIG = {
   cloudSignedIn: false,
   lastSyncAt: null,
   lastRemoteVersion: null,
+  passphraseSet: false,
   passphraseRemembered: false,
 };

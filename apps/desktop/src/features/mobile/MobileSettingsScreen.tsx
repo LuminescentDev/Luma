@@ -6,14 +6,16 @@ import { cn } from "../../lib/utils";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { SyncSection } from "../sync/SyncSection";
 import { BackupSection } from "../sync/BackupSection";
+import { AccountSection } from "../account/AccountSection";
+import { CollaborationSection } from "../collaboration/CollaborationSection";
 
 /*
  * Mobile settings. A capability-gated subset of the desktop screen: no local
  * shell / default-shell picker, no shell profiles, no serial, no port
  * forwarding, no updater, and (via SyncSection) no folder-based sync provider.
- * What remains: appearance, terminal scrollback, SSH auto-reconnect, sync
- * (WebDAV + Gist), and encrypted backup import/export (system pickers via the
- * dialog plugin).
+ * What remains: appearance, terminal scrollback, SSH auto-reconnect, account,
+ * sync (WebDAV + Gist + Luma Cloud), collaboration, and encrypted backup
+ * import/export (system pickers via the dialog plugin).
  */
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -101,8 +103,16 @@ export function MobileSettingsScreen() {
           </Field>
         </Section>
 
+        <Section title="Account">
+          <AccountSection />
+        </Section>
+
         <Section title="Sync">
           <SyncSection />
+        </Section>
+
+        <Section title="Collaboration">
+          <CollaborationSection />
         </Section>
 
         <Section title="Encrypted backup">

@@ -319,6 +319,7 @@ pub struct SyncConfig {
     pub cloud_signed_in: bool,
     pub last_sync_at: Option<i64>,
     pub last_remote_version: Option<String>,
+    pub passphrase_set: bool,
     pub passphrase_remembered: bool,
 }
 
@@ -499,11 +500,16 @@ pub async fn import_apply(
     })
 }
 
-pub async fn get_config(pool: &SqlitePool, vault_state: &VaultState) -> Result<SyncConfig> {
+pub async fn get_config(
+    pool: &SqlitePool,
+    runtime: &SyncRuntimeState,
+    vault_state: &VaultState,
+) -> Result<SyncConfig> {
     let row = sqlx::query("SELECT provider, last_synced_at, state FROM sync_state WHERE id = 1")
         .fetch_one(pool)
         .await?;
     let provider: Option<String> = row.get("provider");
+    let passphrase_set = runtime.passphrase.lock().unwrap().is_some() || provider.is_some();
     let stored = parse_stored_state(row.get("state"))?;
     Ok(SyncConfig {
         enabled: provider.is_some(),
@@ -516,6 +522,7 @@ pub async fn get_config(pool: &SqlitePool, vault_state: &VaultState) -> Result<S
         cloud_signed_in: crate::collaboration::account_is_signed_in(pool, vault_state).await,
         last_sync_at: row.get("last_synced_at"),
         last_remote_version: stored.last_remote_version,
+        passphrase_set,
         passphrase_remembered: credential_get(pool, vault_state, KEYCHAIN_PASSPHRASE)
             .await
             .is_ok(),
