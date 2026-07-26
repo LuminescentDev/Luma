@@ -447,7 +447,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if command -v brew >/dev/null 2>&1; then\n  export PATH=\"$(brew --prefix node@22)/bin:$HOME/.cargo/bin:$PATH\"\nfi\nexport NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\n  nvm use --silent default\nfi\npnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}\n";
+			shellScript = "if command -v brew >/dev/null 2>&1; then\n  export PATH=\"$(brew --prefix node@22)/bin:$HOME/.cargo/bin:$PATH\"\nfi\nexport NVM_DIR=\"${NVM_DIR:-$HOME/.nvm}\"\nif [ -s \"$NVM_DIR/nvm.sh\" ]; then\n  . \"$NVM_DIR/nvm.sh\"\n  nvm use --silent default\nfi\nif [ \"${CI_XCODE_CLOUD:-}\" = \"TRUE\" ]; then\n  \"${SRCROOT:?}/ci_scripts/ci_build_rust.sh\"\nelse\n  pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
