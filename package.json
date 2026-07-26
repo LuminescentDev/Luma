@@ -21,7 +21,7 @@
     "screenshots:website-mobile": "node scripts/capture-website-mobile-screenshots.mjs",
     "android:dev": "pnpm --dir apps/desktop android:dev",
     "ios:dev": "pnpm --dir apps/desktop ios:dev",
-    "ios:build": "pnpm --dir apps/desktop ios:build",
+    "ios:build": "pnpm --dir apps/desktop ios:build --open",
     "shared:build": "pnpm --filter @luma/collaboration-protocol build && pnpm --filter @luma/collaboration-encryption build",
     "workspace:typecheck": "pnpm --filter @luma/collaboration-protocol typecheck && pnpm --filter @luma/collaboration-encryption typecheck && pnpm --filter @luma/sync-server typecheck && pnpm --filter @luma/collaboration-server typecheck",
     "workspace:test": "pnpm --filter @luma/collaboration-protocol test && pnpm --filter @luma/collaboration-encryption test && pnpm --filter @luma/sync-server test && pnpm --filter @luma/collaboration-server test",

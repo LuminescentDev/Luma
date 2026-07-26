@@ -393,12 +393,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-					BD36DECCDD3A6EED286B479A = {
-						DevelopmentTeam = 828MX392ZN;
-						ProvisioningStyle = Automatic;
-					};
-				};
 			};
 			buildConfigurationList = BB25079A9452F3B2B01FEB0E /* Build configuration list for PBXProject "luma" */;
 			developmentRegion = en;
@@ -596,9 +590,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = star;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = luma_iOS/luma_iOS.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "828MX392ZN";
+				DEVELOPMENT_TEAM = 828MX392ZN;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -625,7 +619,8 @@
 					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bwmp.luma;
-				PRODUCT_NAME = "Luma";
+				PRODUCT_NAME = Luma;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
@@ -640,9 +635,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = star;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = luma_iOS/luma_iOS.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = "828MX392ZN";
+				DEVELOPMENT_TEAM = 828MX392ZN;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -669,7 +664,8 @@
 					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bwmp.luma;
-				PRODUCT_NAME = "Luma";
+				PRODUCT_NAME = Luma;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = arm64;
