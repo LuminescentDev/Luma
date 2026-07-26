@@ -15,6 +15,10 @@ pnpm --dir "${desktop_path}" apple:icon
 pnpm --dir "${repository_path}" shared:build
 pnpm --dir "${desktop_path}" build
 
+assets_path="${SRCROOT:?}/assets"
+mkdir -p "${assets_path}"
+cp -R "${desktop_path}/dist/." "${assets_path}/"
+
 export RUST_BACKTRACE=1
 export CFLAGS_aarch64_apple_ios="-isysroot ${SDKROOT:?}"
 export CXXFLAGS_aarch64_apple_ios="-isysroot ${SDKROOT}"
