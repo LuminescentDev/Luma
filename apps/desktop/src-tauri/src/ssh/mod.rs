@@ -157,7 +157,6 @@ impl Drop for EphemeralIdentityFile {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[allow(dead_code)]
 pub trait SshEngine {
     fn connect(
         &self,
@@ -168,10 +167,6 @@ pub trait SshEngine {
         on_exit: ExitCallback,
         on_remote_os: RemoteOsCallback,
     ) -> Result<String>;
-
-    fn disconnect(&self, session_id: &str) -> Result<()>;
-    fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()>;
-    fn write(&self, session_id: &str, data: &str) -> Result<()>;
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -327,18 +322,6 @@ impl SshEngine for OpenSshEngine<'_> {
             .map_err(|error| {
                 LumaError::SshUnavailable(format!("failed to start system OpenSSH: {error}"))
             })
-    }
-
-    fn disconnect(&self, session_id: &str) -> Result<()> {
-        self.pty.kill(session_id)
-    }
-
-    fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()> {
-        self.pty.resize(session_id, cols, rows)
-    }
-
-    fn write(&self, session_id: &str, data: &str) -> Result<()> {
-        self.pty.write(session_id, data)
     }
 }
 

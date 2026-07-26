@@ -157,7 +157,7 @@ impl TunnelManager {
         // ConPTY uses INHERIT_CURSOR and waits for a cursor position response.
         // Tunnels have no visible xterm.js instance, so answer it internally.
         #[cfg(windows)]
-        let _ = pty.write(&pty_session_id, "\x1b[1;1R");
+        let _ = pty.write_if_present(&pty_session_id, b"\x1b[1;1R");
 
         Ok(tunnel_id)
     }

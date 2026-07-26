@@ -152,13 +152,6 @@ impl PtyManager {
         Ok(id)
     }
 
-    pub fn write(&self, session_id: &str, data: &str) -> Result<()> {
-        if self.write_if_present(session_id, data.as_bytes())? {
-            return Ok(());
-        }
-        Err(LumaError::InvalidInput("unknown terminal session".into()))
-    }
-
     /// Write without turning a missing id into an error. Commands shared by
     /// native PTYs and embedded SSH use this fast path to route the overwhelmingly
     /// common local/OpenSSH case without first touching the SSH manager.
@@ -294,7 +287,7 @@ mod tests {
         // ConPTY starts with INHERIT_CURSOR and stalls the child until the
         // terminal answers the cursor-position query (ESC[6n). xterm.js does
         // this automatically in the app; do it manually here.
-        manager.write(&id, "\x1b[1;1R").unwrap();
+        assert!(manager.write_if_present(&id, b"\x1b[1;1R").unwrap());
 
         let code = exit_rx
             .recv_timeout(Duration::from_secs(15))
@@ -403,15 +396,15 @@ mod tests {
                 &base,
             )
             .unwrap();
-        manager.write(&id, "\x1b[1;1R").unwrap();
+        assert!(manager.write_if_present(&id, b"\x1b[1;1R").unwrap());
         #[cfg(windows)]
-        manager
-            .write(&id, "echo luma-session-log-test\r\nexit\r\n")
-            .unwrap();
+        assert!(manager
+            .write_if_present(&id, b"echo luma-session-log-test\r\nexit\r\n")
+            .unwrap());
         #[cfg(not(windows))]
-        manager
-            .write(&id, "echo luma-session-log-test\nexit\n")
-            .unwrap();
+        assert!(manager
+            .write_if_present(&id, b"echo luma-session-log-test\nexit\n")
+            .unwrap());
 
         exit_rx
             .recv_timeout(Duration::from_secs(15))
@@ -426,8 +419,8 @@ mod tests {
     }
 
     #[test]
-    fn write_to_unknown_session_fails() {
+    fn write_to_unknown_session_is_not_present() {
         let manager = PtyManager::default();
-        assert!(manager.write("nope", "ls\n").is_err());
+        assert!(!manager.write_if_present("nope", b"ls\n").unwrap());
     }
 }
