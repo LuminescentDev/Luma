@@ -44,6 +44,7 @@ targets:
     info:
       path: luma_iOS/Info.plist
       properties:
+        ITSAppUsesNonExemptEncryption: false
         LSRequiresIPhoneOS: true
         NSLocalNetworkUsageDescription: Luma uses your local network to connect to SSH servers and transfer files.
         UILaunchStoryboardName: LaunchScreen
