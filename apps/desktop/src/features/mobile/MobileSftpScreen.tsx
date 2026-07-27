@@ -38,6 +38,7 @@ import {
 import { parseLumaError } from "../../lib/hosts";
 import { describeSshError } from "../hosts/sshErrors";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { NameDialog } from "../sftp/NameDialog";
 import { HostPicker } from "../sftp/HostPicker";
 import { TransferQueue } from "../sftp/TransferQueue";
@@ -324,41 +325,56 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
           <Message>{filter ? "No matching entries." : "This folder is empty."}</Message>
         ) : (
           <ul role="list">
-            {visible.map((entry) => (
-              <li
-                key={entry.path}
-                className="flex items-center gap-3 border-b border-border/50 px-3 py-2.5"
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (entry.kind === "dir" || entry.kind === "symlink") navigate(entry.path);
-                  }}
-                  className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-left"
-                >
-                  <KindIcon kind={entry.kind} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm text-foreground">{entry.name}</span>
-                    <span className="block text-xs text-muted">
-                      {entry.kind === "dir" ? "Folder" : formatBytes(entry.size)}
-                    </span>
-                  </span>
-                </button>
-                <RowMenu
-                  entry={entry}
-                  onDownload={() => void pickAndDownload(entry)}
-                  onRename={() => {
+            {visible.map((entry) => {
+              const rowActions: MenuAction[] = [
+                {
+                  label: "Download",
+                  icon: <Download size={15} />,
+                  onSelect: () => void pickAndDownload(entry),
+                },
+                {
+                  label: "Rename",
+                  icon: <Pencil size={15} />,
+                  onSelect: () => {
                     setRenameError(null);
                     setRenaming(entry);
-                  }}
-                  onDelete={() => {
+                  },
+                },
+                { separator: true },
+                {
+                  label: "Delete",
+                  icon: <Trash2 size={15} />,
+                  destructive: true,
+                  onSelect: () => {
                     setDeleteError(null);
                     setDeleteRecursive(false);
                     setDeleting(entry);
-                  }}
-                />
-              </li>
-            ))}
+                  },
+                },
+              ];
+              return (
+                <ContextMenu key={entry.path} actions={rowActions} minWidth="min-w-44">
+                  <li className="flex items-center gap-3 border-b border-border/50 px-3 py-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (entry.kind === "dir" || entry.kind === "symlink") navigate(entry.path);
+                      }}
+                      className="flex min-h-11 min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <KindIcon kind={entry.kind} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-foreground">{entry.name}</span>
+                        <span className="block text-xs text-muted">
+                          {entry.kind === "dir" ? "Folder" : formatBytes(entry.size)}
+                        </span>
+                      </span>
+                    </button>
+                    <RowMenu entry={entry} actions={rowActions} />
+                  </li>
+                </ContextMenu>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -436,17 +452,8 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
   );
 }
 
-function RowMenu({
-  entry,
-  onDownload,
-  onRename,
-  onDelete,
-}: {
-  entry: SftpEntry;
-  onDownload: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-}) {
+/** The kebab menu, rendering the same actions as the row's long-press menu. */
+function RowMenu({ entry, actions }: { entry: SftpEntry; actions: MenuAction[] }) {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -464,44 +471,26 @@ function RowMenu({
           sideOffset={4}
           className="z-50 min-w-44 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"
         >
-          <Item icon={<Download size={15} />} onSelect={onDownload}>
-            Download
-          </Item>
-          <Item icon={<Pencil size={15} />} onSelect={onRename}>
-            Rename
-          </Item>
-          <DropdownMenu.Separator className="my-1 h-px bg-border" />
-          <Item icon={<Trash2 size={15} />} destructive onSelect={onDelete}>
-            Delete
-          </Item>
+          {actions.map((action, index) =>
+            "separator" in action && action.separator ? (
+              <DropdownMenu.Separator key={`sep-${index}`} className="my-1 h-px bg-border" />
+            ) : (
+              <DropdownMenu.Item
+                key={action.label}
+                onSelect={action.onSelect}
+                className={cn(
+                  "flex min-h-11 cursor-default items-center gap-2 rounded-md px-2.5 outline-none data-[highlighted]:bg-surface",
+                  action.destructive ? "text-danger" : "data-[highlighted]:text-accent",
+                )}
+              >
+                {action.icon}
+                {action.label}
+              </DropdownMenu.Item>
+            ),
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
-  );
-}
-
-function Item({
-  icon,
-  children,
-  onSelect,
-  destructive,
-}: {
-  icon: React.ReactNode;
-  children: React.ReactNode;
-  onSelect: () => void;
-  destructive?: boolean;
-}) {
-  return (
-    <DropdownMenu.Item
-      onSelect={onSelect}
-      className={cn(
-        "flex min-h-11 cursor-default items-center gap-2 rounded-md px-2.5 outline-none data-[highlighted]:bg-surface",
-        destructive ? "text-danger" : "data-[highlighted]:text-accent",
-      )}
-    >
-      {icon}
-      {children}
-    </DropdownMenu.Item>
   );
 }
 

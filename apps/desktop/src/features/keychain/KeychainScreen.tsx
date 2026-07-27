@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
+import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, Copy, Eye, EyeOff, Fingerprint, Grid2X2, KeyRound, List, Loader2, Plus, Save, Search, ShieldCheck, X } from "lucide-react";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useIdentities, useInvalidateHosts, useKeyReferences } from "../../hooks/useHosts";
 import { createIdentity, createKeyReference, derivePublicKey, getKeyReferenceSecrets, getVaultStatus, parseLumaError, setVaultPolicy, setupVault, unlockVault, updateIdentity, updateKeyReference, type DerivedPublicKey, type Identity, type KeyReference, type VaultStatus } from "../../lib/hosts";
 import { GenerateKeyDialog } from "./GenerateKeyDialog";
@@ -38,9 +40,8 @@ export function KeychainScreen() {
   const save = useMutation({ mutationFn: (value: KeyDraft) => { const input = { name: value.label.trim(), storageMode: "encrypted-vault" as const, localPath: null, publicKey: null, fingerprint: null, certificate: value.certificate.trim() || null, privateKey: value.privateKey || (value.id ? null : ""), passphrase: value.passphrase || (value.id ? null : "") }; return value.id ? updateKeyReference(value.id, input) : createKeyReference(input); }, onSuccess: () => { invalidate(); setDraft(null); } });
   const saveIdentity = useMutation({ mutationFn: (value: IdentityDraft) => { const input = { name: value.label.trim(), username: value.username.trim(), keyId: value.keyId || null, password: value.password || (value.id ? null : "") }; return value.id ? updateIdentity(value.id, input) : createIdentity(input); }, onSuccess: () => { invalidate(); setIdentityDraft(null); } });
   if (vaultStatus && !vaultStatus.unlocked) return <VaultGate status={vaultStatus} onReady={() => void getVaultStatus().then(setVaultStatus)} />;
-  const editing = draft !== null || identityDraft !== null;
   return <div className="keychain-screen flex h-full bg-background">
-  <div className={`${editing ? "hidden md:block" : "block"} min-w-0 flex-1 overflow-y-auto`}>
+  <div className="min-w-0 flex-1 overflow-y-auto">
     <div className="px-4 py-4 pt-safe md:mx-auto md:max-w-375 md:px-7 md:mt-5 md:pb-0">
       <h1 className="mb-4 text-lg font-semibold md:hidden">Keys</h1>
       <div className="keychain-mobile-search mb-5 flex h-11 items-center gap-2 rounded-xl border border-border bg-raised px-4 md:hidden">
@@ -64,6 +65,38 @@ export function KeychainScreen() {
   <GenerateKeyDialog open={generateOpen} onOpenChange={setGenerateOpen} />
   <InstallKeyDialog open={installKey !== null} keyReferenceId={installKey?.id ?? null} keyName={installKey?.name ?? ""} onOpenChange={(open) => { if (!open) setInstallKey(null); }} />
   </div>;
+}
+
+/*
+ * Chrome for a keychain inspector. On desktop it is the docked right-hand side
+ * panel; below the md breakpoint it becomes a bottom sheet that covers only part
+ * of the screen, so the list stays visible behind it and the primary controls
+ * (Cancel in the header, Save in the footer) sit within thumb reach instead of
+ * relying on a small close button under the notch.
+ */
+function InspectorShell({title,subtitle,onClose,footer,children}:{title:string;subtitle:string;onClose:()=>void;footer:React.ReactNode;children:React.ReactNode}) {
+  const compact = useMediaQuery("(max-width: 767px)");
+  const header = <><div className="min-w-0 flex-1"><h2 className="truncate text-sm font-semibold">{title}</h2><p className="truncate text-xs text-muted">{subtitle}</p></div></>;
+  if (compact) {
+    return <Dialog.Root open onOpenChange={open => { if (!open) onClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50" />
+        <Dialog.Content aria-describedby={undefined} className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl border-t border-border bg-surface pb-safe focus:outline-none">
+          <div className="flex items-center gap-3 border-b border-border px-4 py-2">
+            <Dialog.Title asChild><div className="min-w-0 flex-1"><h2 className="truncate text-sm font-semibold">{title}</h2><p className="truncate text-xs text-muted">{subtitle}</p></div></Dialog.Title>
+            <Dialog.Close className="-mr-2 flex min-h-11 shrink-0 items-center rounded-lg px-3 text-sm text-muted active:bg-raised">Cancel</Dialog.Close>
+          </div>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">{children}</div>
+          <div className="border-t border-border p-4">{footer}</div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>;
+  }
+  return <aside className="flex w-90 shrink-0 flex-col border-l border-border bg-surface">
+    <header className="flex h-14 items-center border-b border-border px-4">{header}<button onClick={onClose} aria-label="Close" className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header>
+    <div className="flex-1 space-y-4 overflow-y-auto p-4">{children}</div>
+    <footer className="border-t border-border p-4">{footer}</footer>
+  </aside>;
 }
 
 function VaultSection({title,view,children}:{title:string;view:"grid"|"list";children:React.ReactNode}){return <section><h2 className="mb-3 text-sm font-semibold">{title}</h2><div className={view==="list"?"flex flex-col gap-2":"grid gap-3 md:grid-cols-2 xl:grid-cols-3"}>{children}</div></section>}
@@ -115,7 +148,8 @@ function KeyInspectorView({draft,setDraft,onClose,onSave,busy,ready,error,secret
     },400);
     return()=>{active=false;window.clearTimeout(timer);};
   },[privateKey,passphrase]);
-  return <aside className="flex w-90 shrink-0 flex-col border-l border-border bg-surface"><header className="flex h-14 items-center border-b border-border px-4"><div className="flex-1"><h2 className="text-sm font-semibold">{draft.id?"Edit key":"New key"}</h2><p className="text-xs text-muted">Personal vault</p></div><button onClick={onClose} className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header><div className="flex-1 space-y-4 overflow-y-auto p-4"><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><SecretArea label="Private key" value={draft.privateKey} onChange={privateKey=>setDraft({...draft,privateKey})} revealed={showPrivateKey} onToggle={()=>setShowPrivateKey(!showPrivateKey)} loading={loadingSecrets}/><DerivedPublicKeyView derived={derived} busy={deriving||loadingSecrets} error={deriveError}/><SecretField label="Passphrase" value={draft.passphrase} onChange={passphrase=>setDraft({...draft,passphrase})} revealed={showPassphrase} onToggle={()=>setShowPassphrase(!showPassphrase)} loading={loadingSecrets}/><InspectorArea label="Certificate" value={draft.certificate} onChange={certificate=>setDraft({...draft,certificate})}/>{secretError&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not load secrets: {secretError}</div>}{error&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save key: {error}</div>}</div><footer className="space-y-2 border-t border-border p-4"><button disabled={!ready||busy||loadingSecrets} onClick={onSave} className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save"}</button>{onInstall&&<button type="button" onClick={onInstall} className="flex w-full items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm font-medium text-foreground hover:border-accent hover:text-accent"><UploadCloud size={14}/>Install on host…</button>}</footer></aside>;
+  const footer = <div className="space-y-2"><button disabled={!ready||busy||loadingSecrets} onClick={onSave} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save"}</button>{onInstall&&<button type="button" onClick={onInstall} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm font-medium text-foreground hover:border-accent hover:text-accent"><UploadCloud size={14}/>Install on host…</button>}</div>;
+  return <InspectorShell title={draft.id?"Edit key":"New key"} subtitle="Personal vault" onClose={onClose} footer={footer}><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><SecretArea label="Private key" value={draft.privateKey} onChange={privateKey=>setDraft({...draft,privateKey})} revealed={showPrivateKey} onToggle={()=>setShowPrivateKey(!showPrivateKey)} loading={loadingSecrets}/><DerivedPublicKeyView derived={derived} busy={deriving||loadingSecrets} error={deriveError}/><SecretField label="Passphrase" value={draft.passphrase} onChange={passphrase=>setDraft({...draft,passphrase})} revealed={showPassphrase} onToggle={()=>setShowPassphrase(!showPassphrase)} loading={loadingSecrets}/><InspectorArea label="Certificate" value={draft.certificate} onChange={certificate=>setDraft({...draft,certificate})}/>{secretError&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not load secrets: {secretError}</div>}{error&&<div role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save key: {error}</div>}</InspectorShell>;
 }
 // Read-only display of the public key + fingerprint the backend derives from
 // the private key. This replaces the old free-text public-key field so Luma can
@@ -143,7 +177,8 @@ function SecretField({label,value,onChange,revealed,onToggle,loading}:{label:str
 
 function IdentityInspector({draft,setDraft,keys,onClose,onSave,busy,error}:{draft:IdentityDraft;setDraft:(draft:IdentityDraft)=>void;keys:KeyReference[];onClose:()=>void;onSave:()=>void;busy:boolean;error:string|null}) {
   const ready=draft.label.trim()&&draft.username.trim();
-  return <aside className="flex w-90 shrink-0 flex-col border-l border-border bg-surface"><header className="flex h-14 items-center border-b border-border px-4"><div className="flex-1"><h2 className="text-sm font-semibold">{draft.id?"Edit identity":"New identity"}</h2><p className="text-xs text-muted">Reusable host credentials</p></div><button onClick={onClose} className="rounded p-1 text-muted hover:bg-raised"><X size={16}/></button></header><div className="flex-1 space-y-4 overflow-y-auto p-4"><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><InspectorField label="Username" value={draft.username} onChange={username=>setDraft({...draft,username})}/><label className="block text-xs text-muted">SSH key<select value={draft.keyId} onChange={e=>setDraft({...draft,keyId:e.target.value})} className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-accent"><option value="">None</option>{keys.map(key=><option key={key.id} value={key.id}>{key.name}</option>)}</select></label><InspectorField label={draft.id?"New password (blank keeps current)":"Password (optional)"} type="password" value={draft.password} onChange={password=>setDraft({...draft,password})}/>{error&&<div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save identity: {error}</div>}</div><footer className="border-t border-border p-4"><button disabled={!ready||busy} onClick={onSave} className="flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save identity"}</button></footer></aside>;
+  const footer = <button disabled={!ready||busy} onClick={onSave} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-accent px-3 text-sm font-medium text-accent-foreground disabled:opacity-40"><Save size={14}/>{busy?"Saving…":"Save identity"}</button>;
+  return <InspectorShell title={draft.id?"Edit identity":"New identity"} subtitle="Reusable host credentials" onClose={onClose} footer={footer}><InspectorField label="Label" value={draft.label} onChange={label=>setDraft({...draft,label})}/><InspectorField label="Username" value={draft.username} onChange={username=>setDraft({...draft,username})}/><label className="block text-xs text-muted">SSH key<select value={draft.keyId} onChange={e=>setDraft({...draft,keyId:e.target.value})} className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-accent"><option value="">None</option>{keys.map(key=><option key={key.id} value={key.id}>{key.name}</option>)}</select></label><InspectorField label={draft.id?"New password (blank keeps current)":"Password (optional)"} type="password" value={draft.password} onChange={password=>setDraft({...draft,password})}/>{error&&<div className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">Could not save identity: {error}</div>}</InspectorShell>;
 }
 
 function VaultGate({status,onReady}:{status:VaultStatus;onReady:()=>void}) {

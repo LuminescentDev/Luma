@@ -55,6 +55,39 @@ body {
   @apply bg-background text-foreground font-sans antialiased overflow-hidden;
 }
 
+/*
+ * App chrome (labels, list rows, buttons, headings) is not selectable, the way a
+ * native app behaves. On touch this also stops the long-press selection handles
+ * and the iOS "Copy" callout from firing, leaving long-press free to open the
+ * context menu. Real content stays selectable below; Tailwind's select-text /
+ * select-all utilities are classes, so they still win wherever they're applied.
+ */
+body {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable="true"],
+/* Diagnostics are worth copying (SSH failures, vault errors), so keep every
+   alert region selectable even though the surrounding chrome is not. */
+[role="alert"] {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Anything explicitly opted back in with Tailwind's selection utilities (public
+   keys, fingerprints) should also get the native long-press copy callout back;
+   the utilities themselves only set user-select. */
+.select-text,
+.select-all {
+  -webkit-touch-callout: default;
+}
+
 /* Subtle scrollbars that match the theme */
 * {
   scrollbar-width: thin;
@@ -207,10 +240,6 @@ body {
   }
 }
 @media (max-width: 767px) {
-  .keychain-screen > aside {
-    width: 100%;
-  }
-
   .keychain-toolbar {
     flex-wrap: wrap;
     border-bottom: 1px solid var(--border);
