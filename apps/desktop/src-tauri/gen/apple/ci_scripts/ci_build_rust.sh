@@ -33,7 +33,8 @@ cargo_args=(
 )
 profile=debug
 if [[ "${CONFIGURATION:?}" == "release" ]]; then
-  cargo_args+=(--release)
+  # Without this the webview loads `build.devUrl` instead of the bundled assets.
+  cargo_args+=(--release --features tauri/custom-protocol)
   profile=release
 fi
 

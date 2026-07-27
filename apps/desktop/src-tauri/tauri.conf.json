@@ -55,7 +55,7 @@
       "active": true,
       "pubkey": "PLACEHOLDER_CI_INJECTS_TAURI_UPDATER_PUBLIC_KEY",
       "endpoints": [
-        "https://github.com/OWNER/luma/releases/latest/download/latest.json"
+        "https://github.com/LuminescentDev/Luma/releases/latest/download/latest.json"
       ]
     }
   }
