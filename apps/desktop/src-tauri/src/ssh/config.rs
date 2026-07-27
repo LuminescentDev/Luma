@@ -381,7 +381,7 @@ pub async fn import_config(
             authentication_type: if key_id.is_some() {
                 "key".into()
             } else {
-                "agent".into()
+                "interactive".into()
             },
             key_id: key_id.clone(),
             identity_id: None,

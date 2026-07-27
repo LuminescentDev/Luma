@@ -1,20 +1,17 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  detectSsh,
   listHostGroups,
   listHosts,
   listIdentities,
   listKeyReferences,
   listRecentHosts,
 } from "../lib/hosts";
-import { useCapabilityStore } from "../stores/capabilityStore";
 
 export const HOSTS_KEY = ["hosts"];
 export const RECENT_HOSTS_KEY = ["recent-hosts"];
 export const HOST_GROUPS_KEY = ["host-groups"];
 export const KEY_REFERENCES_KEY = ["key-references"];
 export const IDENTITIES_KEY = ["identities"];
-export const SSH_DETECT_KEY = ["ssh-detect"];
 
 export function useHosts() {
   return useQuery({ queryKey: HOSTS_KEY, queryFn: listHosts, staleTime: 30_000 });
@@ -44,21 +41,6 @@ export function useKeyReferences() {
   });
 }
 export function useIdentities() { return useQuery({ queryKey: IDENTITIES_KEY, queryFn: listIdentities, staleTime: 30_000 }); }
-
-export function useSshDetect() {
-  // `ssh_detect` backs the system OpenSSH integration and is only registered on
-  // platforms with the systemSsh capability. On mobile the command is absent, so
-  // the query is disabled entirely — no failing invoke fires, and the query stays
-  // in its initial (undefined data) state, keeping the consuming SSH-availability
-  // banner hidden. Desktop keeps systemSsh=true, so behavior is unchanged.
-  const systemSsh = useCapabilityStore((s) => s.capabilities.features.systemSsh);
-  return useQuery({
-    queryKey: SSH_DETECT_KEY,
-    queryFn: detectSsh,
-    staleTime: Infinity,
-    enabled: systemSsh,
-  });
-}
 
 /** Invalidate every host-related query. Host mutations can touch groups
  * (unparenting), key references (clearing keyId), and recents. */

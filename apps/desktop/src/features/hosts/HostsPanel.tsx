@@ -34,7 +34,6 @@ import {
   useInvalidateHosts,
   useKeyReferences,
   useIdentities,
-  useSshDetect,
 } from "../../hooks/useHosts";
 import { cn } from "../../lib/utils";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
@@ -69,7 +68,6 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
 
   const { data: hosts } = useHosts();
   const { data: groups } = useHostGroups();
-  const { data: ssh } = useSshDetect();
   const { data: keyReferences } = useKeyReferences();
   const { data: identities } = useIdentities();
 
@@ -292,13 +290,6 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
       </div>
-
-      {ssh && !ssh.available && (
-        <div className="rounded-md border border-danger/40 bg-danger/10 px-2.5 py-2 text-xs text-danger">
-          SSH is unavailable — the OpenSSH client was not found. Install OpenSSH
-          to connect to hosts.
-        </div>
-      )}
 
       {allHosts.length === 0 && allGroups.length === 0 ? (
         <EmptyHosts

@@ -253,10 +253,10 @@ pub(crate) fn validate(input: &KeyReferenceInput) -> Result<()> {
     }
     if !matches!(
         input.storage_mode.as_str(),
-        "local-path" | "encrypted-vault" | "ssh-agent"
+        "local-path" | "encrypted-vault"
     ) {
         return Err(LumaError::InvalidInput(
-            "storageMode must be 'local-path', 'encrypted-vault', or 'ssh-agent'".into(),
+            "storageMode must be 'local-path' or 'encrypted-vault'".into(),
         ));
     }
     let local_path = input.local_path.as_deref().map(str::trim);
@@ -391,9 +391,6 @@ fn prepare_metadata_input(mut input: KeyReferenceInput) -> Result<KeyReferenceIn
     input.local_path = optional_trimmed(input.local_path.take());
     input.fingerprint = optional_trimmed(input.fingerprint.take());
     input.certificate = optional_trimmed(input.certificate.take());
-    if input.storage_mode == "ssh-agent" {
-        input.local_path = None;
-    }
     Ok(input)
 }
 
@@ -873,7 +870,7 @@ mod tests {
         .unwrap();
         assert_eq!(created.local_path.as_deref(), Some("~/.ssh/id_ed25519"));
 
-        let updated = update(
+        let agent_mode = update(
             &pool,
             &created.id,
             KeyReferenceInput {
@@ -887,9 +884,8 @@ mod tests {
                 passphrase: None,
             },
         )
-        .await
-        .unwrap();
-        assert!(updated.local_path.is_none());
+        .await;
+        assert!(agent_mode.is_err());
 
         let invalid = create(
             &pool,
@@ -912,8 +908,8 @@ mod tests {
             KeyReferenceInput {
                 name: "Secret material".into(),
                 public_key: Some("-----BEGIN OPENSSH PRIVATE KEY-----".into()),
-                storage_mode: "ssh-agent".into(),
-                local_path: None,
+                storage_mode: "local-path".into(),
+                local_path: Some("~/.ssh/id_secret".into()),
                 fingerprint: None,
                 certificate: None,
                 private_key: None,

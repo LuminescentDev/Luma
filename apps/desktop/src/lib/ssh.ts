@@ -60,11 +60,9 @@ export type SshExitPayload = {
 export type SshSpawnResult = { sessionId: string; title: string };
 
 /*
- * In-app host-key trust preflight. Because OpenSSH now runs with
- * StrictHostKeyChecking=yes against a Luma-managed known_hosts file, it never
- * prints the interactive "Are you sure you want to continue connecting?" prompt.
- * Unknown/changed keys must be resolved by these two commands BEFORE ssh_spawn.
- * The frontend still only ever sends a hostId.
+ * In-app host-key trust preflight. The embedded engine verifies keys against
+ * Luma's managed known_hosts file and never displays a terminal trust prompt.
+ * Unknown/changed keys must be resolved by these commands before ssh_spawn.
  */
 
 /** A single host key observed on the wire (or previously trusted). The
@@ -94,13 +92,13 @@ export type SshHostKeyErrorCategory =
   | "invalid-input"
   | "database"
   | "io"
-  | "ssh-unavailable"
   | "dns-failed"
   | "host-unreachable"
   | "timeout"
   | "host-key-scan-failed"
   | "host-key-file-invalid"
   | "host-key-scan-required"
+  | "host-key-scan-requires-auth"
   | "host-key-changed";
 
 /** Scan the server's current host keys and compare them to Luma's known_hosts.
@@ -121,18 +119,14 @@ export function sshHostKeyTrust(hostId: string): Promise<SshHostKeyStatus> {
   });
 }
 
-/** Round-trip latency of an embedded (Luma-managed) SSH session, measured
- * in-band. `sessionId` is the BACKEND session id (what ssh_spawn returned),
- * never the frontend/React session id. Rejects with category `unsupported` for
- * system-OpenSSH-backed sessions (fall back to sshProbe), and with
- * `invalid-input` / `timeout` / `connection-lost` / `ssh-error` otherwise. */
+/** Round-trip latency of an embedded SSH session, measured in-band.
+ * `sessionId` is the backend session id returned by ssh_spawn. */
 export function sshPing(sessionId: string): Promise<{ latencyMs: number }> {
   return invoke<{ latencyMs: number }>("ssh_ping", { sessionId });
 }
 
-/** TCP connect-time latency to a saved host (5s timeout). Used as the fallback
- * health probe when sshPing is `unsupported` (system OpenSSH sessions). Rejects
- * with invalid-input / dns-failed / host-unreachable / timeout / database. */
+/** TCP connect-time latency to a saved host (5s timeout). Rejects with
+ * invalid-input / dns-failed / host-unreachable / timeout / database. */
 export function sshProbe(hostId: string): Promise<{ latencyMs: number }> {
   return invoke<{ latencyMs: number }>("ssh_probe", { hostId });
 }

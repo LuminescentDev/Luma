@@ -152,9 +152,8 @@ impl PtyManager {
         Ok(id)
     }
 
-    /// Write without turning a missing id into an error. Commands shared by
-    /// native PTYs and embedded SSH use this fast path to route the overwhelmingly
-    /// common local/OpenSSH case without first touching the SSH manager.
+    /// Write without turning a missing id into an error. Shared commands use this
+    /// fast path for native PTY sessions before checking other session managers.
     pub fn write_if_present(&self, session_id: &str, data: &[u8]) -> Result<bool> {
         if data.len() > MAX_INPUT_BYTES {
             return Err(LumaError::InvalidInput("input too large".into()));

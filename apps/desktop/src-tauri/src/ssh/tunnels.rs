@@ -1,18 +1,18 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Serialize;
 use sqlx::SqlitePool;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, watch};
 
 use super::{
-    askpass_environment, build_connection_options, classify_error_output, connection_config,
-    SshConnectionConfig, CAPTURE_LIMIT_BYTES,
+    authenticated_handle, authenticated_handle_with_forwarding, connection_config,
+    AuthenticatedConnection, ForwardedTcpip, SshConnectionConfig,
 };
 use crate::errors::{LumaError, Result};
-use crate::storage::hosts;
 use crate::storage::port_forwards::PortForward;
-use crate::terminal::{PtyManager, ResolvedShell};
 use crate::vault::VaultState;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -42,8 +42,8 @@ struct ActiveTunnel {
     tunnel_id: String,
     port_forward_id: String,
     host_id: String,
-    pty_session_id: Option<String>,
-    stop_requested: Arc<AtomicBool>,
+    stop: watch::Sender<bool>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[derive(Default)]
@@ -52,129 +52,129 @@ pub struct TunnelManager {
 }
 
 impl TunnelManager {
-    pub fn start(
+    pub async fn start(
         &self,
-        pty: &PtyManager,
         config: SshConnectionConfig,
         port_forward: PortForward,
         on_exit: impl FnOnce(TunnelExit) + Send + 'static,
     ) -> Result<String> {
-        let arguments = build_tunnel_arguments(&config, &port_forward)?;
         let tunnel_id = uuid::Uuid::new_v4().to_string();
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let captured = Arc::new(Mutex::new(Vec::with_capacity(CAPTURE_LIMIT_BYTES)));
-
-        // Keep the state lock until the PTY session id is installed. An SSH
-        // process can fail immediately; its exit callback will wait for this
-        // critical section and cannot race a partially initialized record.
-        let mut tunnels = self.tunnels.lock().unwrap();
-        if tunnels
-            .values()
-            .any(|tunnel| tunnel.port_forward_id == port_forward.id)
+        let (stop, stop_rx) = watch::channel(false);
         {
-            return Err(LumaError::InvalidInput(
-                "port forward already has a running tunnel".into(),
-            ));
+            let mut tunnels = self.tunnels.lock().unwrap();
+            if tunnels
+                .values()
+                .any(|tunnel| tunnel.port_forward_id == port_forward.id)
+            {
+                return Err(LumaError::InvalidInput(
+                    "port forward already has a running tunnel".into(),
+                ));
+            }
+            tunnels.insert(
+                tunnel_id.clone(),
+                ActiveTunnel {
+                    tunnel_id: tunnel_id.clone(),
+                    port_forward_id: port_forward.id.clone(),
+                    host_id: port_forward.host_id.clone(),
+                    stop,
+                    task: None,
+                },
+            );
         }
-        tunnels.insert(
-            tunnel_id.clone(),
-            ActiveTunnel {
-                tunnel_id: tunnel_id.clone(),
-                port_forward_id: port_forward.id.clone(),
-                host_id: port_forward.host_id.clone(),
-                pty_session_id: None,
-                stop_requested: Arc::clone(&stop_requested),
-            },
-        );
 
-        let tunnels_for_exit = Arc::clone(&self.tunnels);
-        let tunnel_id_for_exit = tunnel_id.clone();
-        let captured_for_data = Arc::clone(&captured);
-        let captured_for_exit = Arc::clone(&captured);
-        let stopped_for_exit = Arc::clone(&stop_requested);
-        let ephemeral_identity_file = config.ephemeral_identity_file.clone();
-        let ephemeral_credential = config.ephemeral_credential.clone();
-        let environment = askpass_environment(&config)?;
-        let spawn_result = pty.spawn(
-            ResolvedShell {
-                path: config.executable,
-                args: arguments,
-                working_directory: None,
-                environment,
-            },
-            80,
-            24,
-            move |bytes| {
-                let mut captured = captured_for_data.lock().unwrap();
-                if captured.len() < CAPTURE_LIMIT_BYTES {
-                    let remaining = CAPTURE_LIMIT_BYTES - captured.len();
-                    captured.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
-                }
-            },
-            move |code| {
-                let _ephemeral_identity_file = ephemeral_identity_file;
-                let _ephemeral_credential = ephemeral_credential;
-                tunnels_for_exit.lock().unwrap().remove(&tunnel_id_for_exit);
-                let stopped = stopped_for_exit.load(Ordering::SeqCst);
-                let (error_category, error_message) = if code == Some(0) || stopped {
-                    (None, None)
-                } else {
-                    let captured = captured_for_exit.lock().unwrap();
-                    let output = String::from_utf8_lossy(&captured);
-                    match classify_error_output(&output) {
-                        Some((category, message)) => {
-                            (Some(category.to_string()), Some(message.to_string()))
-                        }
-                        None => (
-                            Some("ssh-error".into()),
-                            Some("SSH tunnel process exited before or while forwarding".into()),
-                        ),
-                    }
-                };
-                on_exit(TunnelExit {
-                    code,
-                    error_category,
-                    error_message,
-                });
-            },
-        );
-
-        let pty_session_id = match spawn_result {
-            Ok(session_id) => session_id,
+        let setup = self.setup(config, &port_forward).await;
+        let (connection, worker) = match setup {
+            Ok(value) => value,
             Err(error) => {
-                tunnels.remove(&tunnel_id);
-                return Err(LumaError::SshUnavailable(format!(
-                    "failed to start system OpenSSH tunnel: {error}"
-                )));
+                self.tunnels.lock().unwrap().remove(&tunnel_id);
+                return Err(error);
             }
         };
-        tunnels
-            .get_mut(&tunnel_id)
-            .expect("new tunnel remains reserved while state lock is held")
-            .pty_session_id = Some(pty_session_id.clone());
-        drop(tunnels);
 
-        // ConPTY uses INHERIT_CURSOR and waits for a cursor position response.
-        // Tunnels have no visible xterm.js instance, so answer it internally.
-        #[cfg(windows)]
-        let _ = pty.write_if_present(&pty_session_id, b"\x1b[1;1R");
-
+        let tunnels = Arc::clone(&self.tunnels);
+        let task_id = tunnel_id.clone();
+        let task = tokio::spawn(async move {
+            let exit = run_tunnel(connection, worker, stop_rx).await;
+            tunnels.lock().unwrap().remove(&task_id);
+            on_exit(exit);
+        });
+        if let Some(tunnel) = self.tunnels.lock().unwrap().get_mut(&tunnel_id) {
+            tunnel.task = Some(task);
+        }
         Ok(tunnel_id)
     }
 
-    pub fn stop(&self, pty: &PtyManager, tunnel_id: &str) -> Result<()> {
-        let tunnel = self
+    async fn setup(
+        &self,
+        config: SshConnectionConfig,
+        port_forward: &PortForward,
+    ) -> Result<(AuthenticatedConnection, TunnelWorker)> {
+        match port_forward.forward_type.as_str() {
+            "local" => {
+                let listener = bind_listener(port_forward, "localPort").await?;
+                let destination = destination(port_forward)?;
+                let connection = authenticated_handle(&config).await?;
+                Ok((
+                    connection,
+                    TunnelWorker::Local {
+                        listener,
+                        destination,
+                    },
+                ))
+            }
+            "dynamic" => {
+                let listener = bind_listener(port_forward, "localPort").await?;
+                let connection = authenticated_handle(&config).await?;
+                Ok((connection, TunnelWorker::Dynamic { listener }))
+            }
+            "remote" => {
+                let destination = destination(port_forward)?;
+                let remote_port = port_forward
+                    .remote_port
+                    .ok_or_else(|| LumaError::InvalidInput("remotePort is required".into()))?;
+                let (forwarded_tx, forwarded_rx) = mpsc::unbounded_channel();
+                let connection =
+                    authenticated_handle_with_forwarding(&config, forwarded_tx).await?;
+                tokio::time::timeout(
+                    Duration::from_secs(15),
+                    connection
+                        .tcpip_forward(port_forward.bind_address.clone(), u32::from(remote_port)),
+                )
+                .await
+                .map_err(|_| LumaError::SshConnection {
+                    category: "timeout",
+                    message: "Remote forwarding request timed out".into(),
+                })?
+                .map_err(|error| LumaError::SshConnection {
+                    category: "ssh-error",
+                    message: format!("Remote forwarding request was denied: {error}"),
+                })?;
+                Ok((
+                    connection,
+                    TunnelWorker::Remote {
+                        forwarded_rx,
+                        bind_address: port_forward.bind_address.clone(),
+                        remote_port,
+                        destination,
+                    },
+                ))
+            }
+            _ => Err(LumaError::InvalidInput(
+                "type must be 'local', 'remote', or 'dynamic'".into(),
+            )),
+        }
+    }
+
+    pub async fn stop(&self, tunnel_id: &str) -> Result<()> {
+        let mut tunnel = self
             .tunnels
             .lock()
             .unwrap()
             .remove(tunnel_id)
             .ok_or_else(|| LumaError::InvalidInput("unknown tunnel".into()))?;
-        tunnel.stop_requested.store(true, Ordering::SeqCst);
-        if let Some(session_id) = tunnel.pty_session_id {
-            // If the waiter removed the PTY between the state removal and this
-            // call, the tunnel has already stopped and the requested outcome is
-            // still satisfied.
-            let _ = pty.kill(&session_id);
+        let _ = tunnel.stop.send(true);
+        if let Some(task) = tunnel.task.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
         }
         Ok(())
     }
@@ -200,332 +200,265 @@ impl TunnelManager {
         tunnels
     }
 
-    pub fn kill_all(&self, pty: &PtyManager) {
-        let tunnels = self
-            .tunnels
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, tunnel)| tunnel)
-            .collect::<Vec<_>>();
-        for tunnel in tunnels {
-            tunnel.stop_requested.store(true, Ordering::SeqCst);
-            if let Some(session_id) = tunnel.pty_session_id {
-                let _ = pty.kill(&session_id);
+    pub fn kill_all(&self) {
+        for (_, tunnel) in self.tunnels.lock().unwrap().drain() {
+            let _ = tunnel.stop.send(true);
+        }
+    }
+}
+
+enum TunnelWorker {
+    Local {
+        listener: TcpListener,
+        destination: (String, u16),
+    },
+    Dynamic {
+        listener: TcpListener,
+    },
+    Remote {
+        forwarded_rx: mpsc::UnboundedReceiver<ForwardedTcpip>,
+        bind_address: String,
+        remote_port: u16,
+        destination: (String, u16),
+    },
+}
+
+async fn run_tunnel(
+    connection: AuthenticatedConnection,
+    worker: TunnelWorker,
+    mut stop: watch::Receiver<bool>,
+) -> TunnelExit {
+    let handle = Arc::clone(connection.handle());
+    let result = match worker {
+        TunnelWorker::Local {
+            listener,
+            destination,
+        } => run_listener(listener, handle, Some(destination), &mut stop).await,
+        TunnelWorker::Dynamic { listener } => run_listener(listener, handle, None, &mut stop).await,
+        TunnelWorker::Remote {
+            forwarded_rx,
+            bind_address,
+            remote_port,
+            destination,
+        } => {
+            let result = run_remote(forwarded_rx, destination, &mut stop).await;
+            let _ = connection
+                .cancel_tcpip_forward(bind_address, u32::from(remote_port))
+                .await;
+            result
+        }
+    };
+    match result {
+        Ok(()) => TunnelExit {
+            code: None,
+            error_category: None,
+            error_message: None,
+        },
+        Err(error) => TunnelExit {
+            code: None,
+            error_category: Some(error.category().into()),
+            error_message: Some(error.to_string()),
+        },
+    }
+}
+
+async fn run_listener(
+    listener: TcpListener,
+    handle: Arc<russh::client::Handle<super::embedded::Client>>,
+    destination: Option<(String, u16)>,
+    stop: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    return Ok(());
+                }
+            }
+            accepted = listener.accept() => {
+                let (stream, peer) = accepted.map_err(|error| LumaError::SshConnection {
+                    category: "connection-lost",
+                    message: format!("Tunnel listener failed: {error}"),
+                })?;
+                let handle = Arc::clone(&handle);
+                let destination = destination.clone();
+                tokio::spawn(async move {
+                    let result = if let Some((host, port)) = destination {
+                        forward_local(stream, handle, host, port, peer).await
+                    } else {
+                        super::socks5::serve(stream, handle).await
+                    };
+                    if let Err(error) = result {
+                        tracing::debug!(category = error.category(), "forwarded connection closed");
+                    }
+                });
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                if handle.is_closed() {
+                    return Err(LumaError::SshConnection {
+                        category: "connection-lost",
+                        message: "The SSH tunnel transport closed unexpectedly".into(),
+                    });
+                }
             }
         }
     }
 }
 
-/// Tunnels cannot display interactive prompts in v0.1. Password and explicitly
-/// interactive hosts are therefore rejected before process spawn; agent or key
-/// authentication must complete without a password prompt.
+async fn forward_local(
+    mut stream: TcpStream,
+    handle: Arc<russh::client::Handle<super::embedded::Client>>,
+    host: String,
+    port: u16,
+    peer: std::net::SocketAddr,
+) -> Result<()> {
+    let channel = handle
+        .channel_open_direct_tcpip(
+            host,
+            u32::from(port),
+            peer.ip().to_string(),
+            u32::from(peer.port()),
+        )
+        .await
+        .map_err(super::embedded::connect_error)?;
+    let mut channel = channel.into_stream();
+    tokio::io::copy_bidirectional(&mut stream, &mut channel).await?;
+    Ok(())
+}
+
+async fn run_remote(
+    mut forwarded_rx: mpsc::UnboundedReceiver<ForwardedTcpip>,
+    destination: (String, u16),
+    stop: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            changed = stop.changed() => {
+                if changed.is_err() || *stop.borrow() {
+                    return Ok(());
+                }
+            }
+            forwarded = forwarded_rx.recv() => {
+                let Some(forwarded) = forwarded else {
+                    return Err(LumaError::SshConnection {
+                        category: "connection-lost",
+                        message: "The SSH remote-forward transport closed unexpectedly".into(),
+                    });
+                };
+                let destination = destination.clone();
+                tokio::spawn(async move {
+                    match TcpStream::connect((&destination.0[..], destination.1)).await {
+                        Ok(mut stream) => {
+                            forwarded.reply.accept().await;
+                            let mut channel = forwarded.channel.into_stream();
+                            let _ = tokio::io::copy_bidirectional(&mut stream, &mut channel).await;
+                        }
+                        Err(_) => {
+                            forwarded.reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                        }
+                    }
+                });
+            }
+        }
+    }
+}
+
+async fn bind_listener(port_forward: &PortForward, field: &str) -> Result<TcpListener> {
+    let port = port_forward
+        .local_port
+        .ok_or_else(|| LumaError::InvalidInput(format!("{field} is required")))?;
+    TcpListener::bind((port_forward.bind_address.as_str(), port))
+        .await
+        .map_err(|error| LumaError::SshConnection {
+            category: "host-unreachable",
+            message: format!(
+                "Could not bind tunnel listener on {}:{port}: {error}",
+                port_forward.bind_address
+            ),
+        })
+}
+
+fn destination(port_forward: &PortForward) -> Result<(String, u16)> {
+    Ok((
+        port_forward
+            .destination_host
+            .clone()
+            .ok_or_else(|| LumaError::InvalidInput("destinationHost is required".into()))?,
+        port_forward
+            .destination_port
+            .ok_or_else(|| LumaError::InvalidInput("destinationPort is required".into()))?,
+    ))
+}
+
 pub async fn tunnel_connection_config(
     pool: &SqlitePool,
     vault_state: &VaultState,
     host_id: &str,
 ) -> Result<SshConnectionConfig> {
-    let host = hosts::get(pool, host_id)
-        .await?
-        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
     let (mut config, _) = connection_config(pool, vault_state, host_id).await?;
-    if matches!(
-        host.authentication_type.as_str(),
-        "password" | "interactive"
-    ) || (config.askpass_identity_id.is_some()
-        && config.askpass_prompt.as_deref() != Some("passphrase"))
-    {
-        return Err(LumaError::InvalidInput(
-            "tunnels require key or agent authentication in this version because interactive authentication prompts cannot be displayed"
-                .into(),
-        ));
+    for node in config.proxy_jumps.iter().chain(std::iter::once(&config)) {
+        let is_key = node.authentication_type == "key";
+        let password_auth = node.authentication_type == "password";
+        if node.authentication_type == "interactive"
+            || (password_auth && node.password.is_none())
+            || (is_key && node.identity_file.is_none())
+        {
+            return Err(LumaError::InvalidInput(format!(
+                "tunnel authentication for {} requires an interactive prompt",
+                node.username
+                    .as_deref()
+                    .map(|user| format!("{user}@{}", node.hostname))
+                    .unwrap_or_else(|| node.hostname.clone())
+            )));
+        }
     }
     config.startup_command = None;
     Ok(config)
 }
 
-fn forwarding_address(address: &str) -> String {
-    if address.contains(':') && !address.starts_with('[') {
-        format!("[{address}]")
-    } else {
-        address.to_string()
-    }
-}
-
-fn forwarding_spec(port_forward: &PortForward) -> Result<(String, String)> {
-    let bind = forwarding_address(&port_forward.bind_address);
-    match port_forward.forward_type.as_str() {
-        "local" => {
-            let local_port = port_forward
-                .local_port
-                .ok_or_else(|| LumaError::InvalidInput("localPort is required".into()))?;
-            let destination_host = port_forward
-                .destination_host
-                .as_deref()
-                .ok_or_else(|| LumaError::InvalidInput("destinationHost is required".into()))?;
-            let destination_port = port_forward
-                .destination_port
-                .ok_or_else(|| LumaError::InvalidInput("destinationPort is required".into()))?;
-            Ok((
-                "-L".into(),
-                format!(
-                    "{bind}:{local_port}:{}:{destination_port}",
-                    forwarding_address(destination_host)
-                ),
-            ))
-        }
-        "remote" => {
-            let remote_port = port_forward
-                .remote_port
-                .ok_or_else(|| LumaError::InvalidInput("remotePort is required".into()))?;
-            let destination_host = port_forward
-                .destination_host
-                .as_deref()
-                .ok_or_else(|| LumaError::InvalidInput("destinationHost is required".into()))?;
-            let destination_port = port_forward
-                .destination_port
-                .ok_or_else(|| LumaError::InvalidInput("destinationPort is required".into()))?;
-            Ok((
-                "-R".into(),
-                format!(
-                    "{bind}:{remote_port}:{}:{destination_port}",
-                    forwarding_address(destination_host)
-                ),
-            ))
-        }
-        "dynamic" => {
-            let local_port = port_forward
-                .local_port
-                .ok_or_else(|| LumaError::InvalidInput("localPort is required".into()))?;
-            Ok(("-D".into(), format!("{bind}:{local_port}")))
-        }
-        _ => Err(LumaError::InvalidInput(
-            "type must be 'local', 'remote', or 'dynamic'".into(),
-        )),
-    }
-}
-
-pub(crate) fn build_tunnel_arguments(
-    config: &SshConnectionConfig,
-    port_forward: &PortForward,
-) -> Result<Vec<String>> {
-    let (forwarding_flag, forwarding_value) = forwarding_spec(port_forward)?;
-    let mut arguments = build_connection_options(config, true);
-    arguments.push("-N".into());
-    arguments.push(forwarding_flag);
-    arguments.push(forwarding_value);
-    arguments.push(config.hostname.clone());
-    Ok(arguments)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::hosts::HostInput;
 
-    fn config() -> SshConnectionConfig {
-        SshConnectionConfig {
-            executable: "/usr/bin/ssh".into(),
-            hostname: "server.example.com".into(),
-            port: 2222,
-            known_hosts_file: "/tmp/luma-known_hosts".into(),
-            username: Some("alice".into()),
-            identity_file: None,
-            proxy_jumps: vec![],
-            startup_command: Some("must-not-run".into()),
-            askpass_identity_id: None,
-            askpass_service: None,
-            askpass_prompt: None,
-            fallback_password_identity_id: None,
-            password: None,
-            key_passphrase: None,
-            fallback_password: None,
-            ephemeral_credential: None,
-            ephemeral_identity_file: None,
-        }
-    }
-
-    fn port_forward(forward_type: &str) -> PortForward {
+    fn port_forward(forward_type: &str, port: u16) -> PortForward {
         PortForward {
             id: format!("{forward_type}-id"),
             host_id: "host-id".into(),
             name: "Forward".into(),
             forward_type: forward_type.into(),
             bind_address: "127.0.0.1".into(),
-            local_port: (forward_type != "remote").then_some(8080),
-            destination_host: (forward_type != "dynamic").then(|| "db.internal".into()),
+            local_port: (forward_type != "remote").then_some(port),
+            destination_host: (forward_type != "dynamic").then(|| "127.0.0.1".into()),
             destination_port: (forward_type != "dynamic").then_some(5432),
-            remote_port: (forward_type == "remote").then_some(15432),
+            remote_port: (forward_type == "remote").then_some(port),
         }
-    }
-
-    #[test]
-    fn builds_local_remote_and_dynamic_tunnel_arguments() {
-        assert_eq!(
-            build_tunnel_arguments(&config(), &port_forward("local")).unwrap(),
-            vec![
-                "-p",
-                "2222",
-                "-l",
-                "alice",
-                "-o",
-                "BatchMode=no",
-                "-o",
-                "UserKnownHostsFile=/tmp/luma-known_hosts",
-                "-o",
-                "GlobalKnownHostsFile=none",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "UpdateHostKeys=no",
-                "-o",
-                "NumberOfPasswordPrompts=0",
-                "-N",
-                "-L",
-                "127.0.0.1:8080:db.internal:5432",
-                "server.example.com"
-            ]
-        );
-        assert_eq!(
-            build_tunnel_arguments(&config(), &port_forward("remote")).unwrap(),
-            vec![
-                "-p",
-                "2222",
-                "-l",
-                "alice",
-                "-o",
-                "BatchMode=no",
-                "-o",
-                "UserKnownHostsFile=/tmp/luma-known_hosts",
-                "-o",
-                "GlobalKnownHostsFile=none",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "UpdateHostKeys=no",
-                "-o",
-                "NumberOfPasswordPrompts=0",
-                "-N",
-                "-R",
-                "127.0.0.1:15432:db.internal:5432",
-                "server.example.com"
-            ]
-        );
-        assert_eq!(
-            build_tunnel_arguments(&config(), &port_forward("dynamic")).unwrap(),
-            vec![
-                "-p",
-                "2222",
-                "-l",
-                "alice",
-                "-o",
-                "BatchMode=no",
-                "-o",
-                "UserKnownHostsFile=/tmp/luma-known_hosts",
-                "-o",
-                "GlobalKnownHostsFile=none",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "UpdateHostKeys=no",
-                "-o",
-                "NumberOfPasswordPrompts=0",
-                "-N",
-                "-D",
-                "127.0.0.1:8080",
-                "server.example.com"
-            ]
-        );
-        let arguments = build_tunnel_arguments(&config(), &port_forward("local")).unwrap();
-        assert!(!arguments.iter().any(|argument| argument == "must-not-run"));
-        assert!(!arguments.iter().any(|argument| argument == "-t"));
-    }
-
-    #[test]
-    fn brackets_ipv6_forwarding_addresses() {
-        let mut forward = port_forward("local");
-        forward.bind_address = "::1".into();
-        forward.destination_host = Some("2001:db8::2".into());
-        let arguments = build_tunnel_arguments(&config(), &forward).unwrap();
-        assert!(arguments.contains(&"[::1]:8080:[2001:db8::2]:5432".into()));
     }
 
     #[tokio::test]
-    async fn rejects_password_and_interactive_hosts_before_detection_or_spawn() {
-        let pool = crate::storage::init_in_memory().await.unwrap();
-        for authentication_type in ["password", "interactive"] {
-            let host = hosts::create(
-                &pool,
-                HostInput {
-                    name: format!("{authentication_type} host"),
-                    hostname: "server.example.com".into(),
-                    port: 22,
-                    username: Some("alice".into()),
-                    group_id: None,
-                    authentication_type: authentication_type.into(),
-                    key_id: None,
-                    identity_id: None,
-                    proxy_jump_host_id: None,
-                    startup_command: None,
-                    working_directory: None,
-                    environment: None,
-                    tags: vec![],
-                    favorite: false,
-                    tab_color: None,
-                },
-            )
+    async fn bind_conflict_is_reported_before_ssh_connect() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let error = bind_listener(&port_forward("local", port), "localPort")
             .await
-            .unwrap();
-            let vault_state = VaultState::default();
-            let error = tunnel_connection_config(&pool, &vault_state, &host.id)
-                .await
-                .unwrap_err();
-            assert_eq!(error.category(), "invalid-input");
-            assert!(error.to_string().contains("key or agent authentication"));
-        }
+            .unwrap_err();
+        assert!(error.to_string().contains("Could not bind tunnel listener"));
     }
 
     #[test]
-    fn tunnel_manager_tracks_independent_reservations() {
+    fn tunnel_manager_tracks_reservations() {
         let manager = TunnelManager::default();
-        let stop_one = Arc::new(AtomicBool::new(false));
-        let stop_two = Arc::new(AtomicBool::new(false));
-        {
-            let mut tunnels = manager.tunnels.lock().unwrap();
-            tunnels.insert(
-                "one".into(),
-                ActiveTunnel {
-                    tunnel_id: "one".into(),
-                    port_forward_id: "forward-one".into(),
-                    host_id: "host".into(),
-                    pty_session_id: None,
-                    stop_requested: stop_one,
-                },
-            );
-            tunnels.insert(
-                "two".into(),
-                ActiveTunnel {
-                    tunnel_id: "two".into(),
-                    port_forward_id: "forward-two".into(),
-                    host_id: "host".into(),
-                    pty_session_id: None,
-                    stop_requested: stop_two,
-                },
-            );
-        }
-        assert_eq!(manager.list().len(), 2);
+        let (stop, _) = watch::channel(false);
+        manager.tunnels.lock().unwrap().insert(
+            "one".into(),
+            ActiveTunnel {
+                tunnel_id: "one".into(),
+                port_forward_id: "forward-one".into(),
+                host_id: "host".into(),
+                stop,
+                task: None,
+            },
+        );
+        assert_eq!(manager.list().len(), 1);
         assert_eq!(manager.list()[0].status, "running");
-
-        let mut duplicate_forward = port_forward("local");
-        duplicate_forward.id = "forward-one".into();
-        let error = manager
-            .start(&PtyManager::default(), config(), duplicate_forward, |_| {})
-            .unwrap_err();
-        assert_eq!(error.category(), "invalid-input");
-
-        manager.stop(&PtyManager::default(), "one").unwrap();
-        let remaining = manager.list();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].tunnel_id, "two");
     }
 }

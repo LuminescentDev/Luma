@@ -8,15 +8,22 @@ import {
 } from "./terminalManager";
 
 /** No-op callback bundle satisfying the manager's SessionCallbacks. */
-function callbacks(onExit: (exit: SessionExit) => void = () => {}) {
+function callbacks(
+  onExit: (exit: SessionExit) => void = () => {},
+  onSshPrompt: (prompt: {
+    type: "credential";
+    label: string;
+    target?: string;
+    secret?: boolean;
+  }) => void = () => {},
+) {
   return {
     onTitle: () => {},
     onExit,
     onSearchRequested: () => {},
     onSshAuthenticated: () => {},
-    onSshPrompt: () => {},
+    onSshPrompt,
     onSshProgress: () => {},
-    onSshIssue: () => {},
     onRemoteOs: () => {},
   };
 }
@@ -171,6 +178,58 @@ describe("terminalManager input flow", () => {
     pendingResolvers.shift()?.();
     await tick();
     terminalManager.dispose("input-1");
+  });
+});
+
+describe("terminalManager SSH credential prompts", () => {
+  it("parses split embedded prompt markers and deduplicates repeats", async () => {
+    const prompts: Array<{
+      type: "credential";
+      label: string;
+      target?: string;
+      secret?: boolean;
+    }> = [];
+    let dataChannel:
+      | { onmessage: (message: string | number[] | ArrayBuffer) => void }
+      | undefined;
+    setInvoke((cmd, args) => {
+      if (cmd === "ssh_spawn") {
+        dataChannel = args.onData as typeof dataChannel;
+        return { sessionId: "prompt-backend", title: "jump host" };
+      }
+      if (cmd === "ssh_disconnect") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    await terminalManager.createSession(
+      "prompt-1",
+      { kind: "ssh", hostId: "host-1" },
+      callbacks(() => {}, (prompt) => prompts.push(prompt)),
+    );
+
+    const payload = JSON.stringify({
+      label: 'Verification code "OTP":',
+      secret: false,
+      target: "alice@jump.example.com",
+    });
+    const marker = `__LUMA_SSH_PROMPT__${payload}\r\n`;
+    const split = marker.indexOf("secret");
+    dataChannel?.onmessage(marker.slice(0, split));
+    expect(prompts).toEqual([]);
+
+    dataChannel?.onmessage(marker.slice(split));
+    expect(prompts).toEqual([
+      {
+        type: "credential",
+        label: 'Verification code "OTP":',
+        secret: false,
+        target: "alice@jump.example.com",
+      },
+    ]);
+
+    dataChannel?.onmessage(marker);
+    expect(prompts).toHaveLength(1);
+    terminalManager.dispose("prompt-1");
   });
 });
 

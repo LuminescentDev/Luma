@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
  * `null` from the backend.
  */
 
-export type AuthenticationType = "agent" | "key" | "password" | "interactive";
+export type AuthenticationType = "key" | "password" | "interactive";
 
 export type Host = {
   id: string;
@@ -68,7 +68,7 @@ export type HostGroupInput = {
   sortOrder: number;
 };
 
-export type KeyStorageMode = "local-path" | "encrypted-vault" | "ssh-agent";
+export type KeyStorageMode = "local-path" | "encrypted-vault";
 
 export type KeyReference = {
   id: string;
@@ -94,12 +94,6 @@ export type KeyReferenceInput = {
 
 export type Identity = { id: string; name: string; username: string; keyId: string | null; hasPassword: boolean };
 export type IdentityInput = { name: string; username: string; keyId: string | null; password: string | null };
-
-export type SshDetect = {
-  available: boolean;
-  path: string | null;
-  version: string | null;
-};
 
 export type SshConfigCandidate = {
   name: string;
@@ -276,10 +270,6 @@ export const updateIdentity = (id: string, input: IdentityInput) => invoke<Ident
 export const deleteIdentity = (id: string) => invoke<void>("identity_delete", { id });
 
 // SSH availability + config import ------------------------------------------
-
-export function detectSsh(): Promise<SshDetect> {
-  return invoke<SshDetect>("ssh_detect", {});
-}
 
 export function previewSshConfig(): Promise<SshConfigCandidate[]> {
   return invoke<SshConfigCandidate[]>("ssh_config_preview", {});

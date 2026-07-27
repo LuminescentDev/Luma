@@ -1,24 +1,17 @@
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod config;
 mod embedded;
+mod embedded_auth;
 mod known_hosts;
 mod remote_os;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod socks5;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tunnels;
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::collections::HashMap;
 use std::collections::HashSet;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::path::Path;
 use std::path::PathBuf;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::process::Command;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::sync::Mutex;
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -29,8 +22,6 @@ use crate::platform::home_dir;
 use crate::storage::hosts::{self, Host};
 use crate::storage::identities;
 use crate::storage::key_references;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use crate::terminal::{PtyManager, ResolvedShell};
 use crate::vault::{self, VaultState};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -40,9 +31,9 @@ pub use config::{
 };
 pub use embedded::EmbeddedSshManager;
 pub(crate) use embedded::{
-    authenticated_handle, connect_error as embedded_connect_error, Client as EmbeddedClient,
+    authenticated_handle, authenticated_handle_with_forwarding,
+    connect_error as embedded_connect_error, AuthenticatedConnection, ForwardedTcpip,
 };
-pub(crate) use embedded::{select_backend, SshBackend};
 pub use known_hosts::{
     file_path as known_hosts_file_path, list as known_hosts_list, remove as known_hosts_remove,
     status as host_key_status, trust as trust_host_key, validate_host_id, KnownHostsEntry,
@@ -50,29 +41,16 @@ pub use known_hosts::{
 };
 pub use remote_os::SshRemoteOs;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use remote_os::{detect_remote_os, prepare_multiplex_control, MultiplexControl, RemoteOsTarget};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use tunnels::{
     tunnel_connection_config, TunnelExit, TunnelInfo, TunnelManager, TunnelStartResponse,
 };
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) const CAPTURE_LIMIT_BYTES: usize = 16 * 1024;
 pub(crate) const SSH_AUTHENTICATED_MARKER: &[u8] = b"__LUMA_SSH_AUTHENTICATED__";
 const MAX_PROXY_JUMP_DEPTH: usize = 8;
 
 type DataCallback = Box<dyn FnMut(&[u8]) + Send + 'static>;
 type ExitCallback = Box<dyn FnOnce(SshExit) + Send + 'static>;
 type RemoteOsCallback = Box<dyn FnOnce(SshRemoteOs) + Send + 'static>;
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SshDetection {
-    pub available: bool,
-    pub path: Option<String>,
-    pub version: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -82,36 +60,20 @@ pub struct SshExit {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProxyTarget {
-    hostname: String,
-    port: u16,
-    username: Option<String>,
-}
-
 #[derive(Clone)]
 pub(crate) struct SshConnectionConfig {
-    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
-    pub(crate) executable: String,
     pub(crate) hostname: String,
     port: u16,
     known_hosts_file: PathBuf,
     username: Option<String>,
+    authentication_type: String,
     identity_file: Option<String>,
-    proxy_jumps: Vec<ProxyTarget>,
+    proxy_jumps: Vec<SshConnectionConfig>,
     pub(crate) startup_command: Option<String>,
-    askpass_identity_id: Option<String>,
-    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
-    askpass_service: Option<String>,
-    askpass_prompt: Option<String>,
-    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
-    fallback_password_identity_id: Option<String>,
     password: Option<Arc<Zeroizing<String>>>,
     key_passphrase: Option<Arc<Zeroizing<String>>>,
     fallback_password: Option<Arc<Zeroizing<String>>>,
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    ephemeral_credential: Option<Arc<EphemeralCredential>>,
-    ephemeral_identity_file: Option<Arc<EphemeralIdentityFile>>,
+    _ephemeral_identity_file: Option<Arc<EphemeralIdentityFile>>,
 }
 
 impl std::fmt::Debug for SshConnectionConfig {
@@ -134,455 +96,10 @@ impl std::fmt::Debug for SshConnectionConfig {
 #[derive(Debug)]
 struct EphemeralIdentityFile(PathBuf);
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[derive(Debug)]
-struct EphemeralCredential {
-    service: String,
-    account: String,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-impl Drop for EphemeralCredential {
-    fn drop(&mut self) {
-        if let Ok(entry) = keyring::Entry::new(&self.service, &self.account) {
-            let _ = entry.delete_credential();
-        }
-    }
-}
-
 impl Drop for EphemeralIdentityFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
     }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub trait SshEngine {
-    fn connect(
-        &self,
-        config: SshConnectionConfig,
-        cols: u16,
-        rows: u16,
-        on_data: DataCallback,
-        on_exit: ExitCallback,
-        on_remote_os: RemoteOsCallback,
-    ) -> Result<String>;
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub struct OpenSshEngine<'a> {
-    pty: &'a PtyManager,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-impl<'a> OpenSshEngine<'a> {
-    pub fn new(pty: &'a PtyManager) -> Self {
-        Self { pty }
-    }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-#[derive(Default)]
-struct AuthenticationObserver {
-    tail: Vec<u8>,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-impl AuthenticationObserver {
-    fn observe(&mut self, bytes: &[u8]) -> bool {
-        const MAX_TAIL_BYTES: usize = 128;
-
-        self.tail.extend_from_slice(bytes);
-        let authenticated = self
-            .tail
-            .windows(SSH_AUTHENTICATED_MARKER.len())
-            .any(|window| window == SSH_AUTHENTICATED_MARKER);
-        if self.tail.len() > MAX_TAIL_BYTES {
-            self.tail.drain(..self.tail.len() - MAX_TAIL_BYTES);
-        }
-        authenticated
-    }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) fn askpass_environment(config: &SshConnectionConfig) -> Result<HashMap<String, String>> {
-    let mut environment = HashMap::new();
-    if let Some(identity_id) = &config.askpass_identity_id {
-        let executable = std::env::current_exe().map_err(|error| {
-            LumaError::SshUnavailable(format!("could not configure password helper: {error}"))
-        })?;
-        environment.insert(
-            "SSH_ASKPASS".into(),
-            executable.to_string_lossy().into_owned(),
-        );
-        environment.insert("SSH_ASKPASS_REQUIRE".into(), "force".into());
-        environment.insert("DISPLAY".into(), "luma:0".into());
-        environment.insert("LUMA_ASKPASS_ID".into(), identity_id.clone());
-        if let Some(service) = &config.askpass_service {
-            environment.insert("LUMA_ASKPASS_SERVICE".into(), service.clone());
-        }
-        if let Some(prompt) = &config.askpass_prompt {
-            environment.insert("LUMA_ASKPASS_PROMPT".into(), prompt.clone());
-        }
-        if let Some(identity_id) = &config.fallback_password_identity_id {
-            environment.insert("LUMA_ASKPASS_PASSWORD_ID".into(), identity_id.clone());
-        }
-    }
-    Ok(environment)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-impl SshEngine for OpenSshEngine<'_> {
-    fn connect(
-        &self,
-        config: SshConnectionConfig,
-        cols: u16,
-        rows: u16,
-        mut on_data: DataCallback,
-        on_exit: ExitCallback,
-        on_remote_os: RemoteOsCallback,
-    ) -> Result<String> {
-        let multiplex_control = prepare_multiplex_control();
-        let arguments = build_interactive_arguments(&config, multiplex_control.as_deref());
-        let remote_os_probe_arguments = build_remote_os_probe_arguments(&config);
-        let remote_os_target = RemoteOsTarget::new(
-            config.executable.clone(),
-            config.hostname.clone(),
-            config.port,
-            config.username.clone(),
-            remote_os_probe_arguments,
-            askpass_environment(&config)?,
-        );
-        let ephemeral_identity_file = config.ephemeral_identity_file.clone();
-        let captured = Arc::new(Mutex::new(Vec::with_capacity(CAPTURE_LIMIT_BYTES)));
-        let captured_for_data = Arc::clone(&captured);
-        let captured_for_exit = Arc::clone(&captured);
-        let control_for_exit = multiplex_control.clone();
-        let mut pending_target = Some(remote_os_target);
-        let mut pending_control = Some(multiplex_control);
-        let mut pending_remote_os_callback = Some(on_remote_os);
-        let mut authentication_observer = AuthenticationObserver::default();
-        let authenticated = Arc::new(AtomicBool::new(false));
-        let authenticated_for_data = Arc::clone(&authenticated);
-        let authenticated_for_exit = Arc::clone(&authenticated);
-
-        let environment = askpass_environment(&config)?;
-        let ephemeral_credential = config.ephemeral_credential.clone();
-        self.pty
-            .spawn(
-                ResolvedShell {
-                    path: config.executable,
-                    args: arguments,
-                    working_directory: None,
-                    environment,
-                },
-                cols,
-                rows,
-                move |bytes| {
-                    let mut captured = captured_for_data.lock().unwrap();
-                    if captured.len() < CAPTURE_LIMIT_BYTES {
-                        let remaining = CAPTURE_LIMIT_BYTES - captured.len();
-                        captured.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
-                    }
-                    drop(captured);
-
-                    if authentication_observer.observe(bytes) {
-                        authenticated_for_data.store(true, Ordering::Release);
-                        if let (Some(target), Some(control), Some(callback)) = (
-                            pending_target.take(),
-                            pending_control.take(),
-                            pending_remote_os_callback.take(),
-                        ) {
-                            tauri::async_runtime::spawn(async move {
-                                callback(detect_remote_os(target, control).await);
-                            });
-                        }
-                    }
-
-                    on_data(bytes);
-                },
-                move |code| {
-                    let _ephemeral_identity_file = ephemeral_identity_file;
-                    let _ephemeral_credential = ephemeral_credential;
-                    let _control = control_for_exit;
-                    let captured = captured_for_exit.lock().unwrap();
-                    let output = String::from_utf8_lossy(&captured);
-                    let (error_category, error_message) = classify_openssh_exit(
-                        code,
-                        &output,
-                        authenticated_for_exit.load(Ordering::Acquire),
-                    );
-                    on_exit(SshExit {
-                        code,
-                        error_category,
-                        error_message,
-                    });
-                },
-            )
-            .map_err(|error| {
-                LumaError::SshUnavailable(format!("failed to start system OpenSSH: {error}"))
-            })
-    }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn detect() -> SshDetection {
-    let Some(path) = find_ssh_executable() else {
-        return SshDetection {
-            available: true,
-            path: None,
-            version: Some("embedded russh".into()),
-        };
-    };
-
-    let mut command = Command::new(&path);
-    crate::platform::hide_background_std_command(&mut command);
-    let version = command.arg("-V").output().ok().and_then(|output| {
-        let text = if output.stderr.is_empty() {
-            String::from_utf8_lossy(&output.stdout).into_owned()
-        } else {
-            String::from_utf8_lossy(&output.stderr).into_owned()
-        };
-        let text = text.trim();
-        (!text.is_empty()).then(|| text.to_string())
-    });
-
-    SshDetection {
-        available: true,
-        path: Some(path.to_string_lossy().into_owned()),
-        version,
-    }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn find_in_path(executable: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|directory| directory.join(executable))
-        .find(|candidate| candidate.is_file())
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn find_ssh_executable() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        if let Some(path) = find_in_path("ssh.exe") {
-            return Some(path);
-        }
-        let system_root = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-        let bundled = system_root.join(r"System32\OpenSSH\ssh.exe");
-        bundled.is_file().then_some(bundled)
-    }
-
-    #[cfg(not(windows))]
-    {
-        find_in_path("ssh")
-    }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn proxy_destination(target: &ProxyTarget) -> String {
-    let hostname = if target.hostname.contains(':') && !target.hostname.starts_with('[') {
-        format!("[{}]", target.hostname)
-    } else {
-        target.hostname.clone()
-    };
-    let user = target
-        .username
-        .as_ref()
-        .map(|username| format!("{username}@"))
-        .unwrap_or_default();
-    format!("{user}{hostname}:{}", target.port)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-struct ConnectionOptionPolicy<'a> {
-    batch_mode: bool,
-    known_hosts_file: &'a Path,
-    strict_host_key_checking: &'static str,
-    disable_password_prompts: bool,
-    connect_timeout_seconds: Option<u64>,
-    probe_safety_options: bool,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn build_connection_options_with_policy(
-    config: &SshConnectionConfig,
-    policy: ConnectionOptionPolicy<'_>,
-) -> Vec<String> {
-    let mut arguments = vec!["-p".into(), config.port.to_string()];
-    if let Some(username) = &config.username {
-        arguments.push("-l".into());
-        arguments.push(username.clone());
-    }
-    if let Some(identity_file) = &config.identity_file {
-        arguments.push("-i".into());
-        arguments.push(identity_file.clone());
-        arguments.push("-o".into());
-        arguments.push("IdentitiesOnly=yes".into());
-        if config.fallback_password_identity_id.is_some() {
-            arguments.push("-o".into());
-            arguments.push("PreferredAuthentications=publickey,password".into());
-        }
-    }
-    arguments.push("-o".into());
-    arguments.push(format!(
-        "BatchMode={}",
-        if policy.batch_mode { "yes" } else { "no" }
-    ));
-    arguments.push("-o".into());
-    arguments.push(format!(
-        "UserKnownHostsFile={}",
-        policy.known_hosts_file.to_string_lossy()
-    ));
-    arguments.push("-o".into());
-    arguments.push("GlobalKnownHostsFile=none".into());
-    arguments.push("-o".into());
-    arguments.push(format!(
-        "StrictHostKeyChecking={}",
-        policy.strict_host_key_checking
-    ));
-    arguments.push("-o".into());
-    arguments.push("UpdateHostKeys=no".into());
-    if policy.disable_password_prompts {
-        arguments.push("-o".into());
-        arguments.push("NumberOfPasswordPrompts=0".into());
-    }
-    if let Some(seconds) = policy.connect_timeout_seconds {
-        arguments.push("-o".into());
-        arguments.push(format!("ConnectTimeout={seconds}"));
-        arguments.push("-o".into());
-        arguments.push("ConnectionAttempts=1".into());
-    }
-    if policy.probe_safety_options {
-        for option in [
-            "ClearAllForwardings=yes",
-            "RemoteCommand=none",
-            "ControlMaster=no",
-            "ControlPath=none",
-        ] {
-            arguments.push("-o".into());
-            arguments.push(option.into());
-        }
-    }
-    if !config.proxy_jumps.is_empty() {
-        arguments.push("-J".into());
-        arguments.push(
-            config
-                .proxy_jumps
-                .iter()
-                .map(proxy_destination)
-                .collect::<Vec<_>>()
-                .join(","),
-        );
-    }
-    arguments
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn build_connection_options(
-    config: &SshConnectionConfig,
-    disable_password_prompts: bool,
-) -> Vec<String> {
-    build_connection_options_with_policy(
-        config,
-        ConnectionOptionPolicy {
-            batch_mode: false,
-            known_hosts_file: &config.known_hosts_file,
-            strict_host_key_checking: "yes",
-            disable_password_prompts,
-            connect_timeout_seconds: None,
-            probe_safety_options: false,
-        },
-    )
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) fn build_host_key_probe_arguments(
-    config: &SshConnectionConfig,
-    temporary_known_hosts_file: &Path,
-    connect_timeout_seconds: u64,
-) -> Vec<String> {
-    let mut arguments = build_connection_options_with_policy(
-        config,
-        ConnectionOptionPolicy {
-            batch_mode: true,
-            known_hosts_file: temporary_known_hosts_file,
-            strict_host_key_checking: "accept-new",
-            disable_password_prompts: false,
-            connect_timeout_seconds: Some(connect_timeout_seconds),
-            probe_safety_options: true,
-        },
-    );
-    arguments.insert(0, "-T".into());
-    arguments.push(config.hostname.clone());
-    arguments.push("exit".into());
-    arguments
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn build_interactive_arguments(
-    config: &SshConnectionConfig,
-    multiplex_control: Option<&MultiplexControl>,
-) -> Vec<String> {
-    let mut arguments = build_connection_options(config, false);
-    // LocalCommand runs only after authentication succeeds. Its marker gives
-    // the backend and connection overlay a deterministic readiness signal
-    // without exposing OpenSSH's verbose diagnostics in the user's terminal.
-    arguments.push("-o".into());
-    arguments.push("PermitLocalCommand=yes".into());
-    arguments.push("-o".into());
-    arguments.push("LocalCommand=echo __LUMA_SSH_AUTHENTICATED__".into());
-    if let Some(control) = multiplex_control {
-        arguments.extend(control.master_arguments());
-    }
-    if config.startup_command.is_some() {
-        arguments.push("-t".into());
-    }
-    arguments.push(config.hostname.clone());
-    if let Some(command) = &config.startup_command {
-        arguments.push(command.clone());
-    }
-    arguments
-}
-
-/// Build a bounded second-connection probe for platforms whose OpenSSH client
-/// does not support ControlMaster (notably Windows). It may reuse public-key or
-/// agent authentication, including Luma's askpass key-passphrase helper, but
-/// can never fall back to password or keyboard-interactive authentication.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn build_remote_os_probe_arguments(config: &SshConnectionConfig) -> Vec<String> {
-    let mut arguments = build_connection_options(config, true);
-    arguments.insert(0, "-T".into());
-    for option in [
-        "ClearAllForwardings=yes",
-        "PasswordAuthentication=no",
-        "KbdInteractiveAuthentication=no",
-        "HostbasedAuthentication=no",
-        "GSSAPIAuthentication=no",
-        "ConnectionAttempts=1",
-        "ConnectTimeout=5",
-    ] {
-        arguments.push("-o".into());
-        arguments.push(option.into());
-    }
-    arguments
-}
-
-#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
-pub(crate) fn build_arguments(config: &SshConnectionConfig) -> Vec<String> {
-    build_interactive_arguments(config, None)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) fn build_sftp_arguments(config: &SshConnectionConfig) -> Vec<String> {
-    let mut arguments = build_connection_options(config, false);
-    arguments.push("-s".into());
-    arguments.push(config.hostname.clone());
-    arguments.push("sftp".into());
-    arguments
 }
 
 fn resolve_identity_path(path: &str) -> PathBuf {
@@ -660,9 +177,6 @@ async fn identity_file(
         let guard = Arc::new(EphemeralIdentityFile(path.clone()));
         return Ok((Some(path.to_string_lossy().into_owned()), Some(guard)));
     }
-    if key.storage_mode == "ssh-agent" {
-        return Ok((None, None));
-    }
     if key.storage_mode != "local-path" {
         return Err(LumaError::KeyUnavailable(
             "unsupported key storage mode".into(),
@@ -683,32 +197,16 @@ async fn identity_file(
 
 struct ResolvedConnectionRoute {
     host: Host,
-    identity: Option<identities::Identity>,
-    proxy_jumps: Vec<ProxyTarget>,
+    proxy_jumps: Vec<Host>,
 }
 
 async fn resolve_connection_route(
     pool: &SqlitePool,
     host_id: &str,
 ) -> Result<ResolvedConnectionRoute> {
-    let mut host = hosts::get(pool, host_id)
+    let host = hosts::get(pool, host_id)
         .await?
         .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
-    let identity = if let Some(identity_id) = &host.identity_id {
-        let identity = identities::get(pool, identity_id)
-            .await?
-            .ok_or_else(|| LumaError::InvalidInput("selected identity no longer exists".into()))?;
-        host.username = Some(identity.username.clone());
-        if let Some(key_id) = &identity.key_id {
-            host.authentication_type = "key".into();
-            host.key_id = Some(key_id.clone());
-        } else if identity.has_password {
-            host.authentication_type = "password".into();
-        }
-        Some(identity)
-    } else {
-        None
-    };
 
     let mut proxy_jumps = Vec::new();
     let mut next = host.proxy_jump_host_id.clone();
@@ -727,85 +225,79 @@ async fn resolve_connection_route(
         let proxy = hosts::get(pool, &proxy_id)
             .await?
             .ok_or_else(|| LumaError::InvalidInput("proxy jump host no longer exists".into()))?;
-        proxy_jumps.push(ProxyTarget {
-            hostname: proxy.hostname,
-            port: proxy.port,
-            username: proxy.username,
-        });
-        next = proxy.proxy_jump_host_id;
+        next = proxy.proxy_jump_host_id.clone();
+        proxy_jumps.push(proxy);
     }
     proxy_jumps.reverse();
 
-    Ok(ResolvedConnectionRoute {
-        host,
-        identity,
-        proxy_jumps,
-    })
+    Ok(ResolvedConnectionRoute { host, proxy_jumps })
 }
 
-fn system_ssh_executable() -> String {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return detect().path.unwrap_or_default();
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    return String::new();
+fn validate_connection_username(username: String) -> Result<String> {
+    const MAX_USERNAME_LENGTH: usize = 128;
+
+    if username.is_empty() || username.len() > MAX_USERNAME_LENGTH {
+        return Err(LumaError::InvalidInput(format!(
+            "username must be 1-{MAX_USERNAME_LENGTH} characters"
+        )));
+    }
+    if username.starts_with('-') {
+        return Err(LumaError::InvalidInput(
+            "username must not start with '-'".into(),
+        ));
+    }
+    if !username
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+    {
+        return Err(LumaError::InvalidInput(
+            "username contains whitespace or unsupported characters".into(),
+        ));
+    }
+    Ok(username)
 }
 
-pub(crate) async fn host_key_connection_config(
+fn resolve_os_username() -> Result<String> {
+    let username = ["USERNAME", "USER"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        .ok_or_else(|| LumaError::InvalidInput("SSH username is required".into()))?;
+    validate_connection_username(username)
+}
+
+async fn resolve_host_identity(
     pool: &SqlitePool,
-    host_id: &str,
-    known_hosts_file: PathBuf,
-) -> Result<SshConnectionConfig> {
-    let route = resolve_connection_route(pool, host_id).await?;
-    let executable = system_ssh_executable();
-
-    Ok(SshConnectionConfig {
-        executable,
-        hostname: route.host.hostname,
-        port: route.host.port,
-        known_hosts_file,
-        username: route.host.username,
-        identity_file: None,
-        proxy_jumps: route.proxy_jumps,
-        startup_command: None,
-        askpass_identity_id: None,
-        askpass_service: None,
-        askpass_prompt: None,
-        fallback_password_identity_id: None,
-        password: None,
-        key_passphrase: None,
-        fallback_password: None,
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        ephemeral_credential: None,
-        ephemeral_identity_file: None,
-    })
+    mut host: Host,
+) -> Result<(Host, Option<identities::Identity>)> {
+    let identity = if let Some(identity_id) = &host.identity_id {
+        let identity = identities::get(pool, identity_id)
+            .await?
+            .ok_or_else(|| LumaError::InvalidInput("selected identity no longer exists".into()))?;
+        host.username = Some(identity.username.clone());
+        if let Some(key_id) = &identity.key_id {
+            host.authentication_type = "key".into();
+            host.key_id = Some(key_id.clone());
+        } else if identity.has_password {
+            host.authentication_type = "password".into();
+        }
+        Some(identity)
+    } else {
+        None
+    };
+    if host.username.is_none() {
+        host.username = Some(resolve_os_username()?);
+    }
+    Ok((host, identity))
 }
 
-pub async fn connection_config(
+async fn resolve_host_connection_config(
     pool: &SqlitePool,
     vault_state: &VaultState,
-    host_id: &str,
-) -> Result<(SshConnectionConfig, String)> {
-    let route = resolve_connection_route(pool, host_id).await?;
-    let host = route.host;
-    let mut askpass_identity_id = None;
-    let mut askpass_service = None;
-    let mut askpass_prompt = None;
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let mut ephemeral_credential = None;
-    let fallback_password_identity_id = route
-        .identity
-        .as_ref()
-        .filter(|identity| identity.key_id.is_some() && identity.has_password)
-        .map(|identity| identity.id.clone());
-    if let Some(identity) = &route.identity {
-        if identity.key_id.is_none() && identity.has_password {
-            askpass_identity_id = Some(identity.id.clone());
-            askpass_service = Some("luma.ssh.identity".into());
-            askpass_prompt = Some("password".into());
-        }
-    }
-    let password = if let Some(identity) = route
-        .identity
+    host: Host,
+    known_hosts_file: PathBuf,
+) -> Result<SshConnectionConfig> {
+    let (host, identity) = resolve_host_identity(pool, host).await?;
+    let password = if let Some(identity) = identity
         .as_ref()
         .filter(|identity| identity.key_id.is_none() && identity.has_password)
     {
@@ -815,8 +307,7 @@ pub async fn connection_config(
     } else {
         None
     };
-    let fallback_password = if let Some(identity) = route
-        .identity
+    let fallback_password = if let Some(identity) = identity
         .as_ref()
         .filter(|identity| identity.key_id.is_some() && identity.has_password)
     {
@@ -826,9 +317,7 @@ pub async fn connection_config(
     } else {
         None
     };
-    let executable = system_ssh_executable();
-    let known_hosts_file = known_hosts::file_path_for_pool(pool).await?;
-    let (identity_file, ephemeral_identity_file) = identity_file(pool, vault_state, &host).await?;
+    let (identity_file, _ephemeral_identity_file) = identity_file(pool, vault_state, &host).await?;
     let mut key_passphrase = None;
     if host.authentication_type == "key" {
         if let Some(key_id) = host.key_id.as_deref() {
@@ -846,642 +335,92 @@ pub async fn connection_config(
                         .unwrap_or_default(),
                 );
                 if !passphrase.is_empty() {
-                    key_passphrase = Some(Arc::new(passphrase.clone()));
-                    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-                    {
-                        let service = "luma.ssh.key-passphrase".to_string();
-                        let account = uuid::Uuid::new_v4().to_string();
-                        keyring::Entry::new(&service, &account)
-                            .and_then(|entry| entry.set_password(&passphrase))
-                            .map_err(|error| {
-                                LumaError::KeyUnavailable(format!(
-                                    "could not prepare saved key passphrase: {error}"
-                                ))
-                            })?;
-                        askpass_identity_id = Some(account.clone());
-                        askpass_service = Some(service.clone());
-                        askpass_prompt = Some("passphrase".into());
-                        ephemeral_credential =
-                            Some(Arc::new(EphemeralCredential { service, account }));
-                    }
+                    key_passphrase = Some(Arc::new(passphrase));
                 }
             }
         }
     }
 
-    Ok((
-        SshConnectionConfig {
-            executable,
-            hostname: host.hostname,
-            port: host.port,
-            known_hosts_file,
-            username: host.username,
-            identity_file,
-            proxy_jumps: route.proxy_jumps,
-            startup_command: host.startup_command,
-            askpass_identity_id,
-            askpass_service,
-            askpass_prompt,
-            fallback_password_identity_id,
-            password,
-            key_passphrase,
-            fallback_password,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            ephemeral_credential,
-            ephemeral_identity_file,
-        },
-        host.name,
-    ))
+    Ok(SshConnectionConfig {
+        hostname: host.hostname,
+        port: host.port,
+        known_hosts_file,
+        username: host.username,
+        authentication_type: host.authentication_type,
+        identity_file,
+        proxy_jumps: Vec::new(),
+        startup_command: host.startup_command,
+        password,
+        key_passphrase,
+        fallback_password,
+        _ephemeral_identity_file,
+    })
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn classify_openssh_exit(
-    code: Option<u32>,
-    output: &str,
-    authenticated: bool,
-) -> (Option<String>, Option<String>) {
-    if code.is_none() || code == Some(0) {
-        return (None, None);
+pub(crate) async fn host_key_connection_config(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    host_id: &str,
+    known_hosts_file: PathBuf,
+) -> Result<SshConnectionConfig> {
+    let route = resolve_connection_route(pool, host_id).await?;
+    let mut proxy_jumps = Vec::with_capacity(route.proxy_jumps.len());
+    for proxy in route.proxy_jumps {
+        let mut config =
+            resolve_host_connection_config(pool, vault_state, proxy, known_hosts_file.clone())
+                .await?;
+        config.startup_command = None;
+        proxy_jumps.push(config);
     }
-    if let Some((category, message)) = classify_error_output(output) {
-        return (Some(category.into()), Some(message.into()));
-    }
-    if authenticated && code == Some(255) {
-        return (
-            Some("connection-lost".into()),
-            Some("The SSH connection ended unexpectedly after authentication".into()),
-        );
-    }
-    (
-        Some("ssh-error".into()),
-        Some(if authenticated {
-            "The remote SSH session exited with a non-zero status".into()
-        } else {
-            "SSH process exited before the session was established".into()
-        }),
-    )
+    let mut config =
+        resolve_host_connection_config(pool, vault_state, route.host, known_hosts_file).await?;
+    config.startup_command = None;
+    config.proxy_jumps = proxy_jumps;
+    Ok(config)
 }
 
-pub(crate) fn classify_error_output(output: &str) -> Option<(&'static str, &'static str)> {
-    let lower = output.to_ascii_lowercase();
-    if lower.contains("remote host identification has changed") {
-        Some((
-            "host-key-changed",
-            "The remote host key has changed. Verify the server identity and update known_hosts before reconnecting.",
-        ))
-    } else if lower.contains("host key verification failed") {
-        Some((
-            "host-key-rejected",
-            "Host key verification was rejected or could not be completed.",
-        ))
-    } else if lower.contains("bad passphrase given") {
-        Some((
-            "key-passphrase-invalid",
-            "The saved passphrase could not decrypt the configured private key. Re-enter the passphrase or import the matching key again.",
-        ))
-    } else if lower.contains("permission denied") {
-        Some((
-            "auth-failed",
-            "SSH authentication failed. Check the username, key, agent, or password.",
-        ))
-    } else if lower.contains("could not resolve hostname")
-        || lower.contains("getaddrinfo")
-        || lower.contains("name or service not known")
-        || lower.contains("nodename nor servname provided")
-    {
-        Some(("dns-failed", "The SSH hostname could not be resolved."))
-    } else if lower.contains("connection refused")
-        || lower.contains("no route to host")
-        || lower.contains("network is unreachable")
-    {
-        Some((
-            "host-unreachable",
-            "The SSH host is unreachable or refused the connection.",
-        ))
-    } else if lower.contains("connection timed out")
-        || lower.contains("operation timed out")
-        || lower.contains("timed out")
-    {
-        Some(("timeout", "The SSH connection timed out."))
-    } else if lower.contains("connection reset")
-        || lower.contains("broken pipe")
-        || lower.contains("connection closed by remote host")
-        || lower.contains("connection to ") && lower.contains(" closed")
-    {
-        Some((
-            "connection-lost",
-            "The SSH transport was lost during the session.",
-        ))
-    } else {
-        None
+pub async fn connection_config(
+    pool: &SqlitePool,
+    vault_state: &VaultState,
+    host_id: &str,
+) -> Result<(SshConnectionConfig, String)> {
+    let route = resolve_connection_route(pool, host_id).await?;
+    let title = route.host.name.clone();
+    let known_hosts_file = known_hosts::file_path_for_pool(pool).await?;
+    let mut proxy_jumps = Vec::with_capacity(route.proxy_jumps.len());
+    for proxy in route.proxy_jumps {
+        let mut config =
+            resolve_host_connection_config(pool, vault_state, proxy, known_hosts_file.clone())
+                .await?;
+        config.startup_command = None;
+        proxy_jumps.push(config);
     }
+    let mut config =
+        resolve_host_connection_config(pool, vault_state, route.host, known_hosts_file).await?;
+    config.proxy_jumps = proxy_jumps;
+    Ok((config, title))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn base_config() -> SshConnectionConfig {
-        SshConnectionConfig {
-            executable: "/usr/bin/ssh".into(),
-            hostname: "server.example.com".into(),
-            port: 2222,
-            known_hosts_file: "/tmp/luma-known_hosts".into(),
-            username: Some("alice".into()),
-            identity_file: None,
-            proxy_jumps: vec![],
-            startup_command: None,
-            askpass_identity_id: None,
-            askpass_service: None,
-            askpass_prompt: None,
-            fallback_password_identity_id: None,
-            password: None,
-            key_passphrase: None,
-            fallback_password: None,
-            ephemeral_credential: None,
-            ephemeral_identity_file: None,
+    #[test]
+    fn os_username_validation_matches_host_rules() {
+        assert_eq!(
+            validate_connection_username("alice.smith-2".into()).unwrap(),
+            "alice.smith-2"
+        );
+        for invalid in ["", "-root", "alice smith", "alice@example.com"] {
+            assert!(validate_connection_username(invalid.into()).is_err());
         }
     }
 
     #[test]
-    fn builds_agent_password_and_interactive_arguments() {
-        // Agent, password, and explicitly interactive authentication all rely on
-        // OpenSSH's PTY prompts and therefore resolve to the same safe argv.
-        for authentication_type in ["agent", "password", "interactive"] {
-            let arguments = build_arguments(&base_config());
-            assert_eq!(
-                arguments,
-                vec![
-                    "-p",
-                    "2222",
-                    "-l",
-                    "alice",
-                    "-o",
-                    "BatchMode=no",
-                    "-o",
-                    "UserKnownHostsFile=/tmp/luma-known_hosts",
-                    "-o",
-                    "GlobalKnownHostsFile=none",
-                    "-o",
-                    "StrictHostKeyChecking=yes",
-                    "-o",
-                    "UpdateHostKeys=no",
-                    "-o",
-                    "PermitLocalCommand=yes",
-                    "-o",
-                    "LocalCommand=echo __LUMA_SSH_AUTHENTICATED__",
-                    "server.example.com"
-                ],
-                "unexpected arguments for {authentication_type} authentication"
-            );
-            assert!(!arguments.iter().any(|argument| argument == "-tt"));
-        }
-    }
-
-    #[test]
-    fn key_identity_with_password_falls_back_after_public_key() {
-        let mut config = base_config();
-        config.identity_file = Some("C:/keys/id_rsa".into());
-        config.askpass_identity_id = Some("passphrase-entry".into());
-        config.askpass_service = Some("luma.ssh.key-passphrase".into());
-        config.askpass_prompt = Some("passphrase".into());
-        config.fallback_password_identity_id = Some("identity-password".into());
-
-        let arguments = build_arguments(&config);
-        assert!(arguments
-            .iter()
-            .any(|argument| argument == "PreferredAuthentications=publickey,password"));
-        let environment = askpass_environment(&config).unwrap();
-        assert_eq!(
-            environment
-                .get("LUMA_ASKPASS_PASSWORD_ID")
-                .map(String::as_str),
-            Some("identity-password")
-        );
-    }
-
-    #[test]
-    fn builds_key_proxy_jump_and_startup_command_arguments() {
-        let mut config = base_config();
-        config.identity_file = Some("/home/alice/.ssh/id_ed25519".into());
-        config.proxy_jumps = vec![
-            ProxyTarget {
-                hostname: "edge.example.com".into(),
-                port: 22,
-                username: Some("jump".into()),
-            },
-            ProxyTarget {
-                hostname: "2001:db8::1".into(),
-                port: 2200,
-                username: None,
-            },
-        ];
-        config.startup_command = Some("cd /srv && exec bash -l".into());
-
-        assert_eq!(
-            build_arguments(&config),
-            vec![
-                "-p",
-                "2222",
-                "-l",
-                "alice",
-                "-i",
-                "/home/alice/.ssh/id_ed25519",
-                "-o",
-                "IdentitiesOnly=yes",
-                "-o",
-                "BatchMode=no",
-                "-o",
-                "UserKnownHostsFile=/tmp/luma-known_hosts",
-                "-o",
-                "GlobalKnownHostsFile=none",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "UpdateHostKeys=no",
-                "-J",
-                "jump@edge.example.com:22,[2001:db8::1]:2200",
-                "-o",
-                "PermitLocalCommand=yes",
-                "-o",
-                "LocalCommand=echo __LUMA_SSH_AUTHENTICATED__",
-                "-t",
-                "server.example.com",
-                "cd /srv && exec bash -l"
-            ]
-        );
-    }
-
-    #[test]
-    fn builds_strict_host_key_probe_arguments_with_proxy_jump_and_user_config_enabled() {
-        let mut config = base_config();
-        config.hostname = "meow-meow-meow".into();
-        config.proxy_jumps = vec![ProxyTarget {
-            hostname: "relay.example.com".into(),
-            port: 2200,
-            username: Some("jump".into()),
-        }];
-
-        let arguments =
-            build_host_key_probe_arguments(&config, Path::new("/tmp/luma-probe-known_hosts"), 10);
-        assert_eq!(
-            arguments,
-            vec![
-                "-T",
-                "-p",
-                "2222",
-                "-l",
-                "alice",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "UserKnownHostsFile=/tmp/luma-probe-known_hosts",
-                "-o",
-                "GlobalKnownHostsFile=none",
-                "-o",
-                "StrictHostKeyChecking=accept-new",
-                "-o",
-                "UpdateHostKeys=no",
-                "-o",
-                "ConnectTimeout=10",
-                "-o",
-                "ConnectionAttempts=1",
-                "-o",
-                "ClearAllForwardings=yes",
-                "-o",
-                "RemoteCommand=none",
-                "-o",
-                "ControlMaster=no",
-                "-o",
-                "ControlPath=none",
-                "-J",
-                "jump@relay.example.com:2200",
-                "meow-meow-meow",
-                "exit"
-            ]
-        );
-        assert!(!arguments.iter().any(|argument| argument == "-F"));
-    }
-
-    #[test]
-    fn builds_sftp_subsystem_arguments_without_pty_or_startup_command() {
-        let mut config = base_config();
-        config.startup_command = Some("must-not-run".into());
-        let arguments = build_sftp_arguments(&config);
-
-        assert_eq!(
-            arguments,
-            vec![
-                "-p",
-                "2222",
-                "-l",
-                "alice",
-                "-o",
-                "BatchMode=no",
-                "-o",
-                "UserKnownHostsFile=/tmp/luma-known_hosts",
-                "-o",
-                "GlobalKnownHostsFile=none",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "UpdateHostKeys=no",
-                "-s",
-                "server.example.com",
-                "sftp"
-            ]
-        );
-        assert!(!arguments.iter().any(|argument| argument == "-t"));
-        assert!(!arguments.iter().any(|argument| argument == "must-not-run"));
-    }
-
-    #[test]
-    fn classifies_common_ssh_failures() {
-        let cases = [
-            (
-                "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!",
-                "host-key-changed",
-            ),
-            ("Host key verification failed.", "host-key-rejected"),
-            (
-                "debug2: bad passphrase given, try again...\nPermission denied (publickey).",
-                "key-passphrase-invalid",
-            ),
-            ("Permission denied (publickey,password).", "auth-failed"),
-            (
-                "ssh: Could not resolve hostname missing: Name or service not known",
-                "dns-failed",
-            ),
-            (
-                "connect to host x port 22: Connection refused",
-                "host-unreachable",
-            ),
-            (
-                "ssh: connect to host x port 22: Connection timed out",
-                "timeout",
-            ),
-            (
-                "client_loop: send disconnect: Broken pipe",
-                "connection-lost",
-            ),
-        ];
-        for (output, expected) in cases {
-            assert_eq!(classify_error_output(output).unwrap().0, expected);
-        }
-        assert!(classify_error_output("unrecognized failure").is_none());
-    }
-
-    #[test]
-    fn classifies_openssh_exit_by_connection_phase() {
-        assert_eq!(classify_openssh_exit(Some(0), "", true), (None, None));
-        assert_eq!(classify_openssh_exit(None, "", true), (None, None));
-        assert_eq!(
-            classify_openssh_exit(Some(255), "", true).0.as_deref(),
-            Some("connection-lost")
-        );
-        assert_eq!(
-            classify_openssh_exit(Some(255), "", false).0.as_deref(),
-            Some("ssh-error")
-        );
-        assert_eq!(
-            classify_openssh_exit(Some(1), "", true).0.as_deref(),
-            Some("ssh-error")
-        );
-        assert_eq!(
-            classify_openssh_exit(Some(255), "Permission denied", false)
-                .0
-                .as_deref(),
-            Some("auth-failed")
-        );
-    }
-
-    #[test]
-    fn trait_wraps_existing_pty_session_operations() {
-        fn assert_engine<T: SshEngine>() {}
-        assert_engine::<OpenSshEngine<'_>>();
-    }
-
-    #[test]
-    fn authentication_observer_handles_split_local_command_marker() {
-        let mut observer = AuthenticationObserver::default();
-        assert!(!observer.observe(b"__LUMA_SSH_AUTH"));
-        assert!(observer.observe(b"ENTICATED__\r\n"));
-    }
-
-    #[test]
-    fn remote_os_probe_reuses_keys_but_disables_interactive_authentication() {
-        let mut config = base_config();
-        config.identity_file = Some("C:/keys/id_ed25519".into());
-        config.fallback_password_identity_id = Some("password-entry".into());
-
-        let arguments = build_remote_os_probe_arguments(&config);
-        for required in [
-            "-T",
-            "IdentitiesOnly=yes",
-            "NumberOfPasswordPrompts=0",
-            "PasswordAuthentication=no",
-            "KbdInteractiveAuthentication=no",
-            "ConnectTimeout=5",
-        ] {
-            assert!(
-                arguments.iter().any(|argument| argument == required),
-                "missing {required}: {arguments:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn identity_resolution_preserves_absolute_paths() {
-        let path = std::env::current_exe().unwrap();
-        assert_eq!(resolve_identity_path(path.to_string_lossy().as_ref()), path);
-        assert!(
-            std::path::Path::new(&resolve_identity_path("relative-key"))
-                .ends_with(".ssh/relative-key")
-                || std::path::Path::new(&resolve_identity_path("relative-key"))
-                    .ends_with(".ssh\\relative-key")
-        );
-    }
-
-    #[test]
-    fn normalizes_private_keys_for_openssh() {
+    fn normalizes_private_keys() {
         assert_eq!(
             normalize_private_key("\u{feff}-----BEGIN KEY-----\r\ndata\r\n-----END KEY-----"),
             "-----BEGIN KEY-----\ndata\n-----END KEY-----\n"
-        );
-        assert_eq!(
-            normalize_private_key("-----BEGIN KEY-----\\ndata\\n-----END KEY-----"),
-            "-----BEGIN KEY-----\ndata\n-----END KEY-----\n"
-        );
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn imported_encrypted_rsa_round_trips_through_connection_config() {
-        use crate::storage::hosts::HostInput;
-        use crate::storage::key_references::KeyReferenceInput;
-
-        struct TestFiles(PathBuf);
-        impl Drop for TestFiles {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-
-        let ssh = detect().path.expect("Windows OpenSSH must be available");
-        let ssh_keygen = PathBuf::from(ssh).with_file_name("ssh-keygen.exe");
-        assert!(
-            ssh_keygen.is_file(),
-            "ssh-keygen.exe must accompany ssh.exe"
-        );
-
-        let files = TestFiles(std::env::temp_dir().join(format!(
-            "luma-imported-key-test-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        )));
-        std::fs::create_dir_all(&files.0).unwrap();
-        let source_key = files.0.join("id_rsa");
-        let passphrase = "synthetic Luma key passphrase !42";
-        let generated = Command::new(&ssh_keygen)
-            .args(["-q", "-t", "rsa", "-b", "2048", "-N", passphrase, "-f"])
-            .arg(&source_key)
-            .output()
-            .unwrap();
-        assert!(
-            generated.status.success(),
-            "ssh-keygen failed: {}",
-            String::from_utf8_lossy(&generated.stderr)
-        );
-
-        let source_private_key = std::fs::read_to_string(&source_key).unwrap();
-        let imported_private_key = source_private_key.replace('\n', "\r\n");
-        let public_key = std::fs::read_to_string(source_key.with_extension("pub")).unwrap();
-        let expected_public_fields = public_key
-            .split_whitespace()
-            .take(2)
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-
-        let pool = crate::storage::init_in_memory().await.unwrap();
-        let vault_state = VaultState::default();
-        vault::setup(&pool, &vault_state, "synthetic vault password", false)
-            .await
-            .unwrap();
-        let key = key_references::create_metadata(
-            &pool,
-            KeyReferenceInput {
-                name: "Imported id_rsa".into(),
-                public_key: Some(public_key),
-                storage_mode: "encrypted-vault".into(),
-                local_path: None,
-                fingerprint: None,
-                certificate: None,
-                private_key: None,
-                passphrase: None,
-            },
-        )
-        .await
-        .unwrap();
-        vault::store(
-            &pool,
-            &vault_state,
-            "key",
-            &key.id,
-            "private-key",
-            &imported_private_key,
-        )
-        .await
-        .unwrap();
-        vault::store(
-            &pool,
-            &vault_state,
-            "key",
-            &key.id,
-            "passphrase",
-            passphrase,
-        )
-        .await
-        .unwrap();
-        let host = hosts::create(
-            &pool,
-            HostInput {
-                name: "Local imported-key test".into(),
-                hostname: "127.0.0.1".into(),
-                port: 22,
-                username: Some("luma-test".into()),
-                group_id: None,
-                authentication_type: "key".into(),
-                key_id: Some(key.id.clone()),
-                identity_id: None,
-                proxy_jump_host_id: None,
-                startup_command: None,
-                working_directory: None,
-                environment: None,
-                tags: vec![],
-                favorite: false,
-                tab_color: None,
-            },
-        )
-        .await
-        .unwrap();
-
-        let (config, _) = connection_config(&pool, &vault_state, &host.id)
-            .await
-            .unwrap();
-        let ephemeral_path = PathBuf::from(config.identity_file.as_deref().unwrap());
-        assert!(ephemeral_path.is_file());
-        assert_ne!(ephemeral_path, source_key);
-        assert_eq!(
-            std::fs::read_to_string(&ephemeral_path).unwrap(),
-            normalize_private_key(&source_private_key)
-        );
-
-        let extracted = Command::new(&ssh_keygen)
-            .args(["-y", "-P", passphrase, "-f"])
-            .arg(&ephemeral_path)
-            .output()
-            .unwrap();
-        assert!(
-            extracted.status.success(),
-            "vault key could not be decrypted after round-trip: {}",
-            String::from_utf8_lossy(&extracted.stderr)
-        );
-        let extracted_text = String::from_utf8(extracted.stdout).unwrap();
-        assert_eq!(
-            extracted_text
-                .split_whitespace()
-                .take(2)
-                .collect::<Vec<_>>(),
-            expected_public_fields
-        );
-
-        let service = config.askpass_service.clone().unwrap();
-        let account = config.askpass_identity_id.clone().unwrap();
-        assert_eq!(config.askpass_prompt.as_deref(), Some("passphrase"));
-        assert_eq!(
-            keyring::Entry::new(&service, &account)
-                .unwrap()
-                .get_password()
-                .unwrap(),
-            passphrase
-        );
-        let environment = askpass_environment(&config).unwrap();
-        assert_eq!(environment.get("SSH_ASKPASS_REQUIRE").unwrap(), "force");
-        assert_eq!(environment.get("LUMA_ASKPASS_ID").unwrap(), &account);
-        assert_eq!(environment.get("LUMA_ASKPASS_SERVICE").unwrap(), &service);
-        assert_eq!(
-            environment.get("LUMA_ASKPASS_PROMPT").unwrap(),
-            "passphrase"
-        );
-
-        drop(config);
-        assert!(!ephemeral_path.exists());
-        assert!(
-            keyring::Entry::new(&service, &account)
-                .unwrap()
-                .get_password()
-                .is_err(),
-            "ephemeral passphrase credential was not deleted"
         );
     }
 }

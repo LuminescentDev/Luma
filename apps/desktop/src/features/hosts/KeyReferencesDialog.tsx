@@ -107,14 +107,14 @@ export function KeyReferencesDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Key references"
-      description="Logical SSH keys. Luma never stores private key contents — only a name and path or agent reference."
+      description="Logical SSH keys. Plain-text private key contents are never stored — only a name and path, or a key sealed in the encrypted vault."
       size="lg"
     >
       <div className="space-y-3">
         {(keys ?? []).length === 0 && !draft && (
           <p className="text-sm text-muted">
             No key references yet. Add one to point a host at a private key on
-            disk or your SSH agent.
+            disk.
           </p>
         )}
 
@@ -128,9 +128,7 @@ export function KeyReferencesDialog({
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium">{key.name}</p>
                 <p className="truncate font-mono text-xs text-muted">
-                  {key.storageMode === "ssh-agent"
-                    ? "SSH agent"
-                    : (key.localPath ?? "(no path)")}
+                  {key.localPath ?? "(no path)"}
                 </p>
               </div>
             </div>
@@ -171,7 +169,6 @@ export function KeyReferencesDialog({
               onChange={(v) => setDraft({ ...draft, storageMode: v as KeyStorageMode })}
             >
               <option value="local-path">Local file path</option>
-              <option value="ssh-agent">SSH agent</option>
             </SelectField>
             {draft.storageMode === "local-path" && (
               <TextField

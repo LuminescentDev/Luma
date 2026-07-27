@@ -33,12 +33,12 @@ const features: Feature[] = [
     icon: Server,
     title: 'SSH & host management',
     summary:
-      'Organise every server and connect through embedded SSH or your system OpenSSH client.',
+      'Organise every server and connect through one embedded SSH engine on desktop and mobile.',
     points: [
       'Saved hosts, groups, tags, and search',
-      'Embedded russh or system OpenSSH',
+      'Embedded russh across every platform',
       'Encrypted reusable identities',
-      'ProxyJump, agent forwarding, keepalive',
+      'ProxyJump, keepalive, startup commands',
       'Explicit unknown-host confirmation',
       'Import from OpenSSH and Termius',
     ],

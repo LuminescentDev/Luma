@@ -12,7 +12,6 @@ function callbacks(onExit: (exit: SessionExit) => void = () => {}) {
     onSshAuthenticated: () => {},
     onSshPrompt: () => {},
     onSshProgress: () => {},
-    onSshIssue: () => {},
     onRemoteOs: () => {},
   };
 }
@@ -29,7 +28,7 @@ beforeEach(() => {
       features: {
         localTerminal: false,
         serial: false,
-        systemSsh: false,
+        sshConfigImport: false,
         sftp: true,
         portForwarding: false,
         updater: false,

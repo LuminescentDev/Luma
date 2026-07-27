@@ -155,7 +155,6 @@ pub fn run() {
         commands::identity_create,
         commands::identity_update,
         commands::identity_delete,
-        commands::ssh_detect,
         commands::quick_connect_prepare,
         commands::quick_connect_save,
         commands::ssh_ping,
@@ -360,9 +359,8 @@ pub fn run() {
             app_handle.state::<EmbeddedSshManager>().kill_all();
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
-                let pty = app_handle.state::<PtyManager>();
-                app_handle.state::<TunnelManager>().kill_all(&pty);
-                pty.kill_all();
+                app_handle.state::<TunnelManager>().kill_all();
+                app_handle.state::<PtyManager>().kill_all();
             }
         }
     });

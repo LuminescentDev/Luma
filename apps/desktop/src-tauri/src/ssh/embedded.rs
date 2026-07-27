@@ -6,10 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use russh::client;
-use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::PublicKey;
 use russh::{ChannelMsg, Pty};
 use tokio::sync::{mpsc, oneshot};
 
+use super::embedded_auth::{
+    authenticate_with_prompts, authenticate_without_prompts, AuthAbort, AuthDriver,
+};
 use super::{
     DataCallback, ExitCallback, RemoteOsCallback, SshConnectionConfig, SshExit,
     SSH_AUTHENTICATED_MARKER,
@@ -18,58 +21,14 @@ use crate::errors::{LumaError, Result};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::session_logging::{SessionLogManager, SessionLogMode, SessionLogStatus};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SshBackend {
-    Embedded,
-    OpenSsh,
-}
-
-pub(crate) fn select_backend(config: &SshConnectionConfig) -> Result<SshBackend> {
-    select_backend_for(config, cfg!(any(target_os = "android", target_os = "ios")))
-}
-
-fn select_backend_for(config: &SshConnectionConfig, mobile: bool) -> Result<SshBackend> {
-    if mobile {
-        if !config.proxy_jumps.is_empty() {
-            return Err(LumaError::CapabilityUnavailable {
-                feature: "systemSsh",
-                message: "ProxyJump requires system OpenSSH, which is unavailable on mobile".into(),
-            });
-        }
-        if config.username.is_none() {
-            return Err(LumaError::InvalidInput("SSH username is required".into()));
-        }
-        if config.identity_file.is_some() || config.password.is_some() {
-            return Ok(SshBackend::Embedded);
-        }
-        return Err(LumaError::CapabilityUnavailable {
-            feature: "systemSsh",
-            message: "SSH agent and interactive authentication require system OpenSSH, which is unavailable on mobile".into(),
-        });
-    }
-
-    if !config.proxy_jumps.is_empty() || config.username.is_none() {
-        return Ok(SshBackend::OpenSsh);
-    }
-    if config.identity_file.is_some()
-        || config.password.is_some()
-        || (config.askpass_identity_id.is_some()
-            && config.askpass_prompt.as_deref() == Some("password"))
-    {
-        return Ok(SshBackend::Embedded);
-    }
-    // Agent, hardware-token, and fully interactive authentication still need
-    // the system client because russh cannot access the user's SSH agent here.
-    Ok(SshBackend::OpenSsh)
-}
-
-enum PingFailure {
+pub(super) enum PingFailure {
     Timeout,
+    Authenticating,
     ConnectionLost(String),
     SshError(String),
 }
 
-enum Control {
+pub(super) enum Control {
     Write(Vec<u8>),
     Resize(u16, u16),
     Ping(oneshot::Sender<std::result::Result<u64, PingFailure>>),
@@ -83,14 +42,82 @@ pub struct EmbeddedSshManager {
     logs: SessionLogManager,
 }
 
+pub(super) type SharedDataCallback = Arc<Mutex<DataCallback>>;
+
 #[derive(Clone)]
 pub(crate) struct Client {
     trusted_keys: Arc<Vec<PublicKey>>,
     key_mismatch: Arc<AtomicBool>,
+    on_data: Option<SharedDataCallback>,
+    forwarded_tcpip: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+}
+
+pub(crate) struct ForwardedTcpip {
+    pub channel: russh::Channel<client::Msg>,
+    pub reply: client::ChannelOpenHandle,
+}
+
+pub(crate) struct AuthenticatedConnection {
+    handle: Arc<client::Handle<Client>>,
+    _predecessors: Vec<client::Handle<Client>>,
+    _route: Vec<SshConnectionConfig>,
+}
+
+impl AuthenticatedConnection {
+    fn new(
+        handle: client::Handle<Client>,
+        predecessors: Vec<client::Handle<Client>>,
+        route: Vec<SshConnectionConfig>,
+    ) -> Self {
+        Self {
+            handle: Arc::new(handle),
+            _predecessors: predecessors,
+            _route: route,
+        }
+    }
+
+    pub(crate) fn handle(&self) -> &Arc<client::Handle<Client>> {
+        &self.handle
+    }
+}
+
+impl std::ops::Deref for AuthenticatedConnection {
+    type Target = client::Handle<Client>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.handle
+    }
 }
 
 impl client::Handler for Client {
     type Error = russh::Error;
+
+    async fn auth_banner(
+        &mut self,
+        banner: &str,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        if let Some(on_data) = &self.on_data {
+            (on_data.lock().unwrap())(banner.as_bytes());
+        }
+        Ok(())
+    }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        _connected_address: &str,
+        _connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        if let Some(sender) = &self.forwarded_tcpip {
+            let _ = sender.send(ForwardedTcpip { channel, reply });
+        }
+        Ok(())
+    }
 
     async fn check_server_key(
         &mut self,
@@ -114,64 +141,27 @@ impl EmbeddedSshManager {
         config: SshConnectionConfig,
         cols: u16,
         rows: u16,
-        mut on_data: DataCallback,
+        on_data: DataCallback,
         on_exit: ExitCallback,
         on_remote_os: RemoteOsCallback,
     ) -> Result<String> {
-        let handle = Arc::new(authenticated_handle(&config).await?);
-
-        let remote_os = detect_remote_os(&handle).await;
-        let mut channel =
-            tokio::time::timeout(Duration::from_secs(15), handle.channel_open_session())
-                .await
-                .map_err(|_| LumaError::SshConnection {
-                    category: "timeout",
-                    message: "SSH channel open timed out".into(),
-                })?
-                .map_err(connect_error)?;
-        tokio::time::timeout(
-            Duration::from_secs(15),
-            channel.request_pty(
-                true,
-                "xterm-256color",
-                u32::from(cols),
-                u32::from(rows),
-                0,
-                0,
-                &[(Pty::ECHO, 1)],
-            ),
-        )
-        .await
-        .map_err(|_| LumaError::SshConnection {
-            category: "timeout",
-            message: "SSH PTY request timed out".into(),
-        })?
-        .map_err(connect_error)?;
-        if let Some(command) = config.startup_command.as_deref() {
-            tokio::time::timeout(
-                Duration::from_secs(15),
-                channel.exec(true, command.as_bytes()),
-            )
-            .await
-            .map_err(|_| LumaError::SshConnection {
-                category: "timeout",
-                message: "SSH startup command request timed out".into(),
-            })?
-            .map_err(connect_error)?;
-        } else {
-            tokio::time::timeout(Duration::from_secs(15), channel.request_shell(true))
-                .await
-                .map_err(|_| LumaError::SshConnection {
-                    category: "timeout",
-                    message: "SSH shell request timed out".into(),
-                })?
-                .map_err(connect_error)?;
+        if config.username.is_none() {
+            return Err(LumaError::InvalidInput("SSH username is required".into()));
         }
+        let on_data = Arc::new(Mutex::new(on_data));
+        let route = route_configs(&config);
+        let first = route
+            .first()
+            .ok_or_else(|| LumaError::InvalidInput("SSH route is empty".into()))?;
+        let handle = connect_transport(
+            first,
+            EmbeddedSshTimeouts::default(),
+            Some(Arc::clone(&on_data)),
+            None,
+        )
+        .await?;
 
-        // Input is already serialized and coalesced by the frontend. An
-        // unbounded control lane makes command submission synchronous and
-        // avoids holding a Tauri invoke open while a busy SSH transport drains.
-        let (control_tx, mut control_rx) = mpsc::unbounded_channel();
+        let (control_tx, control_rx) = mpsc::unbounded_channel();
         let id = uuid::Uuid::new_v4().to_string();
         self.sessions.lock().unwrap().insert(id.clone(), control_tx);
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -180,23 +170,110 @@ impl EmbeddedSshManager {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let logs = self.logs.clone();
         let task_id = id.clone();
-        let _identity = config.ephemeral_identity_file.clone();
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        let _credential = config.ephemeral_credential.clone();
-        // System OpenSSH reports this marker through LocalCommand once auth is
-        // complete. Embedded SSH has already authenticated by this point, so
-        // emit the same internal signal before terminal output starts. The
-        // frontend consumes it behind the connection overlay, marks the
-        // session connected, and can then replace the host icon with the
-        // distro metadata emitted immediately below.
-        notify_frontend_authenticated(&mut on_data);
-        on_remote_os(remote_os);
 
         tauri::async_runtime::spawn(async move {
-            let handle = handle;
-            let _identity = _identity;
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            let _credential = _credential;
+            let mut driver = AuthDriver::new(control_rx, cols, rows);
+            let auth_result = async {
+                let mut handle = handle;
+                let mut predecessors = Vec::with_capacity(route.len().saturating_sub(1));
+                for (index, node) in route.iter().enumerate() {
+                    authenticate_with_prompts(
+                        &mut handle,
+                        node,
+                        &mut driver,
+                        &on_data,
+                        EmbeddedSshTimeouts::default(),
+                    )
+                    .await?;
+                    if let Some(next) = route.get(index + 1) {
+                        let next_handle = connect_through_proxy(
+                            &handle,
+                            next,
+                            EmbeddedSshTimeouts::default(),
+                            Some(Arc::clone(&on_data)),
+                            None,
+                        )
+                        .await
+                        .map_err(AuthAbort::Error)?;
+                        predecessors.push(handle);
+                        handle = next_handle;
+                    }
+                }
+                Ok::<_, AuthAbort>(AuthenticatedConnection::new(handle, predecessors, route))
+            }
+            .await;
+            let (mut control_rx, (cols, rows)) = driver.into_parts();
+
+            let connection = match auth_result {
+                Ok(connection) => connection,
+                Err(AuthAbort::Disconnect) => {
+                    finish_session(
+                        &sessions,
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                        &logs,
+                        &task_id,
+                        on_exit,
+                        SshExit {
+                            code: None,
+                            error_category: None,
+                            error_message: None,
+                        },
+                    );
+                    return;
+                }
+                Err(AuthAbort::Error(error)) => {
+                    let category = error.category().to_string();
+                    let message = error.to_string();
+                    finish_session(
+                        &sessions,
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                        &logs,
+                        &task_id,
+                        on_exit,
+                        SshExit {
+                            code: None,
+                            error_category: Some(category),
+                            error_message: Some(message),
+                        },
+                    );
+                    return;
+                }
+            };
+
+            tracing::debug!(host = %config.hostname, "embedded SSH: authentication succeeded");
+            {
+                let mut callback = on_data.lock().unwrap();
+                notify_frontend_authenticated(&mut callback);
+            }
+
+            let handle = Arc::clone(connection.handle());
+            let _connection = connection;
+            let mut channel = match open_shell_channel(&handle, &config, cols, rows).await {
+                Ok(channel) => channel,
+                Err(error) => {
+                    let category = error.category().to_string();
+                    let message = error.to_string();
+                    finish_session(
+                        &sessions,
+                        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                        &logs,
+                        &task_id,
+                        on_exit,
+                        SshExit {
+                            code: None,
+                            error_category: Some(category),
+                            error_message: Some(message),
+                        },
+                    );
+                    return;
+                }
+            };
+
+            let remote_os_handle = Arc::clone(&handle);
+            tauri::async_runtime::spawn(async move {
+                on_remote_os(detect_remote_os(&remote_os_handle).await);
+            });
+
             let mut exit_code = None;
             let mut failure = None;
             let mut channel_disappeared = false;
@@ -248,7 +325,7 @@ impl EmbeddedSshManager {
                         Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
                             #[cfg(not(any(target_os = "android", target_os = "ios")))]
                             logs.write(&task_id, &data);
-                            on_data(&data);
+                            (on_data.lock().unwrap())(&data);
                         }
                         Some(ChannelMsg::ExitStatus { exit_status }) => exit_code = Some(exit_status),
                         Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => break,
@@ -260,9 +337,6 @@ impl EmbeddedSshManager {
                     }
                 }
             }
-            sessions.lock().unwrap().remove(&task_id);
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            logs.unregister(&task_id);
             let (error_category, error_message) = if let Some(message) = failure {
                 (Some("connection-lost".into()), Some(message))
             } else if channel_disappeared && handle.is_closed() {
@@ -278,11 +352,18 @@ impl EmbeddedSshManager {
             } else {
                 (None, None)
             };
-            on_exit(SshExit {
-                code: exit_code,
-                error_category,
-                error_message,
-            });
+            finish_session(
+                &sessions,
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                &logs,
+                &task_id,
+                on_exit,
+                SshExit {
+                    code: exit_code,
+                    error_category,
+                    error_message,
+                },
+            );
         });
         Ok(id)
     }
@@ -353,6 +434,10 @@ impl EmbeddedSshManager {
                     category: "timeout",
                     message: "SSH ping timed out".into(),
                 },
+                PingFailure::Authenticating => LumaError::SshConnection {
+                    category: "ssh-error",
+                    message: "SSH session is still authenticating".into(),
+                },
                 PingFailure::ConnectionLost(message) => LumaError::SshConnection {
                     category: "connection-lost",
                     message: format!("SSH ping failed because the transport closed: {message}"),
@@ -394,60 +479,78 @@ impl EmbeddedSshManager {
     }
 }
 
-fn credential_secret(config: &SshConnectionConfig, prompt: &str) -> Result<Option<String>> {
-    let direct = match prompt {
-        "password" => config.password.as_deref(),
-        "passphrase" => config.key_passphrase.as_deref(),
-        _ => None,
-    };
-    if let Some(secret) = direct {
-        return Ok(Some(secret.to_string()));
-    }
-    if config.askpass_prompt.as_deref() != Some(prompt) {
-        return Ok(None);
-    }
+fn finish_session(
+    sessions: &Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Control>>>>,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))] logs: &SessionLogManager,
+    session_id: &str,
+    on_exit: ExitCallback,
+    exit: SshExit,
+) {
+    sessions.lock().unwrap().remove(session_id);
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let (Some(service), Some(account)) = (&config.askpass_service, &config.askpass_identity_id)
-        else {
-            return Ok(None);
-        };
-        keyring::Entry::new(service, account)
-            .and_then(|entry| entry.get_password())
-            .map(Some)
-            .map_err(|error| {
-                LumaError::KeyUnavailable(format!("credential store unavailable: {error}"))
-            })
-    }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    Ok(None)
+    logs.unregister(session_id);
+    on_exit(exit);
 }
 
-fn fallback_password_secret(config: &SshConnectionConfig) -> Result<Option<String>> {
-    if let Some(secret) = config.fallback_password.as_deref() {
-        return Ok(Some(secret.to_string()));
+async fn open_shell_channel(
+    handle: &client::Handle<Client>,
+    config: &SshConnectionConfig,
+    cols: u16,
+    rows: u16,
+) -> Result<russh::Channel<client::Msg>> {
+    let channel = tokio::time::timeout(Duration::from_secs(15), handle.channel_open_session())
+        .await
+        .map_err(|_| LumaError::SshConnection {
+            category: "timeout",
+            message: "SSH channel open timed out".into(),
+        })?
+        .map_err(connect_error)?;
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        channel.request_pty(
+            true,
+            "xterm-256color",
+            u32::from(cols),
+            u32::from(rows),
+            0,
+            0,
+            &[(Pty::ECHO, 1)],
+        ),
+    )
+    .await
+    .map_err(|_| LumaError::SshConnection {
+        category: "timeout",
+        message: "SSH PTY request timed out".into(),
+    })?
+    .map_err(connect_error)?;
+    if let Some(command) = config.startup_command.as_deref() {
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            channel.exec(true, command.as_bytes()),
+        )
+        .await
+        .map_err(|_| LumaError::SshConnection {
+            category: "timeout",
+            message: "SSH startup command request timed out".into(),
+        })?
+        .map_err(connect_error)?;
+    } else {
+        tokio::time::timeout(Duration::from_secs(15), channel.request_shell(true))
+            .await
+            .map_err(|_| LumaError::SshConnection {
+                category: "timeout",
+                message: "SSH shell request timed out".into(),
+            })?
+            .map_err(connect_error)?;
     }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let Some(account) = &config.fallback_password_identity_id else {
-            return Ok(None);
-        };
-        keyring::Entry::new("luma.ssh.identity", account)
-            .and_then(|entry| entry.get_password())
-            .map(Some)
-            .map_err(|error| {
-                LumaError::KeyUnavailable(format!("credential store unavailable: {error}"))
-            })
-    }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    Ok(None)
+    Ok(channel)
 }
 
 #[derive(Clone, Copy)]
-struct EmbeddedSshTimeouts {
-    connect: Duration,
-    signature_negotiation: Duration,
-    authentication: Duration,
+pub(super) struct EmbeddedSshTimeouts {
+    pub(super) connect: Duration,
+    pub(super) signature_negotiation: Duration,
+    pub(super) authentication: Duration,
 }
 
 impl Default for EmbeddedSshTimeouts {
@@ -460,168 +563,227 @@ impl Default for EmbeddedSshTimeouts {
     }
 }
 
-pub(crate) async fn authenticated_handle(
-    config: &SshConnectionConfig,
-) -> Result<client::Handle<Client>> {
-    authenticated_handle_with_timeouts(config, EmbeddedSshTimeouts::default()).await
+fn route_configs(config: &SshConnectionConfig) -> Vec<SshConnectionConfig> {
+    let mut route = config.proxy_jumps.to_vec();
+    let mut target = config.clone();
+    target.proxy_jumps.clear();
+    route.push(target);
+    route
 }
 
-async fn authenticated_handle_with_timeouts(
+pub(super) async fn connect_tcp_stream(
     config: &SshConnectionConfig,
-    timeouts: EmbeddedSshTimeouts,
-) -> Result<client::Handle<Client>> {
-    tracing::debug!(host = %config.hostname, port = config.port, "embedded SSH: opening transport");
-    let username = config
-        .username
-        .clone()
-        .ok_or_else(|| LumaError::InvalidInput("SSH username is required".into()))?;
-    let trusted_keys = Arc::new(load_trusted_keys(config)?);
-    if trusted_keys.is_empty() {
-        return Err(LumaError::SshConnection {
-            category: "host-key-rejected",
-            message: "No trusted host key was found for this server".into(),
-        });
-    }
-    let key_mismatch = Arc::new(AtomicBool::new(false));
+    timeout: Duration,
+) -> Result<tokio::net::TcpStream> {
+    let target = display_target(config);
     let addresses = tokio::time::timeout(
-        timeouts.connect,
+        timeout,
         tokio::net::lookup_host((config.hostname.as_str(), config.port)),
     )
     .await
     .map_err(|_| LumaError::SshConnection {
         category: "timeout",
-        message: "Embedded SSH DNS resolution timed out".into(),
+        message: format!("SSH DNS resolution timed out for {target}"),
     })?
     .map_err(|error| LumaError::SshConnection {
         category: "dns-failed",
-        message: format!("Embedded SSH hostname resolution failed: {error}"),
+        message: format!("SSH hostname resolution failed for {target}: {error}"),
     })?
     .collect::<Vec<_>>();
     if addresses.is_empty() {
         return Err(LumaError::SshConnection {
             category: "dns-failed",
-            message: "Embedded SSH hostname resolution returned no addresses".into(),
+            message: format!("SSH hostname resolution returned no addresses for {target}"),
         });
     }
-    let socket = tokio::time::timeout(
-        timeouts.connect,
-        tokio::net::TcpStream::connect(&addresses[..]),
+    tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&addresses[..]))
+        .await
+        .map_err(|_| LumaError::SshConnection {
+            category: "timeout",
+            message: format!("SSH TCP connection timed out for {target}"),
+        })?
+        .map_err(|error| {
+            connect_io_error(&format!("SSH TCP connection failed for {target}"), error)
+        })
+}
+
+pub(super) async fn open_proxy_stream<H>(
+    handle: &client::Handle<H>,
+    next: &SshConnectionConfig,
+    timeout: Duration,
+) -> Result<russh::ChannelStream<client::Msg>>
+where
+    H: client::Handler<Error = russh::Error>,
+{
+    let target = display_target(next);
+    let channel = tokio::time::timeout(
+        timeout,
+        handle.channel_open_direct_tcpip(
+            next.hostname.clone(),
+            u32::from(next.port),
+            "127.0.0.1",
+            0,
+        ),
     )
     .await
     .map_err(|_| LumaError::SshConnection {
         category: "timeout",
-        message: "Embedded SSH TCP connection timed out".into(),
+        message: format!("SSH proxy channel open timed out for {target}"),
     })?
-    .map_err(|error| connect_io_error("Embedded SSH TCP connection failed", error))?;
+    .map_err(|error| LumaError::SshConnection {
+        category: "host-unreachable",
+        message: format!("Could not open an SSH proxy channel to {target}: {error}"),
+    })?;
+    Ok(channel.into_stream())
+}
+
+fn display_target(config: &SshConnectionConfig) -> String {
+    match config.username.as_deref() {
+        Some(username) => format!("{username}@{}", config.hostname),
+        None => config.hostname.clone(),
+    }
+}
+
+async fn connect_stream_transport<S>(
+    config: &SshConnectionConfig,
+    timeouts: EmbeddedSshTimeouts,
+    stream: S,
+    on_data: Option<SharedDataCallback>,
+    forwarded_tcpip: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+) -> Result<client::Handle<Client>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let target = display_target(config);
+    let trusted_keys = Arc::new(load_trusted_keys(config)?);
+    if trusted_keys.is_empty() {
+        return Err(LumaError::SshConnection {
+            category: "host-key-rejected",
+            message: format!("No trusted host key was found for {target}"),
+        });
+    }
+    let key_mismatch = Arc::new(AtomicBool::new(false));
     let client_config = Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(30)),
         keepalive_interval: Some(Duration::from_secs(15)),
         keepalive_max: 3,
         ..Default::default()
     });
-    let mut handle = tokio::time::timeout(
+    let handle = tokio::time::timeout(
         timeouts.connect,
         client::connect_stream(
             client_config,
-            socket,
+            stream,
             Client {
                 trusted_keys,
                 key_mismatch: Arc::clone(&key_mismatch),
+                on_data,
+                forwarded_tcpip,
             },
         ),
     )
     .await
     .map_err(|_| LumaError::SshConnection {
         category: "timeout",
-        message: "Embedded SSH protocol handshake timed out".into(),
+        message: format!("SSH protocol handshake timed out for {target}"),
     })?
     .map_err(|error| {
         if key_mismatch.load(Ordering::Acquire) {
             LumaError::SshConnection {
                 category: "host-key-changed",
-                message: "The remote host key no longer matches the trusted key".into(),
+                message: format!(
+                    "The remote host key for {target} no longer matches the trusted key"
+                ),
             }
         } else {
-            connect_error(error)
+            let error = connect_error(error);
+            LumaError::SshConnection {
+                category: error.category(),
+                message: format!("SSH connection to {target} failed: {error}"),
+            }
         }
     })?;
-    tracing::debug!(host = %config.hostname, "embedded SSH: transport established");
-    let authenticated = if let Some(identity_file) = &config.identity_file {
-        let passphrase = credential_secret(config, "passphrase")?;
-        let key = load_secret_key(identity_file, passphrase.as_deref()).map_err(|error| {
-            LumaError::KeyUnavailable(format!("could not load private key: {error}"))
-        })?;
-        tracing::debug!(host = %config.hostname, "embedded SSH: authenticating with private key");
-        let hash = tokio::time::timeout(
-            timeouts.signature_negotiation,
-            handle.best_supported_rsa_hash(),
-        )
-        .await
-        .map_err(|_| LumaError::SshConnection {
-            category: "timeout",
-            message: "SSH signature negotiation timed out".into(),
-        })?
-        .map_err(connect_error)?
-        .flatten();
-        let key_authenticated = tokio::time::timeout(
-            timeouts.authentication,
-            handle.authenticate_publickey(
-                username.clone(),
-                PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-            ),
-        )
-        .await
-        .map_err(|_| LumaError::SshConnection {
-            category: "timeout",
-            message: "SSH key authentication timed out".into(),
-        })?
-        .map_err(connect_error)?
-        .success();
-        if key_authenticated {
-            true
-        } else if let Some(password) = fallback_password_secret(config)? {
-            tracing::debug!(host = %config.hostname, "embedded SSH: public key rejected, trying saved fallback password");
-            tokio::time::timeout(
-                timeouts.authentication,
-                handle.authenticate_password(username, password),
-            )
-            .await
-            .map_err(|_| LumaError::SshConnection {
-                category: "timeout",
-                message: "SSH fallback password authentication timed out".into(),
-            })?
-            .map_err(connect_error)?
-            .success()
-        } else {
-            false
-        }
-    } else {
-        let password =
-            credential_secret(config, "password")?.ok_or_else(|| LumaError::SshConnection {
-                category: "auth-failed",
-                message: "Saved SSH password was unavailable".into(),
-            })?;
-        tracing::debug!(host = %config.hostname, "embedded SSH: authenticating with saved password");
-        tokio::time::timeout(
-            timeouts.authentication,
-            handle.authenticate_password(username, password),
-        )
-        .await
-        .map_err(|_| LumaError::SshConnection {
-            category: "timeout",
-            message: "SSH password authentication timed out".into(),
-        })?
-        .map_err(connect_error)?
-        .success()
-    };
-    if !authenticated {
-        return Err(LumaError::SshConnection {
-            category: "auth-failed",
-            message: "SSH authentication failed".into(),
-        });
-    }
-    tracing::debug!(host = %config.hostname, "embedded SSH: authentication succeeded");
+    tracing::debug!(%target, "embedded SSH: transport established");
     Ok(handle)
+}
+
+async fn connect_transport(
+    config: &SshConnectionConfig,
+    timeouts: EmbeddedSshTimeouts,
+    on_data: Option<SharedDataCallback>,
+    forwarded_tcpip: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+) -> Result<client::Handle<Client>> {
+    let target = display_target(config);
+    tracing::debug!(%target, port = config.port, "embedded SSH: opening transport");
+    let socket = connect_tcp_stream(config, timeouts.connect).await?;
+    connect_stream_transport(config, timeouts, socket, on_data, forwarded_tcpip).await
+}
+
+async fn connect_through_proxy(
+    handle: &client::Handle<Client>,
+    next: &SshConnectionConfig,
+    timeouts: EmbeddedSshTimeouts,
+    on_data: Option<SharedDataCallback>,
+    forwarded_tcpip: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+) -> Result<client::Handle<Client>> {
+    let stream = open_proxy_stream(handle, next, timeouts.connect).await?;
+    connect_stream_transport(next, timeouts, stream, on_data, forwarded_tcpip).await
+}
+
+pub(crate) async fn authenticated_handle(
+    config: &SshConnectionConfig,
+) -> Result<AuthenticatedConnection> {
+    authenticated_handle_with_options(config, EmbeddedSshTimeouts::default(), None).await
+}
+
+pub(crate) async fn authenticated_handle_with_forwarding(
+    config: &SshConnectionConfig,
+    forwarded_tcpip: mpsc::UnboundedSender<ForwardedTcpip>,
+) -> Result<AuthenticatedConnection> {
+    authenticated_handle_with_options(
+        config,
+        EmbeddedSshTimeouts::default(),
+        Some(forwarded_tcpip),
+    )
+    .await
+}
+
+#[cfg(test)]
+async fn authenticated_handle_with_timeouts(
+    config: &SshConnectionConfig,
+    timeouts: EmbeddedSshTimeouts,
+) -> Result<AuthenticatedConnection> {
+    authenticated_handle_with_options(config, timeouts, None).await
+}
+
+async fn authenticated_handle_with_options(
+    config: &SshConnectionConfig,
+    timeouts: EmbeddedSshTimeouts,
+    forwarded_tcpip: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+) -> Result<AuthenticatedConnection> {
+    let route = route_configs(config);
+    let first = route
+        .first()
+        .ok_or_else(|| LumaError::InvalidInput("SSH route is empty".into()))?;
+    let first_forwarding = (route.len() == 1)
+        .then(|| forwarded_tcpip.as_ref().cloned())
+        .flatten();
+    let mut handle = connect_transport(first, timeouts, None, first_forwarding).await?;
+    let mut predecessors = Vec::with_capacity(route.len().saturating_sub(1));
+    for (index, node) in route.iter().enumerate() {
+        authenticate_without_prompts(&mut handle, node, timeouts).await?;
+        if let Some(next) = route.get(index + 1) {
+            let next_forwarding = (index + 2 == route.len())
+                .then(|| forwarded_tcpip.as_ref().cloned())
+                .flatten();
+            let next_handle =
+                connect_through_proxy(&handle, next, timeouts, None, next_forwarding).await?;
+            predecessors.push(handle);
+            handle = next_handle;
+        }
+    }
+    tracing::debug!(host = %config.hostname, "embedded SSH: authentication chain succeeded");
+    Ok(AuthenticatedConnection::new(handle, predecessors, route))
 }
 
 fn load_trusted_keys(config: &SshConnectionConfig) -> Result<Vec<PublicKey>> {
@@ -763,10 +925,12 @@ mod tests {
     use rand::rngs::OsRng;
     use russh::server::{self, Msg, Session};
     use russh::{Channel, ChannelId, Disconnect};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::oneshot;
 
     const TEST_USERNAME: &str = "luma-test";
+    const TEST_INTERACTIVE_USERNAME: &str = "luma-interactive";
     const TEST_PASSWORD: &str = "correct horse battery staple";
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -784,10 +948,17 @@ mod tests {
     struct TestServerHandler {
         allowed_public_key: Option<(String, String)>,
         events: Arc<Mutex<Vec<ServerEvent>>>,
+        forwards: Arc<tokio::sync::Mutex<HashMap<ChannelId, tokio::net::tcp::OwnedWriteHalf>>>,
     }
 
     impl server::Handler for TestServerHandler {
         type Error = russh::Error;
+
+        async fn authentication_banner(
+            &mut self,
+        ) -> std::result::Result<Option<String>, Self::Error> {
+            Ok(Some("Authorized test users only\r\n".into()))
+        }
 
         async fn auth_password(
             &mut self,
@@ -799,6 +970,34 @@ mod tests {
             } else {
                 server::Auth::reject()
             })
+        }
+
+        async fn auth_keyboard_interactive<'a>(
+            &'a mut self,
+            user: &str,
+            _submethods: &str,
+            response: Option<server::Response<'a>>,
+        ) -> std::result::Result<server::Auth, Self::Error> {
+            if user != TEST_INTERACTIVE_USERNAME {
+                return Ok(server::Auth::reject());
+            }
+            let Some(mut response) = response else {
+                return Ok(server::Auth::Partial {
+                    name: std::borrow::Cow::Borrowed("Test challenge"),
+                    instructions: std::borrow::Cow::Borrowed("Enter the interactive secret"),
+                    prompts: std::borrow::Cow::Borrowed(&[(
+                        std::borrow::Cow::Borrowed("Verification code:"),
+                        false,
+                    )]),
+                });
+            };
+            Ok(
+                if response.next().as_deref() == Some(TEST_PASSWORD.as_bytes()) {
+                    server::Auth::Accept
+                } else {
+                    server::Auth::reject()
+                },
+            )
         }
 
         async fn auth_publickey(
@@ -817,6 +1016,50 @@ mod tests {
                     server::Auth::reject()
                 },
             )
+        }
+
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: Channel<Msg>,
+            host_to_connect: &str,
+            port_to_connect: u32,
+            _originator_address: &str,
+            _originator_port: u32,
+            reply: server::ChannelOpenHandle,
+            session: &mut Session,
+        ) -> std::result::Result<(), Self::Error> {
+            match tokio::net::TcpStream::connect((host_to_connect, port_to_connect as u16)).await {
+                Ok(socket) => {
+                    let channel_id = channel.id();
+                    let (mut socket_reader, socket_writer) = socket.into_split();
+                    self.forwards.lock().await.insert(channel_id, socket_writer);
+                    let handle = session.handle();
+                    reply.accept().await;
+                    tokio::spawn(async move {
+                        let mut buffer = [0_u8; 16 * 1024];
+                        loop {
+                            match socket_reader.read(&mut buffer).await {
+                                Ok(0) | Err(_) => {
+                                    let _ = handle.eof(channel_id).await;
+                                    let _ = handle.close(channel_id).await;
+                                    break;
+                                }
+                                Ok(read) => {
+                                    if handle
+                                        .data(channel_id, buffer[..read].to_vec())
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+                Err(_) => reply.reject(russh::ChannelOpenFailure::ConnectFailed).await,
+            }
+            Ok(())
         }
 
         async fn channel_open_session(
@@ -887,6 +1130,12 @@ mod tests {
             data: &[u8],
             session: &mut Session,
         ) -> std::result::Result<(), Self::Error> {
+            let mut forwards = self.forwards.lock().await;
+            if let Some(writer) = forwards.get_mut(&channel) {
+                writer.write_all(data).await?;
+                return Ok(());
+            }
+            drop(forwards);
             self.events
                 .lock()
                 .unwrap()
@@ -913,18 +1162,23 @@ mod tests {
 
         async fn channel_eof(
             &mut self,
-            _channel: ChannelId,
+            channel: ChannelId,
             _session: &mut Session,
         ) -> std::result::Result<(), Self::Error> {
-            self.events.lock().unwrap().push(ServerEvent::Eof);
+            if let Some(mut writer) = self.forwards.lock().await.remove(&channel) {
+                let _ = writer.shutdown().await;
+            } else {
+                self.events.lock().unwrap().push(ServerEvent::Eof);
+            }
             Ok(())
         }
 
         async fn channel_close(
             &mut self,
-            _channel: ChannelId,
+            channel: ChannelId,
             _session: &mut Session,
         ) -> std::result::Result<(), Self::Error> {
+            self.forwards.lock().await.remove(&channel);
             self.events.lock().unwrap().push(ServerEvent::Closed);
             Ok(())
         }
@@ -950,6 +1204,7 @@ mod tests {
             let handler = TestServerHandler {
                 allowed_public_key,
                 events: Arc::clone(&events),
+                forwards: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             };
             let config = Arc::new(server::Config {
                 auth_rejection_time: Duration::ZERO,
@@ -1041,13 +1296,17 @@ mod tests {
     fn write_known_host(path: &Path, address: std::net::SocketAddr, key: &russh::keys::PrivateKey) {
         let encoded = key.public_key().to_openssh().unwrap();
         let (algorithm, key_data) = public_key_identity(&encoded);
-        std::fs::write(
-            path,
-            format!(
-                "[{}]:{} {algorithm} {key_data}\n",
-                address.ip(),
-                address.port()
-            ),
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        writeln!(
+            file,
+            "[{}]:{} {algorithm} {key_data}",
+            address.ip(),
+            address.port()
         )
         .unwrap();
     }
@@ -1062,24 +1321,18 @@ mod tests {
         known_hosts_file: PathBuf,
     ) -> SshConnectionConfig {
         SshConnectionConfig {
-            executable: String::new(),
             hostname: address.ip().to_string(),
             port: address.port(),
             known_hosts_file,
             username: Some(TEST_USERNAME.into()),
+            authentication_type: "password".into(),
             identity_file: None,
             proxy_jumps: Vec::new(),
             startup_command: None,
-            askpass_identity_id: None,
-            askpass_service: None,
-            askpass_prompt: None,
-            fallback_password_identity_id: None,
             password: Some(Arc::new(zeroize::Zeroizing::new(TEST_PASSWORD.into()))),
             key_passphrase: None,
             fallback_password: None,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            ephemeral_credential: None,
-            ephemeral_identity_file: None,
+            _ephemeral_identity_file: None,
         }
     }
 
@@ -1090,7 +1343,7 @@ mod tests {
             .unwrap();
     }
 
-    fn expect_connect_error(result: Result<client::Handle<Client>>) -> LumaError {
+    fn expect_connect_error(result: Result<AuthenticatedConnection>) -> LumaError {
         match result {
             Ok(_) => panic!("embedded SSH connection unexpectedly succeeded"),
             Err(error) => error,
@@ -1170,6 +1423,401 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_hop_chain_retains_predecessor_transport_for_final_session() {
+        let files = TestFiles::new();
+        let target =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let jump =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, jump.address, &jump.host_key);
+        write_known_host(&known_hosts, target.address, &target.host_key);
+        let mut config = test_config(target.address, known_hosts.clone());
+        let jump_config = test_config(jump.address, known_hosts);
+        config.proxy_jumps.push(jump_config);
+
+        let connection = authenticated_handle(&config).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let channel = connection.channel_open_session().await.unwrap();
+        channel.request_shell(true).await.unwrap();
+        wait_for_event(&target.events, ServerEvent::ShellRequested).await;
+        disconnect_handle(&connection).await;
+
+        jump.stop().await;
+        target.stop().await;
+    }
+
+    #[tokio::test]
+    async fn proxy_preflight_returns_first_unknown_then_target_after_trust() {
+        let files = TestFiles::new();
+        let target =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let jump =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let known_hosts = files.path("known_hosts");
+        std::fs::write(&known_hosts, "").unwrap();
+        let mut config = test_config(target.address, known_hosts.clone());
+        config
+            .proxy_jumps
+            .push(test_config(jump.address, known_hosts.clone()));
+        let host_id = format!("chain-{}", uuid::Uuid::new_v4());
+        let host = crate::storage::hosts::Host {
+            id: host_id.clone(),
+            name: "Chain target".into(),
+            hostname: config.hostname.clone(),
+            port: config.port,
+            username: config.username.clone(),
+            group_id: None,
+            authentication_type: "password".into(),
+            key_id: None,
+            identity_id: None,
+            proxy_jump_host_id: Some("jump".into()),
+            startup_command: None,
+            working_directory: None,
+            environment: None,
+            tags: Vec::new(),
+            favorite: false,
+            tab_color: None,
+            os_id: None,
+            os_pretty_name: None,
+            is_ephemeral: false,
+        };
+
+        let jump_status = crate::ssh::known_hosts::status(&host_id, &config, &known_hosts)
+            .await
+            .unwrap();
+        assert_eq!(
+            jump_status.status,
+            crate::ssh::known_hosts::HostKeyStatusKind::Unknown
+        );
+        crate::ssh::known_hosts::trust(&host_id, &host, &known_hosts).unwrap();
+
+        let target_status = crate::ssh::known_hosts::status(&host_id, &config, &known_hosts)
+            .await
+            .unwrap();
+        assert_eq!(
+            target_status.status,
+            crate::ssh::known_hosts::HostKeyStatusKind::Unknown
+        );
+        assert_ne!(jump_status.scanned_keys, target_status.scanned_keys);
+        crate::ssh::known_hosts::trust(&host_id, &host, &known_hosts).unwrap();
+
+        let known = crate::ssh::known_hosts::status(&host_id, &config, &known_hosts)
+            .await
+            .unwrap();
+        assert_eq!(
+            known.status,
+            crate::ssh::known_hosts::HostKeyStatusKind::Known
+        );
+
+        jump.stop().await;
+        target.stop().await;
+    }
+
+    #[tokio::test]
+    async fn proxy_preflight_requires_saved_credentials_for_known_prefix() {
+        let files = TestFiles::new();
+        let target =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let jump =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, jump.address, &jump.host_key);
+        let mut jump_config = test_config(jump.address, known_hosts.clone());
+        jump_config.password = None;
+        jump_config.authentication_type = "password".into();
+        let mut config = test_config(target.address, known_hosts.clone());
+        config.proxy_jumps.push(jump_config);
+
+        let error = crate::ssh::known_hosts::status(
+            &format!("chain-auth-{}", uuid::Uuid::new_v4()),
+            &config,
+            &known_hosts,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.category(), "host-key-scan-requires-auth");
+        assert!(error.to_string().contains("Saved credentials"));
+
+        jump.stop().await;
+        target.stop().await;
+    }
+
+    #[tokio::test]
+    async fn changed_target_key_in_proxy_chain_identifies_target() {
+        let files = TestFiles::new();
+        let target =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let jump =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, jump.address, &jump.host_key);
+        let wrong_target_key = as_russh_private_key(&generate_ed25519_key());
+        write_known_host(&known_hosts, target.address, &wrong_target_key);
+        let mut config = test_config(target.address, known_hosts.clone());
+        config
+            .proxy_jumps
+            .push(test_config(jump.address, known_hosts));
+
+        let error = expect_connect_error(authenticated_handle(&config).await);
+        assert_eq!(error.category(), "host-key-changed");
+        assert!(error.to_string().contains(&config.hostname));
+
+        jump.stop().await;
+        target.stop().await;
+    }
+
+    #[tokio::test]
+    async fn typed_password_uses_session_write_channel_during_async_authentication() {
+        let files = TestFiles::new();
+        let host_key = as_russh_private_key(&generate_ed25519_key());
+        let server = TestSshServer::start(0, host_key, None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, server.address, &server.host_key);
+        let mut config = test_config(server.address, known_hosts);
+        config.password = None;
+        config.authentication_type = "password".into();
+        let manager = EmbeddedSshManager::default();
+        let (data_tx, mut data_rx) = mpsc::unbounded_channel();
+        let (exit_tx, exit_rx) = oneshot::channel();
+
+        let session_id = manager
+            .connect(
+                config,
+                80,
+                24,
+                Box::new(move |data| {
+                    let _ = data_tx.send(data.to_vec());
+                }),
+                Box::new(move |exit| {
+                    let _ = exit_tx.send(exit);
+                }),
+                Box::new(|_| {}),
+            )
+            .await
+            .unwrap();
+
+        let prompt = wait_for_output(&mut data_rx, b"__LUMA_SSH_PROMPT__").await;
+        assert!(String::from_utf8_lossy(&prompt).contains("\"target\":\"luma-test@"));
+        let ping_error = manager.ping(&session_id).await.unwrap_err();
+        assert_eq!(ping_error.category(), "ssh-error");
+        assert!(manager.write(&session_id, "correct horse ".into()).unwrap());
+        assert!(manager
+            .write(&session_id, "battery staple\r\n".into())
+            .unwrap());
+        wait_for_output(&mut data_rx, SSH_AUTHENTICATED_MARKER).await;
+        assert!(manager.disconnect(&session_id).unwrap());
+        let exit = tokio::time::timeout(Duration::from_secs(2), exit_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exit.error_category, None);
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn typed_password_failure_is_reported_through_async_exit() {
+        let files = TestFiles::new();
+        let host_key = as_russh_private_key(&generate_ed25519_key());
+        let server = TestSshServer::start(0, host_key, None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, server.address, &server.host_key);
+        let mut config = test_config(server.address, known_hosts);
+        config.password = None;
+        config.authentication_type = "password".into();
+        let manager = EmbeddedSshManager::default();
+        let (data_tx, mut data_rx) = mpsc::unbounded_channel();
+        let (exit_tx, exit_rx) = oneshot::channel();
+
+        let session_id = manager
+            .connect(
+                config,
+                80,
+                24,
+                Box::new(move |data| {
+                    let _ = data_tx.send(data.to_vec());
+                }),
+                Box::new(move |exit| {
+                    let _ = exit_tx.send(exit);
+                }),
+                Box::new(|_| {}),
+            )
+            .await
+            .unwrap();
+
+        wait_for_output(&mut data_rx, b"__LUMA_SSH_PROMPT__").await;
+        for _ in 0..3 {
+            assert!(manager.write(&session_id, "wrong\n".into()).unwrap());
+        }
+        let exit = tokio::time::timeout(Duration::from_secs(2), exit_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exit.error_category.as_deref(), Some("auth-failed"));
+        assert!(!manager.contains(&session_id));
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn keyboard_interactive_forwards_instructions_and_prompts_for_answers() {
+        let files = TestFiles::new();
+        let host_key = as_russh_private_key(&generate_ed25519_key());
+        let server = TestSshServer::start(0, host_key, None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, server.address, &server.host_key);
+        let mut config = test_config(server.address, known_hosts);
+        config.username = Some(TEST_INTERACTIVE_USERNAME.into());
+        config.authentication_type = "interactive".into();
+        config.password = None;
+        let manager = EmbeddedSshManager::default();
+        let (data_tx, mut data_rx) = mpsc::unbounded_channel();
+        let (exit_tx, exit_rx) = oneshot::channel();
+
+        let session_id = manager
+            .connect(
+                config,
+                80,
+                24,
+                Box::new(move |data| {
+                    let _ = data_tx.send(data.to_vec());
+                }),
+                Box::new(move |exit| {
+                    let _ = exit_tx.send(exit);
+                }),
+                Box::new(|_| {}),
+            )
+            .await
+            .unwrap();
+
+        let output = wait_for_output(&mut data_rx, b"__LUMA_SSH_PROMPT__").await;
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("Authorized test users only"));
+        assert!(output.contains("Test challenge"));
+        assert!(output.contains("Enter the interactive secret"));
+        assert!(output.contains("\"secret\":true"));
+        assert!(output.contains("\"target\":\"luma-interactive@"));
+        assert!(manager
+            .write(&session_id, format!("{TEST_PASSWORD}\n"))
+            .unwrap());
+        wait_for_output(&mut data_rx, SSH_AUTHENTICATED_MARKER).await;
+        assert!(manager.disconnect(&session_id).unwrap());
+        let exit = tokio::time::timeout(Duration::from_secs(2), exit_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exit.error_category, None);
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn rejected_public_key_falls_back_to_typed_password() {
+        let files = TestFiles::new();
+        let client_key = generate_ed25519_key();
+        let client_key_path = files.path("id_ed25519_rejected");
+        write_private_key(&client_key_path, &client_key);
+        let host_key = as_russh_private_key(&generate_ed25519_key());
+        let server = TestSshServer::start(0, host_key, None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, server.address, &server.host_key);
+        let mut config = test_config(server.address, known_hosts);
+        config.password = None;
+        config.identity_file = Some(client_key_path.to_string_lossy().into_owned());
+        config.authentication_type = "key".into();
+        let manager = EmbeddedSshManager::default();
+        let (data_tx, mut data_rx) = mpsc::unbounded_channel();
+        let (exit_tx, exit_rx) = oneshot::channel();
+
+        let session_id = manager
+            .connect(
+                config,
+                80,
+                24,
+                Box::new(move |data| {
+                    let _ = data_tx.send(data.to_vec());
+                }),
+                Box::new(move |exit| {
+                    let _ = exit_tx.send(exit);
+                }),
+                Box::new(|_| {}),
+            )
+            .await
+            .unwrap();
+
+        let output = wait_for_output(&mut data_rx, b"__LUMA_SSH_PROMPT__").await;
+        assert!(String::from_utf8_lossy(&output).contains("\"target\":\"luma-test@"));
+        assert!(manager
+            .write(&session_id, format!("{TEST_PASSWORD}\n"))
+            .unwrap());
+        wait_for_output(&mut data_rx, SSH_AUTHENTICATED_MARKER).await;
+        assert!(manager.disconnect(&session_id).unwrap());
+        let exit = tokio::time::timeout(Duration::from_secs(2), exit_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exit.error_category, None);
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
+    async fn typed_key_passphrase_retries_key_loading_through_session_write() {
+        let files = TestFiles::new();
+        let client_key = generate_ed25519_key();
+        let client_public_key = client_key.public_key().to_openssh().unwrap();
+        let host_key = as_russh_private_key(&generate_ed25519_key());
+        let server =
+            TestSshServer::start(0, host_key, Some(public_key_identity(&client_public_key))).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, server.address, &server.host_key);
+        let passphrase = "typed key passphrase";
+        let encrypted_key = client_key.encrypt(&mut OsRng, passphrase).unwrap();
+        let encrypted_key_path = files.path("id_ed25519_encrypted_typed");
+        write_private_key(&encrypted_key_path, &encrypted_key);
+        let mut config = test_config(server.address, known_hosts);
+        config.password = None;
+        config.identity_file = Some(encrypted_key_path.to_string_lossy().into_owned());
+        config.authentication_type = "key".into();
+        let manager = EmbeddedSshManager::default();
+        let (data_tx, mut data_rx) = mpsc::unbounded_channel();
+        let (exit_tx, exit_rx) = oneshot::channel();
+
+        let session_id = manager
+            .connect(
+                config,
+                80,
+                24,
+                Box::new(move |data| {
+                    let _ = data_tx.send(data.to_vec());
+                }),
+                Box::new(move |exit| {
+                    let _ = exit_tx.send(exit);
+                }),
+                Box::new(|_| {}),
+            )
+            .await
+            .unwrap();
+
+        let output = wait_for_output(&mut data_rx, b"__LUMA_SSH_PROMPT__").await;
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("\"target\":\"luma-test@"));
+        assert!(output.contains("Enter passphrase for key"));
+        assert!(manager.write(&session_id, "typed key ".into()).unwrap());
+        assert!(manager.write(&session_id, "passphrase\r".into()).unwrap());
+        wait_for_output(&mut data_rx, SSH_AUTHENTICATED_MARKER).await;
+        assert!(manager.disconnect(&session_id).unwrap());
+        let exit = tokio::time::timeout(Duration::from_secs(2), exit_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(exit.error_category, None);
+
+        server.stop().await;
+    }
+
+    #[tokio::test]
     async fn ed25519_and_encrypted_private_key_authentication_use_real_key_loading() {
         let files = TestFiles::new();
         let client_key = generate_ed25519_key();
@@ -1185,6 +1833,7 @@ mod tests {
         let mut plain_config = test_config(server.address, known_hosts.clone());
         plain_config.password = None;
         plain_config.identity_file = Some(plain_key_path.to_string_lossy().into_owned());
+        plain_config.authentication_type = "key".into();
         let handle = authenticated_handle(&plain_config).await.unwrap();
         disconnect_handle(&handle).await;
 
@@ -1196,13 +1845,15 @@ mod tests {
         let mut wrong_passphrase = test_config(server.address, known_hosts.clone());
         wrong_passphrase.password = None;
         wrong_passphrase.identity_file = Some(encrypted_key_path.to_string_lossy().into_owned());
+        wrong_passphrase.authentication_type = "key".into();
         wrong_passphrase.key_passphrase = Some(Arc::new(zeroize::Zeroizing::new("wrong".into())));
         let error = expect_connect_error(authenticated_handle(&wrong_passphrase).await);
-        assert_eq!(error.category(), "key-unavailable");
+        assert_eq!(error.category(), "key-passphrase-invalid");
 
         let mut correct_passphrase = test_config(server.address, known_hosts);
         correct_passphrase.password = None;
         correct_passphrase.identity_file = Some(encrypted_key_path.to_string_lossy().into_owned());
+        correct_passphrase.authentication_type = "key".into();
         correct_passphrase.key_passphrase =
             Some(Arc::new(zeroize::Zeroizing::new(passphrase.to_string())));
         let handle = authenticated_handle(&correct_passphrase).await.unwrap();
@@ -1373,93 +2024,5 @@ mod tests {
             started.elapsed()
         );
         silent_task.abort();
-    }
-
-    fn config() -> SshConnectionConfig {
-        SshConnectionConfig {
-            executable: "ssh".into(),
-            hostname: "example.com".into(),
-            port: 22,
-            known_hosts_file: PathBuf::from("known_hosts"),
-            username: Some("deploy".into()),
-            identity_file: Some("id_ed25519".into()),
-            proxy_jumps: Vec::new(),
-            startup_command: None,
-            askpass_identity_id: None,
-            askpass_service: None,
-            askpass_prompt: None,
-            fallback_password_identity_id: None,
-            password: None,
-            key_passphrase: None,
-            fallback_password: None,
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            ephemeral_credential: None,
-            ephemeral_identity_file: None,
-        }
-    }
-
-    #[test]
-    fn uses_embedded_backend_for_direct_private_key_hosts() {
-        assert_eq!(select_backend(&config()).unwrap(), SshBackend::Embedded);
-    }
-
-    #[test]
-    fn embedded_auth_reads_password_and_key_passphrase_from_in_memory_config() {
-        let mut value = config();
-        value.password = Some(Arc::new(zeroize::Zeroizing::new("password secret".into())));
-        value.key_passphrase = Some(Arc::new(zeroize::Zeroizing::new("key secret".into())));
-        value.fallback_password = Some(Arc::new(zeroize::Zeroizing::new("fallback secret".into())));
-
-        assert_eq!(
-            credential_secret(&value, "password").unwrap().as_deref(),
-            Some("password secret")
-        );
-        assert_eq!(
-            credential_secret(&value, "passphrase").unwrap().as_deref(),
-            Some("key secret")
-        );
-        assert_eq!(
-            fallback_password_secret(&value).unwrap().as_deref(),
-            Some("fallback secret")
-        );
-    }
-
-    #[test]
-    fn falls_back_for_proxy_jump() {
-        let mut value = config();
-        value.proxy_jumps.push(super::super::ProxyTarget {
-            hostname: "jump".into(),
-            port: 22,
-            username: None,
-        });
-        assert_eq!(select_backend(&value).unwrap(), SshBackend::OpenSsh);
-    }
-
-    #[test]
-    fn mobile_rejects_proxy_jump_with_typed_capability_error() {
-        let mut value = config();
-        value.proxy_jumps.push(super::super::ProxyTarget {
-            hostname: "jump".into(),
-            port: 22,
-            username: None,
-        });
-        let error = select_backend_for(&value, true).unwrap_err();
-        assert_eq!(error.category(), "capability-unavailable");
-        assert_eq!(
-            error.to_string(),
-            "ProxyJump requires system OpenSSH, which is unavailable on mobile"
-        );
-    }
-
-    #[test]
-    fn mobile_rejects_agent_authentication_with_typed_capability_error() {
-        let mut value = config();
-        value.identity_file = None;
-        let error = select_backend_for(&value, true).unwrap_err();
-        assert_eq!(error.category(), "capability-unavailable");
-        assert_eq!(
-            error.to_string(),
-            "SSH agent and interactive authentication require system OpenSSH, which is unavailable on mobile"
-        );
     }
 }

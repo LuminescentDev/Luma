@@ -26,16 +26,6 @@ pub enum LumaError {
     #[error("serial error: {0}")]
     Serial(String),
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[error("SSH executable unavailable: {0}")]
-    SshUnavailable(String),
-
-    #[error("{message}")]
-    CapabilityUnavailable {
-        feature: &'static str,
-        message: String,
-    },
-
     #[error("{message}")]
     SshConnection {
         category: &'static str,
@@ -71,9 +61,6 @@ impl LumaError {
             LumaError::Pty(_) => "pty",
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             LumaError::Serial(_) => "serial",
-            #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            LumaError::SshUnavailable(_) => "ssh-unavailable",
-            LumaError::CapabilityUnavailable { .. } => "capability-unavailable",
             LumaError::SshConnection { category, .. } => category,
             LumaError::SftpFailed(_) => "sftp-failed",
             LumaError::KeyUnavailable(_) => "key-unavailable",

@@ -62,7 +62,7 @@ type NormalizedResult = {
 const AUTH_LABELS: Record<ImportedHostAuthHint, string> = {
   password: "Password",
   "public-key": "Key",
-  agent: "Agent",
+  agent: "Interactive",
   "keyboard-interactive": "Interactive",
   unknown: "Unknown",
 };
@@ -87,15 +87,15 @@ export function ImportDialog({
 }) {
   const invalidate = useInvalidateHosts();
   // The "SSH config" source calls ssh_config_preview/ssh_config_import, which are
-  // only registered on platforms with the systemSsh capability (desktop). On
+  // only registered on platforms with the sshConfigImport capability (desktop). On
   // mobile that source is hidden entirely so the user can never trigger a
   // failing command; the file-picker sources (Tabby / Electerm) remain available.
-  const systemSsh = useCapabilityStore((s) => s.capabilities.features.systemSsh);
+  const sshConfigImport = useCapabilityStore((s) => s.capabilities.features.sshConfigImport);
   const sources = useMemo(
-    () => (systemSsh ? SOURCES : SOURCES.filter((s) => s.id !== "ssh-config")),
-    [systemSsh],
+    () => (sshConfigImport ? SOURCES : SOURCES.filter((s) => s.id !== "ssh-config")),
+    [sshConfigImport],
   );
-  const defaultSource: ImportKind = systemSsh ? "ssh-config" : "tabby";
+  const defaultSource: ImportKind = sshConfigImport ? "ssh-config" : "tabby";
 
   const [source, setSource] = useState<ImportKind>(defaultSource);
   const [filePath, setFilePath] = useState<string | null>(null);

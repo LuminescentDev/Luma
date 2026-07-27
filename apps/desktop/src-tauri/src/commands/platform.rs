@@ -16,7 +16,7 @@ pub enum Os {
 pub struct PlatformFeatures {
     pub local_terminal: bool,
     pub serial: bool,
-    pub system_ssh: bool,
+    pub ssh_config_import: bool,
     pub sftp: bool,
     pub port_forwarding: bool,
     pub updater: bool,
@@ -40,7 +40,7 @@ pub fn capabilities_for(os: Os) -> PlatformCapabilities {
         PlatformFeatures {
             local_terminal: false,
             serial: false,
-            system_ssh: false,
+            ssh_config_import: false,
             sftp: true,
             port_forwarding: false,
             updater: false,
@@ -53,7 +53,7 @@ pub fn capabilities_for(os: Os) -> PlatformCapabilities {
         PlatformFeatures {
             local_terminal: true,
             serial: true,
-            system_ssh: true,
+            ssh_config_import: true,
             sftp: true,
             port_forwarding: true,
             updater: true,
@@ -102,7 +102,7 @@ mod tests {
                 PlatformFeatures {
                     local_terminal: true,
                     serial: true,
-                    system_ssh: true,
+                    ssh_config_import: true,
                     sftp: true,
                     port_forwarding: true,
                     updater: true,
@@ -125,7 +125,7 @@ mod tests {
                 PlatformFeatures {
                     local_terminal: false,
                     serial: false,
-                    system_ssh: false,
+                    ssh_config_import: false,
                     sftp: true,
                     port_forwarding: false,
                     updater: false,
@@ -144,7 +144,7 @@ mod tests {
         assert_eq!(value["os"], "android");
         assert_eq!(value["isMobile"], true);
         assert_eq!(value["features"]["localTerminal"], false);
-        assert_eq!(value["features"]["systemSsh"], false);
+        assert_eq!(value["features"]["sshConfigImport"], false);
         assert_eq!(value["features"]["portForwarding"], false);
         assert_eq!(value["features"]["dragAndDrop"], false);
         assert!(value.get("is_mobile").is_none());

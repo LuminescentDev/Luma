@@ -40,6 +40,7 @@ const LEGACY_CRLF_CHECKSUMS: &[(i64, &str)] = &[
     (8, "1b2f8ea83bcc53f5de983bcd0e5d76a5fe3ffab48c9a2622df9c161af9c1f94d731bc92056ac7f99af7f9967a24e4c7a"),
     (9, "eb25da2bc4b4cd74450ce4a0c14b23b72ffaf90f2ed06dfaa17ff86c04f4a49a08c13470d7a3bfce11981052ffdbc507"),
     (10, "048870f9eac80f8100896b0ef3fb263b0b11ff5cf263d4ebd2c64e1683275d23d56e70991ddab198b2bf6591bf08cb57"),
+    (11, "8cf0be92da2994058716c209c4955f84cce0d2efa7d4a7919aa5c1d0cc1747c6cfb1c95dd05409339706847f6e2af870"),
 ];
 
 fn is_allowlisted_legacy_checksum(version: i64, recorded: &[u8]) -> bool {
@@ -221,6 +222,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn migration_0011_coerces_agent_auth_to_interactive() {
+        // 0011 is idempotent, so seeding legacy rows (still permitted by the
+        // 0001 CHECK constraints) and re-running the shipped SQL exercises the
+        // exact statements an upgraded database runs.
+        let pool = init_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO key_references (id, name, storage_mode) VALUES
+             ('agent-key', 'Agent key', 'ssh-agent'),
+             ('disk-key', 'Disk key', 'local-path')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO hosts (id, name, hostname, auth_type, key_id) VALUES
+             ('h-agent', 'Agent host', 'a.example.com', 'agent', NULL),
+             ('h-agent-key', 'Keyed host', 'b.example.com', 'key', 'agent-key'),
+             ('h-disk-key', 'Disk host', 'c.example.com', 'key', 'disk-key')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let migration = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 11)
+            .unwrap();
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::raw_sql(&migration.sql)
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        drop(connection);
+
+        let rows: Vec<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, auth_type, key_id FROM hosts ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("h-agent".into(), "interactive".into(), None),
+                ("h-agent-key".into(), "interactive".into(), None),
+                ("h-disk-key".into(), "key".into(), Some("disk-key".into())),
+            ]
+        );
+
+        let remaining_keys: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM key_references ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining_keys, vec!["disk-key".to_string()]);
+
+        let tombstoned: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tombstones
+             WHERE object_type = 'key_reference' AND object_id = 'agent-key'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tombstoned, 1);
+    }
+
+    #[tokio::test]
     async fn repairs_allowlisted_crlf_checksum_without_losing_data() {
         let (test_dir, db_path) = temporary_database_path("crlf");
         let pool = init(&db_path).await.unwrap();
@@ -237,6 +304,17 @@ mod tests {
             .step_by(2)
             .map(|index| u8::from_str_radix(&legacy[index..index + 2], 16).unwrap())
             .collect::<Vec<_>>();
+        let current = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 1)
+            .unwrap();
+        assert_ne!(
+            current.checksum.as_ref(),
+            legacy.as_slice(),
+            "migrations were checked out with CRLF endings, so this build embeds the legacy \
+             checksums and cannot open databases written by a release build; re-normalize \
+             apps/desktop/src-tauri/migrations/*.sql to LF as .gitattributes requires"
+        );
         sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 1")
             .bind(&legacy)
             .execute(&pool)

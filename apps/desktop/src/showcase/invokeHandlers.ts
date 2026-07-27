@@ -84,7 +84,7 @@ export function createInvokeHandler(
           os: "ios",
           isMobile: true,
           features: {
-            localTerminal: false, serial: false, systemSsh: false, sftp: true,
+            localTerminal: false, serial: false, sshConfigImport: false, sftp: true,
             portForwarding: false, updater: false, biometrics: true,
             windowControls: false, folderSync: false, dragAndDrop: false,
           },
@@ -94,7 +94,7 @@ export function createInvokeHandler(
           features: {
             localTerminal: true,
             serial: true,
-            systemSsh: true,
+            sshConfigImport: true,
             sftp: true,
             portForwarding: true,
             updater: true,
@@ -126,8 +126,6 @@ export function createInvokeHandler(
         return KEY_REFERENCES;
       case "identities_list":
         return IDENTITIES;
-      case "ssh_detect":
-        return { available: true, path: "/usr/bin/ssh", version: "OpenSSH_9.6p1" };
 
       case "snippets_list":
         return SNIPPETS;

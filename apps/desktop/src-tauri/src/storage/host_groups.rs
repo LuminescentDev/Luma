@@ -218,7 +218,7 @@ mod tests {
                 port: 22,
                 username: None,
                 group_id: Some(child.id.clone()),
-                authentication_type: "agent".into(),
+                authentication_type: "interactive".into(),
                 key_id: None,
                 identity_id: None,
                 proxy_jump_host_id: None,

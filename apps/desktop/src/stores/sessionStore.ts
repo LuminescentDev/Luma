@@ -485,12 +485,15 @@ function makeCallbacks(set: SetFn, get: () => SessionState, id: string) {
     },
     // Only interactive credential prompts arrive here now; host-key trust is
     // handled by the store's backend preflight before spawn.
-    onSshPrompt: (connectionPrompt: { type: "credential"; label: string }) =>
+    onSshPrompt: (connectionPrompt: {
+      type: "credential";
+      label: string;
+      target?: string;
+      secret?: boolean;
+    }) =>
       set((state) => ({ sessions: patchSession(state.sessions, id, { connectionPrompt, connectionStage: "authentication" }) })),
     onSshProgress: (connectionStage: NonNullable<TerminalSession["connectionStage"]>) =>
       set((state) => ({ sessions: patchSession(state.sessions, id, { connectionStage }) })),
-    onSshIssue: (connectionIssue: string) =>
-      set((state) => ({ sessions: patchSession(state.sessions, id, { connectionIssue }) })),
     onRemoteOs: (osId: string, osPrettyName: string | null) =>
       set((state) => ({ sessions: patchSession(state.sessions, id, { osId, osPrettyName }) })),
   };

@@ -52,20 +52,13 @@ export type SpawnDescriptor =
   | { kind: "ssh"; hostId: string }
   | { kind: "serial"; config: SerialConfig };
 
-/** Whether this session's backend I/O must go through the embedded-SSH commands
- * (ssh_write / ssh_resize / ssh_disconnect) instead of the desktop pty_* ones.
- * On mobile the pty_* commands are not registered and every terminal is an
- * embedded SSH session, so SSH descriptors are routed to the SSH commands. On
- * desktop SSH sessions keep using pty_* (they may be system-OpenSSH-backed, for
- * which ssh_* would report "unknown SSH session"), so desktop behavior is
- * byte-for-byte unchanged. */
+/** SSH sessions use the embedded-SSH commands on every platform; local shells
+ * continue through the desktop PTY commands. */
 function usesEmbeddedSshIo(descriptor: SpawnDescriptor): boolean {
-  return descriptor.kind === "ssh" && isMobilePlatform();
+  return descriptor.kind === "ssh";
 }
 
-/** Write keyboard input to a backend session, routing serial sessions to the
- * serial command, embedded-SSH-on-mobile to ssh_write, and everything else
- * (local + desktop ssh) to the shared PTY command. */
+/** Write keyboard input to the backend command for this session type. */
 function writeBackend(
   descriptor: SpawnDescriptor,
   backendId: string,
@@ -233,18 +226,69 @@ type SessionCallbacks = {
   onExit: (exit: SessionExit) => void;
   onSearchRequested: () => void;
   onSshAuthenticated: () => void;
-  /* Only the interactive credential prompt (password / private-key passphrase)
-   * is scraped from the PTY. Host-key trust is handled by an explicit backend
-   * preflight in the session store BEFORE spawn (StrictHostKeyChecking=yes means
-   * OpenSSH never prints an interactive host-key prompt), so there is no
-   * "host-key" variant here. */
-  onSshPrompt: (prompt: { type: "credential"; label: string }) => void;
+  /* Credential prompts come from the embedded engine's structured data-stream
+   * marker. Host-key trust is handled by the pre-spawn backend preflight. */
+  onSshPrompt: (prompt: {
+    type: "credential";
+    label: string;
+    target?: string;
+    secret?: boolean;
+  }) => void;
   onSshProgress: (stage: "starting" | "network" | "host-key" | "authentication" | "ready") => void;
-  onSshIssue: (message: string) => void;
   /** Detected remote OS for an authenticated SSH session (drives the tab distro
    * logo). Metadata only — never terminal bytes. */
   onRemoteOs: (osId: SshRemoteOsId, prettyName: string | null) => void;
 };
+
+const SSH_PROMPT_MARKER = "__LUMA_SSH_PROMPT__";
+
+type EmbeddedSshPrompt = {
+  label: string;
+  target: string;
+  secret: boolean;
+};
+
+function latestEmbeddedSshPrompt(transcript: string): {
+  prompt: EmbeddedSshPrompt;
+  signature: string;
+} | null {
+  const markerIndex = transcript.lastIndexOf(SSH_PROMPT_MARKER);
+  if (markerIndex < 0) return null;
+
+  const payloadStart = markerIndex + SSH_PROMPT_MARKER.length;
+  const carriageReturn = transcript.indexOf("\r", payloadStart);
+  const newline = transcript.indexOf("\n", payloadStart);
+  const lineEnd = [carriageReturn, newline]
+    .filter((index) => index >= 0)
+    .reduce((earliest, index) => Math.min(earliest, index), Number.POSITIVE_INFINITY);
+  if (!Number.isFinite(lineEnd)) return null;
+
+  const payload = transcript.slice(payloadStart, lineEnd).trim();
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const record = parsed as Record<string, unknown>;
+    if (
+      typeof record.label !== "string" ||
+      typeof record.target !== "string" ||
+      typeof record.secret !== "boolean"
+    ) {
+      return null;
+    }
+    return {
+      prompt: {
+        label: record.label,
+        target: record.target,
+        secret: record.secret,
+      },
+      signature: `embedded-credential:${payload}`,
+    };
+  } catch {
+    // A marker split across data chunks stays in the rolling transcript and is
+    // parsed after its terminating newline arrives.
+    return null;
+  }
+}
 
 type ManagedSession = {
   /** This session's stable id (the store's session id). Kept on the session so
@@ -282,7 +326,6 @@ type ManagedSession = {
   sshTranscript: string;
   lastPromptSignature: string;
   sshStage: "starting" | "network" | "host-key" | "authentication" | "ready";
-  sshIssueReported: boolean;
   sshFinalizing: boolean;
   resizeTimer: ReturnType<typeof window.setTimeout> | null;
   /** OSC 133 command marks (prompt/output/finished markers + exit codes),
@@ -815,7 +858,6 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
     session.sshTranscript = "";
     session.lastPromptSignature = "";
     session.sshStage = "starting";
-    session.sshIssueReported = false;
     session.sshFinalizing = false;
   }
 
@@ -850,10 +892,6 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
       session.callbacks.onSshProgress(stage);
     };
     if (/__LUMA_SSH_AUTHENTICATED__/.test(readableTranscript)) reportStage("authentication");
-    if (!session.sshIssueReported && /Load key [^\r\n]+: invalid format/i.test(readableTranscript)) {
-      session.sshIssueReported = true;
-      session.callbacks.onSshIssue("The selected identity's private key is not in a format OpenSSH can read. Re-save it as an OpenSSH or PEM private key.");
-    }
     if (!session.sshFinalizing && /__LUMA_SSH_AUTHENTICATED__/.test(readableTranscript)) {
       session.sshFinalizing = true;
       // Keep the overlay visible until the local authentication marker settles,
@@ -868,18 +906,13 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
       }, 750);
       return;
     }
-    // Host-key trust is resolved by the store's backend preflight before spawn;
-    // OpenSSH (StrictHostKeyChecking=yes) never prints an interactive host-key
-    // prompt here, so we only scrape interactive credential prompts.
-    const credentialMatches = [...readableTranscript.matchAll(/(?:Enter passphrase for key '[^']+'|password):\s*/gi)];
-    const credentialMatch = credentialMatches[credentialMatches.length - 1];
-    if (credentialMatch) {
-      const label = credentialMatch[0].toLowerCase().includes("passphrase") ? "Private key passphrase" : "Password";
-      const signature = `credential:${credentialMatch[0]}`;
-      if (signature !== session.lastPromptSignature) {
-        session.lastPromptSignature = signature;
-        session.callbacks.onSshPrompt({ type: "credential", label });
-      }
+    const embeddedPrompt = latestEmbeddedSshPrompt(readableTranscript);
+    if (embeddedPrompt && embeddedPrompt.signature !== session.lastPromptSignature) {
+      session.lastPromptSignature = embeddedPrompt.signature;
+      session.callbacks.onSshPrompt({
+        type: "credential",
+        ...embeddedPrompt.prompt,
+      });
     }
   };
 
@@ -1210,7 +1243,6 @@ export const terminalManager = {
       sshTranscript: "",
       lastPromptSignature: "",
       sshStage: "starting",
-      sshIssueReported: false,
       sshFinalizing: false,
       resizeTimer: null,
       marks: [],
@@ -1625,8 +1657,7 @@ export const terminalManager = {
         onSshAuthenticated: () => {},
         onSshPrompt: () => {},
         onSshProgress: () => {},
-        onSshIssue: () => {},
-        onRemoteOs: () => {},
+          onRemoteOs: () => {},
       },
       broadcastPeers: null,
       pendingInput: [],
@@ -1638,7 +1669,6 @@ export const terminalManager = {
       sshTranscript: "",
       lastPromptSignature: "",
       sshStage: "starting",
-      sshIssueReported: false,
       sshFinalizing: false,
       resizeTimer: null,
       marks: [],

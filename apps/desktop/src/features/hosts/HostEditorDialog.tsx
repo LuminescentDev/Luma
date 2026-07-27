@@ -57,7 +57,7 @@ function initialState(host: Host | null, initialGroupId: string | null = null): 
     port: String(host?.port ?? 22),
     username: host?.username ?? "",
     groupId: host?.groupId ?? initialGroupId ?? "",
-    authenticationType: host?.authenticationType ?? "agent",
+    authenticationType: host?.authenticationType ?? "interactive",
     keyId: host?.keyId ?? "",
     identityId: host?.identityId ?? "",
     proxyJumpHostId: host?.proxyJumpHostId ?? "",
@@ -73,7 +73,6 @@ function initialState(host: Host | null, initialGroupId: string | null = null): 
 }
 
 const AUTH_OPTIONS: { value: AuthenticationType; label: string }[] = [
-  { value: "agent", label: "SSH agent" },
   { value: "key", label: "Private key" },
   { value: "password", label: "Password (interactive)" },
   { value: "interactive", label: "Keyboard-interactive" },
@@ -116,7 +115,7 @@ function toInput(state: FormState): HostInput {
     port: Number(state.port),
     username: usesIdentity ? null : state.username.trim() || null,
     groupId: state.groupId || null,
-    authenticationType: usesIdentity ? "agent" : state.authenticationType,
+    authenticationType: usesIdentity ? "interactive" : state.authenticationType,
     keyId: !usesIdentity && state.authenticationType === "key" ? state.keyId || null : null,
     identityId: state.identityId || null,
     proxyJumpHostId: state.proxyJumpHostId || null,

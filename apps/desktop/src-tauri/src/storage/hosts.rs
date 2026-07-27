@@ -76,7 +76,7 @@ fn default_port() -> i64 {
 }
 
 fn default_authentication_type() -> String {
-    "agent".into()
+    "interactive".into()
 }
 
 fn optional_trimmed(value: Option<String>) -> Option<String> {
@@ -262,10 +262,10 @@ pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
 
     if !matches!(
         input.authentication_type.as_str(),
-        "agent" | "key" | "password" | "interactive"
+        "key" | "password" | "interactive"
     ) {
         return Err(LumaError::InvalidInput(
-            "authenticationType must be 'agent', 'key', 'password', or 'interactive'".into(),
+            "authenticationType must be 'key', 'password', or 'interactive'".into(),
         ));
     }
     if input.authentication_type == "key" && optional_trimmed(input.key_id.clone()).is_none() {
@@ -535,7 +535,7 @@ pub async fn create_ephemeral(pool: &SqlitePool, input: &str) -> Result<Host> {
     sqlx::query(
         "INSERT INTO hosts (
              id, name, hostname, port, username, auth_type, tags, favorite, is_ephemeral
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 'agent', '[]', 0, 1)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'interactive', '[]', 0, 1)",
     )
     .bind(&id)
     .bind(name)
@@ -803,7 +803,7 @@ mod tests {
             port: 22,
             username: Some("alice".into()),
             group_id: None,
-            authentication_type: "agent".into(),
+            authentication_type: "interactive".into(),
             key_id: None,
             identity_id: None,
             proxy_jump_host_id: None,
@@ -827,7 +827,7 @@ mod tests {
         clear_host_credentials_when_using_identity(&mut input);
 
         assert_eq!(input.username, None);
-        assert_eq!(input.authentication_type, "agent");
+        assert_eq!(input.authentication_type, "interactive");
         assert_eq!(input.key_id, None);
     }
 

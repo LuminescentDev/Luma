@@ -84,7 +84,6 @@ const noopCallbacks = () => ({
   onSshAuthenticated: () => {},
   onSshPrompt: () => {},
   onSshProgress: () => {},
-  onSshIssue: () => {},
   onRemoteOs: () => {},
 });
 

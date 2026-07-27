@@ -937,10 +937,54 @@ fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<SyncBundle> {
                 )
             })?,
     );
-    let bundle: SyncBundle = serde_json::from_slice(&plaintext)
+    let mut bundle: SyncBundle = serde_json::from_slice(&plaintext)
         .map_err(|_| LumaError::InvalidInput("sync bundle contains invalid JSON".into()))?;
+    normalize_legacy_agent_auth(&mut bundle);
     validate_bundle(&bundle)?;
     Ok(bundle)
+}
+
+/// Peers running versions before SSH-agent support was removed may still sync
+/// 'agent' hosts and 'ssh-agent' key references. Coerce them to the migrated
+/// shape (interactive auth, key reference dropped) instead of rejecting the
+/// whole bundle.
+fn normalize_legacy_agent_auth(bundle: &mut SyncBundle) {
+    let agent_key_ids: HashSet<String> = bundle
+        .key_references
+        .iter()
+        .filter(|key| key.storage_mode == "ssh-agent")
+        .map(|key| key.id.clone())
+        .collect();
+    bundle
+        .key_references
+        .retain(|key| key.storage_mode != "ssh-agent");
+    bundle
+        .encrypted_key_secrets
+        .retain(|secret| !agent_key_ids.contains(&secret.key_reference_id));
+    for host in &mut bundle.hosts {
+        if host
+            .key_id
+            .as_ref()
+            .is_some_and(|id| agent_key_ids.contains(id))
+        {
+            host.key_id = None;
+            if host.authentication_type == "key" {
+                host.authentication_type = "interactive".into();
+            }
+        }
+        if host.authentication_type == "agent" {
+            host.authentication_type = "interactive".into();
+        }
+    }
+    for identity in &mut bundle.identities {
+        if identity
+            .key_id
+            .as_ref()
+            .is_some_and(|id| agent_key_ids.contains(id))
+        {
+            identity.key_id = None;
+        }
+    }
 }
 
 fn derive_sync_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32]> {
@@ -3611,12 +3655,97 @@ mod tests {
             "settings": {},
             "tombstones": []
         });
-        let bundle: SyncBundle = serde_json::from_value(value).unwrap();
+        let mut bundle: SyncBundle = serde_json::from_value(value).unwrap();
         assert!(bundle.encrypted_key_secrets.is_empty());
         assert!(bundle.identities.is_empty());
         assert!(bundle.encrypted_identity_secrets.is_empty());
         assert_eq!(bundle.hosts[0].identity_id, None);
         assert_eq!(bundle.hosts[0].tab_color, None);
+
+        normalize_legacy_agent_auth(&mut bundle);
+        assert_eq!(bundle.hosts[0].authentication_type, "interactive");
+        validate_bundle(&bundle).unwrap();
+    }
+
+    #[test]
+    fn legacy_agent_hosts_and_ssh_agent_keys_are_coerced() {
+        let mut bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
+        bundle.key_references.push(SyncKeyReference {
+            id: "agent-key".into(),
+            name: "Agent key".into(),
+            public_key: None,
+            storage_mode: "ssh-agent".into(),
+            local_path: None,
+            fingerprint: None,
+            certificate: None,
+            updated_at: 1,
+        });
+        bundle.key_references.push(SyncKeyReference {
+            id: "disk-key".into(),
+            name: "Disk key".into(),
+            public_key: None,
+            storage_mode: "local-path".into(),
+            local_path: Some("~/.ssh/id_ed25519".into()),
+            fingerprint: None,
+            certificate: None,
+            updated_at: 1,
+        });
+        bundle.identities.push(SyncIdentity {
+            id: "identity-1".into(),
+            name: "Ops".into(),
+            username: "deploy".into(),
+            key_id: Some("agent-key".into()),
+            has_password: true,
+            updated_at: 1,
+        });
+        bundle.hosts.push(SyncHost {
+            id: "host-agent".into(),
+            name: "Agent host".into(),
+            hostname: "agent.example.com".into(),
+            port: 22,
+            username: None,
+            group_id: None,
+            authentication_type: "agent".into(),
+            key_id: None,
+            identity_id: None,
+            proxy_jump_host_id: None,
+            startup_command: None,
+            working_directory: None,
+            environment: None,
+            tags: Vec::new(),
+            favorite: false,
+            tab_color: None,
+            updated_at: 1,
+        });
+        bundle.hosts.push(SyncHost {
+            id: "host-agent-key".into(),
+            name: "Agent-keyed host".into(),
+            hostname: "keyed.example.com".into(),
+            port: 22,
+            username: None,
+            group_id: None,
+            authentication_type: "key".into(),
+            key_id: Some("agent-key".into()),
+            identity_id: None,
+            proxy_jump_host_id: None,
+            startup_command: None,
+            working_directory: None,
+            environment: None,
+            tags: Vec::new(),
+            favorite: false,
+            tab_color: None,
+            updated_at: 1,
+        });
+
+        normalize_legacy_agent_auth(&mut bundle);
+
+        assert_eq!(bundle.key_references.len(), 1);
+        assert_eq!(bundle.key_references[0].id, "disk-key");
+        assert_eq!(bundle.identities[0].key_id, None);
+        assert_eq!(bundle.hosts[0].authentication_type, "interactive");
+        assert_eq!(bundle.hosts[1].authentication_type, "interactive");
+        assert_eq!(bundle.hosts[1].key_id, None);
+        validate_bundle(&bundle).unwrap();
     }
 
     #[tokio::test]

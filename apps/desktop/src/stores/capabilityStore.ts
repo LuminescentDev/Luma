@@ -21,8 +21,8 @@ export type PlatformFeatures = {
   localTerminal: boolean;
   /** Serial-port terminals. Mobile: false. */
   serial: boolean;
-  /** System OpenSSH integration (ssh_detect / config import). Mobile: false. */
-  systemSsh: boolean;
+  /** Import from the device's OpenSSH config file. Mobile: false. */
+  sshConfigImport: boolean;
   /** SFTP browsing + transfers. Available on every platform. */
   sftp: boolean;
   /** SSH port forwarding / tunnels. Mobile: false. */
@@ -62,7 +62,7 @@ export const DESKTOP_CAPABILITIES: PlatformCapabilities = {
   features: {
     localTerminal: true,
     serial: true,
-    systemSsh: true,
+    sshConfigImport: true,
     sftp: true,
     portForwarding: true,
     updater: true,
@@ -105,7 +105,7 @@ export function normalizeCapabilities(raw: unknown): PlatformCapabilities {
     features: {
       localTerminal: feature("localTerminal"),
       serial: feature("serial"),
-      systemSsh: feature("systemSsh"),
+      sshConfigImport: feature("sshConfigImport"),
       sftp: feature("sftp"),
       portForwarding: feature("portForwarding"),
       updater: feature("updater"),

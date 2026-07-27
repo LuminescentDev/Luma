@@ -4,7 +4,6 @@ use tauri::State;
 use crate::errors::{LumaError, Result};
 use crate::ssh::{self, TunnelExit, TunnelInfo, TunnelManager, TunnelStartResponse};
 use crate::storage::port_forwards::{self, PortForward, PortForwardInput};
-use crate::terminal::PtyManager;
 use crate::vault::VaultState;
 use crate::AppState;
 
@@ -45,7 +44,6 @@ pub async fn port_forward_delete(state: State<'_, AppState>, id: String) -> Resu
 #[tauri::command]
 pub async fn tunnel_start(
     state: State<'_, AppState>,
-    pty: State<'_, PtyManager>,
     tunnels: State<'_, TunnelManager>,
     vault_state: State<'_, VaultState>,
     port_forward_id: String,
@@ -56,19 +54,17 @@ pub async fn tunnel_start(
         .ok_or_else(|| LumaError::InvalidInput("unknown port forward".into()))?;
     let config =
         ssh::tunnel_connection_config(&state.pool, &vault_state, &port_forward.host_id).await?;
-    let tunnel_id = tunnels.start(&pty, config, port_forward, move |exit| {
-        let _ = on_exit.send(exit);
-    })?;
+    let tunnel_id = tunnels
+        .start(config, port_forward, move |exit| {
+            let _ = on_exit.send(exit);
+        })
+        .await?;
     Ok(TunnelStartResponse { tunnel_id })
 }
 
 #[tauri::command]
-pub async fn tunnel_stop(
-    pty: State<'_, PtyManager>,
-    tunnels: State<'_, TunnelManager>,
-    tunnel_id: String,
-) -> Result<()> {
-    tunnels.stop(&pty, &tunnel_id)
+pub async fn tunnel_stop(tunnels: State<'_, TunnelManager>, tunnel_id: String) -> Result<()> {
+    tunnels.stop(&tunnel_id).await
 }
 
 #[tauri::command]

@@ -74,7 +74,12 @@ export type TerminalSession = {
   preflightError?: boolean;
   connectionPrompt?:
     | { type: "host-key"; keys: HostKeyFingerprint[] }
-    | { type: "credential"; label: string };
+    | {
+        type: "credential";
+        label: string;
+        target?: string;
+        secret?: boolean;
+      };
   connectionStage?: "starting" | "network" | "host-key" | "authentication" | "ready";
   connectionIssue?: string;
   /** Host keys observed on the network during the last host-key preflight scan

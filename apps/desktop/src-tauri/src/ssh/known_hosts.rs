@@ -2,8 +2,6 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::process::Stdio;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,28 +11,16 @@ use russh::client;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tokio::io::{AsyncRead, AsyncReadExt};
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tokio::process::Command;
 use tokio::time::timeout;
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use super::build_host_key_probe_arguments;
-use super::{classify_error_output, SshConnectionConfig};
+use super::SshConnectionConfig;
 use crate::errors::{LumaError, Result};
 use crate::storage::hosts::{self, Host};
 
 const PROBE_CONNECT_TIMEOUT_SECONDS: u64 = 10;
 const PROBE_PROCESS_TIMEOUT_SECONDS: u64 = 30;
 const PENDING_SCAN_TTL: Duration = Duration::from_secs(120);
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-const MAX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-const MAX_PROBE_DIAGNOSTIC_CHARS: usize = 512;
 const MAX_KNOWN_HOSTS_BYTES: u64 = 4 * 1024 * 1024;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-const MAX_HOST_KEYS: usize = 32;
 
 static PENDING_SCANS: LazyLock<Mutex<HashMap<String, PendingScan>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -82,6 +68,8 @@ struct HostKey {
 
 #[derive(Debug, Clone)]
 struct PendingScan {
+    root_hostname: String,
+    root_port: u16,
     hostname: String,
     port: u16,
     known_hosts_file: PathBuf,
@@ -93,40 +81,6 @@ struct PendingScan {
 struct KnownHostEntries {
     target_entry_exists: bool,
     keys: Vec<HostKey>,
-}
-
-#[derive(Debug)]
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-struct EphemeralKnownHostsFile(PathBuf);
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-impl EphemeralKnownHostsFile {
-    fn create() -> Result<Self> {
-        let path = std::env::temp_dir().join(format!(
-            "luma-host-key-probe-{}.known_hosts",
-            uuid::Uuid::new_v4()
-        ));
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options.open(&path)?;
-        Ok(Self(path))
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-impl Drop for EphemeralKnownHostsFile {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
 }
 
 pub fn file_path(app_data_dir: &Path) -> PathBuf {
@@ -279,22 +233,28 @@ pub async fn status(
 ) -> Result<SshHostKeyStatus> {
     validate_host_id(host_id)?;
     hosts::validate_safe_hostname(config.hostname.trim())?;
-    let hostname = normalized_hostname(&config.hostname);
-    let target = known_host_target(&hostname, config.port);
+    let root_hostname = normalized_hostname(&config.hostname);
 
-    if let Some(keys) = cached_pending_scan(host_id, &hostname, config.port, known_hosts_file) {
+    if let Some(pending) =
+        cached_pending_scan(host_id, &root_hostname, config.port, known_hosts_file)
+    {
+        let target = known_host_target(&pending.hostname, pending.port);
         let entries = read_entries_locked(known_hosts_file, &target)?;
-        let classification = classify_entries(&entries, &keys);
-        if classification != HostKeyStatusKind::Known {
-            return Ok(status_response(classification, &keys, &entries.keys));
+        let classification = classify_entries(&entries, &pending.keys);
+        if classification == HostKeyStatusKind::Known {
+            PENDING_SCANS.lock().unwrap().remove(host_id);
         }
-        PENDING_SCANS.lock().unwrap().remove(host_id);
-        return Ok(status_response(classification, &keys, &entries.keys));
+        return Ok(status_response(
+            classification,
+            &pending.keys,
+            &entries.keys,
+        ));
     }
 
-    let keys = scan_host_keys(config).await?;
+    let scanned = scan_host_keys(config).await?;
+    let target = known_host_target(&scanned.hostname, scanned.port);
     let entries = read_entries_locked(known_hosts_file, &target)?;
-    let classification = classify_entries(&entries, &keys);
+    let classification = classify_entries(&entries, &scanned.keys);
 
     let mut pending = PENDING_SCANS.lock().unwrap();
     prune_expired_scans(&mut pending);
@@ -304,22 +264,28 @@ pub async fn status(
         pending.insert(
             host_id.to_string(),
             PendingScan {
-                hostname,
-                port: config.port,
+                root_hostname,
+                root_port: config.port,
+                hostname: scanned.hostname,
+                port: scanned.port,
                 known_hosts_file: known_hosts_file.to_path_buf(),
-                keys: keys.clone(),
+                keys: scanned.keys.clone(),
                 created_at: Instant::now(),
             },
         );
     }
 
-    Ok(status_response(classification, &keys, &entries.keys))
+    Ok(status_response(
+        classification,
+        &scanned.keys,
+        &entries.keys,
+    ))
 }
 
 pub fn trust(host_id: &str, host: &Host, known_hosts_file: &Path) -> Result<SshHostKeyStatus> {
     validate_host_id(host_id)?;
     hosts::validate_safe_hostname(host.hostname.trim())?;
-    let hostname = normalized_hostname(&host.hostname);
+    let root_hostname = normalized_hostname(&host.hostname);
 
     let pending = {
         let mut scans = PENDING_SCANS.lock().unwrap();
@@ -328,15 +294,20 @@ pub fn trust(host_id: &str, host: &Host, known_hosts_file: &Path) -> Result<SshH
     }
     .ok_or_else(scan_required_error)?;
 
-    if pending.hostname != hostname
-        || pending.port != host.port
+    if pending.root_hostname != root_hostname
+        || pending.root_port != host.port
         || pending.known_hosts_file != known_hosts_file
     {
         PENDING_SCANS.lock().unwrap().remove(host_id);
         return Err(scan_required_error());
     }
 
-    let result = trust_scanned_keys(known_hosts_file, &hostname, host.port, &pending.keys);
+    let result = trust_scanned_keys(
+        known_hosts_file,
+        &pending.hostname,
+        pending.port,
+        &pending.keys,
+    );
     if result.is_ok()
         || matches!(
             &result,
@@ -360,17 +331,17 @@ fn scan_required_error() -> LumaError {
 
 fn cached_pending_scan(
     host_id: &str,
-    hostname: &str,
-    port: u16,
+    root_hostname: &str,
+    root_port: u16,
     known_hosts_file: &Path,
-) -> Option<Vec<HostKey>> {
+) -> Option<PendingScan> {
     let mut scans = PENDING_SCANS.lock().unwrap();
     prune_expired_scans(&mut scans);
     scans.get(host_id).and_then(|scan| {
-        (scan.hostname == hostname
-            && scan.port == port
+        (scan.root_hostname == root_hostname
+            && scan.root_port == root_port
             && scan.known_hosts_file == known_hosts_file)
-            .then(|| scan.keys.clone())
+            .then(|| scan.clone())
     })
 }
 
@@ -378,110 +349,17 @@ fn prune_expired_scans(scans: &mut HashMap<String, PendingScan>) {
     scans.retain(|_, scan| scan.created_at.elapsed() <= PENDING_SCAN_TTL);
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-struct CappedOutput {
-    bytes: Vec<u8>,
-    exceeded: bool,
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-async fn read_capped_output<R>(mut reader: R) -> io::Result<CappedOutput>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut bytes = Vec::with_capacity(MAX_PROBE_OUTPUT_BYTES.min(16 * 1024));
-    let mut exceeded = false;
-    let mut buffer = [0_u8; 8192];
-    loop {
-        let read = reader.read(&mut buffer).await?;
-        if read == 0 {
-            break;
-        }
-        let remaining = MAX_PROBE_OUTPUT_BYTES.saturating_sub(bytes.len());
-        bytes.extend_from_slice(&buffer[..read.min(remaining)]);
-        exceeded |= read > remaining;
-    }
-    Ok(CappedOutput { bytes, exceeded })
-}
-
-async fn scan_host_keys(config: &SshConnectionConfig) -> Result<Vec<HostKey>> {
-    if config.proxy_jumps.is_empty() {
-        return scan_host_key_embedded(config).await;
-    }
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    return Err(LumaError::CapabilityUnavailable {
-        feature: "systemSsh",
-        message:
-            "ProxyJump host-key scanning requires system OpenSSH, which is unavailable on mobile"
-                .into(),
-    });
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        let temporary_known_hosts = EphemeralKnownHostsFile::create()?;
-        let arguments = build_host_key_probe_arguments(
-            config,
-            temporary_known_hosts.path(),
-            PROBE_CONNECT_TIMEOUT_SECONDS,
-        );
-        let mut command = Command::new(&config.executable);
-        crate::platform::hide_background_tokio_command(&mut command);
-        command
-            .args(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
-        let mut child = command.spawn().map_err(|error| {
-            LumaError::SshUnavailable(format!("failed to start system OpenSSH probe: {error}"))
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| {
-            LumaError::SshUnavailable("failed to capture system OpenSSH probe output".into())
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| {
-            LumaError::SshUnavailable("failed to capture system OpenSSH probe diagnostics".into())
-        })?;
-        let capture = async move {
-            let (stdout, stderr, status) = tokio::join!(
-                read_capped_output(stdout),
-                read_capped_output(stderr),
-                child.wait()
-            );
-            status?;
-            Ok::<_, io::Error>((stdout?, stderr?))
-        };
-        let (stdout, stderr) = timeout(Duration::from_secs(PROBE_PROCESS_TIMEOUT_SECONDS), capture)
-            .await
-            .map_err(|_| LumaError::SshConnection {
-                category: "timeout",
-                message: format!(
-                "The SSH host-key probe timed out after {PROBE_PROCESS_TIMEOUT_SECONDS} seconds."
-            ),
-            })??;
-
-        if stdout.exceeded || stderr.exceeded {
-            return Err(LumaError::SshConnection {
-                category: "host-key-scan-failed",
-                message: "The SSH host-key probe returned too much diagnostic data.".into(),
-            });
-        }
-
-        let keys = read_probe_keys(temporary_known_hosts.path())?;
-        if !keys.is_empty() {
-            return Ok(keys);
-        }
-
-        let diagnostic = short_redacted_diagnostic(&stderr.bytes);
-        if !diagnostic.is_empty() {
-            tracing::warn!(reason = %diagnostic, "SSH host-key probe did not record a target key");
-        }
-        Err(probe_failure_error(&diagnostic))
-    }
+#[derive(Debug)]
+struct ScannedNode {
+    hostname: String,
+    port: u16,
+    keys: Vec<HostKey>,
 }
 
 #[derive(Clone)]
 struct ProbeClient {
-    key: std::sync::Arc<Mutex<Option<tokio::sync::oneshot::Sender<russh::keys::PublicKey>>>>,
+    trusted_keys: std::sync::Arc<Vec<russh::keys::PublicKey>>,
+    captured: std::sync::Arc<Mutex<Option<russh::keys::PublicKey>>>,
 }
 
 impl client::Handler for ProbeClient {
@@ -491,138 +369,208 @@ impl client::Handler for ProbeClient {
         &mut self,
         key: &russh::keys::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        if let Some(sender) = self.key.lock().unwrap().take() {
-            let _ = sender.send(key.clone());
-        }
-        Ok(false)
+        *self.captured.lock().unwrap() = Some(key.clone());
+        Ok(self.trusted_keys.iter().any(|trusted| trusted == key))
     }
 }
 
-async fn scan_host_key_embedded(config: &SshConnectionConfig) -> Result<Vec<HostKey>> {
-    let (key_sender, key_receiver) = tokio::sync::oneshot::channel();
-    let captured = std::sync::Arc::new(Mutex::new(Some(key_sender)));
+struct ProbeOutcome {
+    handle: Option<client::Handle<ProbeClient>>,
+    key: HostKey,
+}
+
+async fn probe_stream<S>(config: &SshConnectionConfig, stream: S) -> Result<ProbeOutcome>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let captured = std::sync::Arc::new(Mutex::new(None));
+    let trusted_keys = std::sync::Arc::new(trusted_public_keys(config)?);
     let client_config = std::sync::Arc::new(client::Config {
         inactivity_timeout: Some(Duration::from_secs(PROBE_CONNECT_TIMEOUT_SECONDS)),
         ..Default::default()
     });
-    let hostname = config.hostname.clone();
-    let port = config.port;
-    let operation = tokio::spawn(client::connect(
-        client_config,
-        (hostname, port),
-        ProbeClient {
-            key: std::sync::Arc::clone(&captured),
-        },
-    ));
     let result = timeout(
         Duration::from_secs(PROBE_PROCESS_TIMEOUT_SECONDS),
-        key_receiver,
+        client::connect_stream(
+            client_config,
+            stream,
+            ProbeClient {
+                trusted_keys,
+                captured: std::sync::Arc::clone(&captured),
+            },
+        ),
     )
-    .await;
-    if let Ok(Ok(ref key)) = result {
-        operation.abort();
-        let encoded = key.to_openssh().map_err(|error| LumaError::SshConnection {
-            category: "host-key-scan-failed",
-            message: format!("The server host key could not be encoded: {error}"),
-        })?;
-        let mut fields = encoded.split_whitespace();
-        if let (Some(key_type), Some(key_data)) = (fields.next(), fields.next()) {
-            if let Some(key) = host_key(key_type, key_data) {
-                return Ok(vec![key]);
-            }
-        }
-    }
-    match result {
-        Err(_) => {
-            operation.abort();
-            Err(LumaError::SshConnection {
-                category: "timeout",
+    .await
+    .map_err(|_| LumaError::SshConnection {
+        category: "timeout",
+        message: format!(
+            "The SSH host-key probe for {} timed out after {PROBE_PROCESS_TIMEOUT_SECONDS} seconds.",
+            display_target(config)
+        ),
+    })?;
+    let key = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| match &result {
+            Err(error) => probe_failure_error(&error.to_string()),
+            Ok(_) => LumaError::SshConnection {
+                category: "host-key-scan-failed",
                 message: format!(
-                    "The SSH host-key probe timed out after {PROBE_PROCESS_TIMEOUT_SECONDS} seconds."
+                    "{} did not present an SSH host key.",
+                    display_target(config)
                 ),
-            })
+            },
+        })?;
+    let key = public_key_to_host_key(&key)?;
+    Ok(ProbeOutcome {
+        handle: result.ok(),
+        key,
+    })
+}
+
+async fn scan_host_keys(config: &SshConnectionConfig) -> Result<ScannedNode> {
+    let mut route = config.proxy_jumps.to_vec();
+    let mut target = config.clone();
+    target.proxy_jumps.clear();
+    route.push(target);
+    let first = route
+        .first()
+        .ok_or_else(|| LumaError::InvalidInput("SSH route is empty".into()))?;
+    let stream = super::embedded::connect_tcp_stream(
+        first,
+        Duration::from_secs(PROBE_CONNECT_TIMEOUT_SECONDS),
+    )
+    .await?;
+    let mut outcome = probe_stream(first, stream).await?;
+    let mut predecessors = Vec::with_capacity(route.len().saturating_sub(1));
+
+    for (index, node) in route.iter().enumerate() {
+        let target = known_host_target(&normalized_hostname(&node.hostname), node.port);
+        let entries = read_entries_locked(&node.known_hosts_file, &target)?;
+        let keys = vec![outcome.key.clone()];
+        let classification = classify_entries(&entries, &keys);
+        if classification != HostKeyStatusKind::Known || index + 1 == route.len() {
+            return Ok(ScannedNode {
+                hostname: normalized_hostname(&node.hostname),
+                port: node.port,
+                keys,
+            });
         }
-        Ok(Err(_)) => match operation.await {
-            Ok(Err(error)) => Err(probe_failure_error(&error.to_string())),
-            Ok(Ok(_)) => Err(LumaError::SshConnection {
+
+        let mut handle = outcome
+            .handle
+            .take()
+            .ok_or_else(|| LumaError::SshConnection {
                 category: "host-key-scan-failed",
-                message: "The SSH server did not present a host key.".into(),
-            }),
-            Err(error) => Err(LumaError::SshConnection {
-                category: "host-key-scan-failed",
-                message: format!("The SSH host-key probe failed: {error}"),
-            }),
-        },
-        Ok(Ok(_)) => unreachable!("successful key delivery returns above"),
+                message: format!(
+                    "The trusted SSH handshake for {} did not complete.",
+                    display_target(node)
+                ),
+            })?;
+        super::embedded_auth::authenticate_without_prompts(
+            &mut handle,
+            node,
+            super::embedded::EmbeddedSshTimeouts::default(),
+        )
+        .await
+        .map_err(|error| scan_auth_error(node, error))?;
+        let next = &route[index + 1];
+        let stream = super::embedded::open_proxy_stream(
+            &handle,
+            next,
+            Duration::from_secs(PROBE_CONNECT_TIMEOUT_SECONDS),
+        )
+        .await?;
+        let next_outcome = probe_stream(next, stream).await?;
+        predecessors.push(handle);
+        outcome = next_outcome;
     }
+    unreachable!("SSH route always contains a target")
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn read_probe_keys(path: &Path) -> Result<Vec<HostKey>> {
-    let metadata = fs::metadata(path)?;
-    if metadata.len() > MAX_PROBE_OUTPUT_BYTES as u64 {
-        return Err(LumaError::SshConnection {
-            category: "host-key-scan-failed",
-            message: "The SSH host-key probe recorded too much key data.".into(),
-        });
-    }
-    parse_scanned_keys(&fs::read(path)?)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn short_redacted_diagnostic(stderr: &[u8]) -> String {
-    let diagnostic = String::from_utf8_lossy(stderr);
-    let redacted = crate::logging::redact(&diagnostic);
-    let mut result = String::new();
-    for token in redacted.split_whitespace() {
-        let token = if looks_like_encoded_key_material(token) {
-            "[REDACTED KEY MATERIAL]"
-        } else {
-            token
-        };
-        let separator = usize::from(!result.is_empty());
-        if result.chars().count() + separator + token.chars().count() > MAX_PROBE_DIAGNOSTIC_CHARS {
-            if !result.is_empty() {
-                result.push('…');
-            }
-            break;
-        }
-        if !result.is_empty() {
-            result.push(' ');
-        }
-        result.push_str(token);
-    }
-    result
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn looks_like_encoded_key_material(token: &str) -> bool {
-    let token = token.trim_matches(|character: char| {
-        matches!(character, ',' | ';' | '(' | ')' | '[' | ']' | '"' | '\'')
-    });
-    token.len() >= 40
-        && token.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=')
+fn trusted_public_keys(config: &SshConnectionConfig) -> Result<Vec<russh::keys::PublicKey>> {
+    let text = match fs::read_to_string(&config.known_hosts_file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let target = known_host_target(&normalized_hostname(&config.hostname), config.port);
+    Ok(text
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            let offset = usize::from(fields.first().is_some_and(|field| field.starts_with('@')));
+            let hosts = fields.get(offset)?;
+            let algorithm = fields.get(offset + 1)?;
+            let encoded = fields.get(offset + 2)?;
+            host_list_contains(hosts, &target)
+                .then(|| russh::keys::PublicKey::from_openssh(&format!("{algorithm} {encoded}")))
+                .and_then(std::result::Result::ok)
         })
+        .collect())
+}
+
+fn public_key_to_host_key(key: &russh::keys::PublicKey) -> Result<HostKey> {
+    let encoded = key.to_openssh().map_err(|error| LumaError::SshConnection {
+        category: "host-key-scan-failed",
+        message: format!("The server host key could not be encoded: {error}"),
+    })?;
+    let mut fields = encoded.split_whitespace();
+    let key_type = fields.next().ok_or_else(|| LumaError::SshConnection {
+        category: "host-key-scan-failed",
+        message: "The server host key type was missing.".into(),
+    })?;
+    let key_data = fields.next().ok_or_else(|| LumaError::SshConnection {
+        category: "host-key-scan-failed",
+        message: "The server host key data was missing.".into(),
+    })?;
+    host_key(key_type, key_data).ok_or_else(|| LumaError::SshConnection {
+        category: "host-key-scan-failed",
+        message: "The server host key was invalid.".into(),
+    })
+}
+
+fn display_target(config: &SshConnectionConfig) -> String {
+    match config.username.as_deref() {
+        Some(username) => format!("{username}@{}", config.hostname),
+        None => config.hostname.clone(),
+    }
+}
+
+fn scan_auth_error(config: &SshConnectionConfig, error: LumaError) -> LumaError {
+    if matches!(
+        error.category(),
+        "auth-failed" | "key-unavailable" | "key-passphrase-invalid"
+    ) {
+        return LumaError::SshConnection {
+            category: "host-key-scan-requires-auth",
+            message: format!(
+                "Saved credentials are required to authenticate {} before scanning the next SSH host key.",
+                display_target(config)
+            ),
+        };
+    }
+    error
 }
 
 fn probe_failure_error(diagnostic: &str) -> LumaError {
-    let classified = classify_error_output(diagnostic).filter(|(category, _)| {
-        matches!(
-            *category,
-            "dns-failed" | "host-unreachable" | "timeout" | "host-key-changed"
-        )
-    });
-    let (category, base_message) = classified.unwrap_or((
-        "host-key-scan-failed",
-        "No SSH host key could be obtained through the configured route.",
-    ));
-    let message = if diagnostic.is_empty() {
-        base_message.to_string()
+    let lower = diagnostic.to_ascii_lowercase();
+    let category = if lower.contains("timed out") {
+        "timeout"
+    } else if lower.contains("refused") || lower.contains("unreachable") {
+        "host-unreachable"
     } else {
-        format!("{base_message} OpenSSH reported: {diagnostic}")
+        "host-key-scan-failed"
     };
-    LumaError::SshConnection { category, message }
+    LumaError::SshConnection {
+        category,
+        message: if diagnostic.is_empty() {
+            "No SSH host key could be obtained through the configured route.".into()
+        } else {
+            format!("The SSH host-key probe failed: {diagnostic}")
+        },
+    }
 }
 
 fn normalized_hostname(hostname: &str) -> String {
@@ -643,57 +591,6 @@ fn known_host_target(hostname: &str, port: u16) -> String {
     } else {
         format!("[{hostname}]:{port}")
     }
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn parse_scanned_keys(output: &[u8]) -> Result<Vec<HostKey>> {
-    let text = std::str::from_utf8(output).map_err(|_| LumaError::SshConnection {
-        category: "host-key-scan-failed",
-        message: "The host key scan returned invalid text.".into(),
-    })?;
-    let mut keys = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        let offset = usize::from(fields.first().is_some_and(|field| field.starts_with('@')));
-        let Some(key_type) = fields.get(offset + 1).copied() else {
-            continue;
-        };
-        let Some(encoded_key) = fields.get(offset + 2).copied() else {
-            continue;
-        };
-        if !valid_key_type(key_type) {
-            continue;
-        }
-        let Some(key) = host_key(key_type, encoded_key) else {
-            continue;
-        };
-        if !keys.iter().any(|existing: &HostKey| {
-            existing.key_type == key.key_type && existing.encoded_key == key.encoded_key
-        }) {
-            keys.push(key);
-        }
-        if keys.len() > MAX_HOST_KEYS {
-            return Err(LumaError::SshConnection {
-                category: "host-key-scan-failed",
-                message: "The host key scan returned too many keys.".into(),
-            });
-        }
-    }
-    sort_keys(&mut keys);
-    Ok(keys)
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn valid_key_type(key_type: &str) -> bool {
-    !key_type.is_empty()
-        && key_type.len() <= 128
-        && key_type.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | '@' | '+')
-        })
 }
 
 fn host_key(key_type: &str, encoded_key: &str) -> Option<HostKey> {
@@ -890,25 +787,6 @@ mod tests {
         STANDARD.encode(value)
     }
 
-    #[tokio::test]
-    async fn probe_output_capture_stays_within_the_configured_cap() {
-        use tokio::io::AsyncWriteExt;
-
-        let (mut writer, reader) = tokio::io::duplex(16 * 1024);
-        let writer_task = tokio::spawn(async move {
-            writer
-                .write_all(&vec![b'x'; MAX_PROBE_OUTPUT_BYTES + 128])
-                .await
-                .unwrap();
-            writer.shutdown().await.unwrap();
-        });
-        let captured = read_capped_output(reader).await.unwrap();
-        writer_task.await.unwrap();
-
-        assert_eq!(captured.bytes.len(), MAX_PROBE_OUTPUT_BYTES);
-        assert!(captured.exceeded);
-    }
-
     fn key(key_type: &str, value: &[u8]) -> HostKey {
         host_key(key_type, &encoded(value)).unwrap()
     }
@@ -992,22 +870,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_probe_known_hosts_lines_into_fingerprints() {
-        let first = encoded(b"first key");
-        let second = encoded(b"second key");
-        let output = format!(
-            "# OpenSSH comment\n|1|hashed-host|hashed-value ssh-ed25519 {first}\n[alias.example.com]:2222 ssh-rsa {second} optional-comment\n"
-        );
-        let keys = parse_scanned_keys(output.as_bytes()).unwrap();
-        assert_eq!(keys.len(), 2);
-        assert!(keys
-            .iter()
-            .all(|key| key.fingerprint.starts_with("SHA256:")));
-        assert!(keys.iter().any(|key| key.key_type == "ssh-ed25519"));
-        assert!(keys.iter().any(|key| key.key_type == "ssh-rsa"));
-    }
-
-    #[test]
     fn management_list_parses_entries_and_remove_preserves_other_bytes() {
         let path = test_path("management");
         let plain = encoded(b"plain management key");
@@ -1034,29 +896,5 @@ mod tests {
         );
         assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
         let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn ephemeral_probe_known_hosts_file_is_removed_on_drop() {
-        let temporary = EphemeralKnownHostsFile::create().unwrap();
-        let path = temporary.path().to_path_buf();
-        assert!(path.is_file());
-        drop(temporary);
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn probe_diagnostic_is_redacted_short_and_classified() {
-        let secret = "A".repeat(80);
-        let stderr = format!(
-            "proxy password=hunter2 failed with {secret}\nssh: connect to host relay port 22: Connection timed out"
-        );
-        let diagnostic = short_redacted_diagnostic(stderr.as_bytes());
-        assert!(diagnostic.contains("password=[REDACTED]"));
-        assert!(diagnostic.contains("[REDACTED KEY MATERIAL]"));
-        assert!(!diagnostic.contains("hunter2"));
-        assert!(!diagnostic.contains(&secret));
-        assert!(diagnostic.chars().count() <= MAX_PROBE_DIAGNOSTIC_CHARS + 1);
-        assert_eq!(probe_failure_error(&diagnostic).category(), "timeout");
     }
 }

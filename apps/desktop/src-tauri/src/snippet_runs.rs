@@ -10,7 +10,7 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::{watch, Semaphore};
 
 use crate::errors::{LumaError, Result};
-use crate::ssh::{self, SshBackend};
+use crate::ssh;
 use crate::vault::VaultState;
 use crate::AppState;
 
@@ -260,13 +260,6 @@ async fn run_host(
         let vault = app.state::<VaultState>();
         let (mut config, _) = ssh::connection_config(&state.pool, &vault, host_id).await?;
         config.startup_command = None;
-        if ssh::select_backend(&config)? != SshBackend::Embedded {
-            return Err(LumaError::SshConnection {
-                category: "unsupported",
-                message: "Non-interactive snippet execution is unavailable for hosts that require system OpenSSH".into(),
-            });
-        }
-
         let handle = ssh::authenticated_handle(&config).await?;
         let mut channel =
             tokio::time::timeout(Duration::from_secs(15), handle.channel_open_session())

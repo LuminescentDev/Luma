@@ -62,7 +62,7 @@ describe("reduceEvent (per-host reduction)", () => {
         hostId: "h1",
         kind: "failed",
         errorCategory: "unsupported",
-        errorMessage: "needs system OpenSSH",
+        errorMessage: "non-interactive execution unavailable",
       },
     ]);
     expect(hosts.h1.status).toBe("unsupported");

@@ -32,7 +32,6 @@ commands.allow = [
   "identity_create",
   "identity_update",
   "identity_delete",
-  "ssh_detect",
   "quick_connect_prepare",
   "quick_connect_save",
   "ssh_ping",

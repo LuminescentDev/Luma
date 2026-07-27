@@ -12,7 +12,6 @@ function callbacks(onExit: (exit: SessionExit) => void = () => {}) {
     onSshAuthenticated: () => {},
     onSshPrompt: () => {},
     onSshProgress: () => {},
-    onSshIssue: () => {},
     onRemoteOs: () => {},
   };
 }

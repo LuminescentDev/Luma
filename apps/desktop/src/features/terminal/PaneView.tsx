@@ -588,8 +588,9 @@ function ConnectionOverlay({ session, onClose }: { session: TerminalSession; onC
         {prompt?.type === "credential" && <>
           <KeyRound className="text-accent" size={28} />
           <h2 className="mt-4 text-base font-semibold">Authentication required</h2>
-          <p className="mt-1 text-sm text-muted">Enter the {prompt.label.toLowerCase()} for {session.title}.</p>
-          <input autoFocus type="password" value={secret} onChange={(event) => setSecret(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitSecret(); }} aria-label={prompt.label} className="mt-4 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-accent" />
+          <p className="mt-1 text-sm text-muted">{prompt.label}</p>
+          <p className="mt-1 text-xs text-muted">Requested by {prompt.target ?? session.connectionTarget ?? session.title}.</p>
+          <input autoFocus type={prompt.secret === false ? "text" : "password"} value={secret} onChange={(event) => setSecret(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitSecret(); }} aria-label={prompt.label} className="mt-4 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-accent" />
           <div className="mt-5 flex justify-end gap-2">
             <button onClick={onClose} className="rounded-md border border-border px-3 py-2 text-sm text-muted hover:text-foreground">Cancel</button>
             <button disabled={!secret} onClick={submitSecret} className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-accent-foreground disabled:opacity-40">Continue</button>

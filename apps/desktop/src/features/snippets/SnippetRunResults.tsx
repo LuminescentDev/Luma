@@ -8,7 +8,7 @@ import { cn } from "../../lib/utils";
  * Per-host result rows for a multi-host snippet run. Output is keyed strictly by
  * hostId (the store never mixes hosts), with stdout and stderr shown as visually
  * distinct blocks. Failures explain the SSH category; "unsupported" hosts get a
- * dedicated hint since embedded exec is unavailable for system-OpenSSH hosts.
+ * dedicated hint for unavailable non-interactive execution.
  */
 
 const STATUS_CHIP: Record<HostRunStatus, { label: string; className: string }> = {
@@ -88,8 +88,8 @@ function HostResultRow({ host, name }: { host: HostRunState; name: string }) {
         <div className="space-y-2 border-t border-border bg-background/40 px-3 py-2">
           {host.status === "unsupported" && (
             <p className="text-xs text-amber-400">
-              This host requires system OpenSSH, so non-interactive snippet
-              execution is unavailable — run it in a terminal instead.
+              Non-interactive snippet execution is unavailable for this host —
+              run it in a terminal instead.
             </p>
           )}
           {host.status === "failed" && (

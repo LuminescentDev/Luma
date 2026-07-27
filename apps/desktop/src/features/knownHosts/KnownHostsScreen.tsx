@@ -27,7 +27,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { cn } from "../../lib/utils";
 
 /*
- * Known-hosts manager. Lists Luma's OpenSSH known_hosts trust store so a stale
+ * Known-hosts manager. Lists Luma's managed known_hosts trust store so a stale
  * or unexpected host key can be removed — after which reconnecting re-prompts to
  * trust the server. This is the manual remediation path referenced by the
  * changed-host-key alert. Line numbers shift on every removal, so the list is

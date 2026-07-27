@@ -11,27 +11,6 @@ pub fn home_dir() -> Option<PathBuf> {
     var.map(PathBuf::from).filter(|path| path.is_dir())
 }
 
-/// Prevent background console programs from creating visible windows when
-/// Luma is built as a Windows GUI application. Interactive shells are spawned
-/// through ConPTY and must not use this helper.
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn hide_background_std_command(command: &mut std::process::Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    #[cfg(not(windows))]
-    let _ = command;
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn hide_background_tokio_command(command: &mut tokio::process::Command) {
-    hide_background_std_command(command.as_std_mut());
-}
-
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

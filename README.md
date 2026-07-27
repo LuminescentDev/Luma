@@ -30,15 +30,15 @@ account or paid cloud service.
 ### SSH and host management
 
 - Saved hosts, groups, favorites, tags, search, and recent connections
-- Embedded SSH via russh for saved password and private-key connections,
-  including supported mobile connections; system OpenSSH handles ProxyJump,
-  agent, hardware-token, and fully interactive authentication
+- A single embedded SSH engine via russh across desktop and mobile, including
+  private-key, password, keyboard-interactive, and ProxyJump connections
 - Reusable named identities with usernames and optional key references;
   passwords use the OS credential store on desktop and support encrypted sync
 - Encrypted and passphrase-protected private keys, public-key derivation, and
   SSH certificates
-- ProxyJump, agent forwarding, keepalive, startup commands, working
-  directories, and per-host environment variables
+- OS SSH agents and hardware-token-only keys are not supported
+- ProxyJump, keepalive, startup commands, working directories, and per-host
+  environment variables
 - Explicit unknown-host confirmation and changed-host-key warnings
 - Import from OpenSSH config and Termius vault exports
 - Parsed connection errors with reconnect support
@@ -73,8 +73,8 @@ account or paid cloud service.
 - **Application:** Tauri 2, Rust, Tokio
 - **Frontend:** React 19, TypeScript, Vite, Zustand, TanStack Query, Tailwind
   CSS, Radix UI, xterm.js
-- **Backend:** portable-pty, embedded SSH via russh, system OpenSSH, SQLite via
-  SQLx, russh-sftp, serialport
+- **Backend:** portable-pty, embedded SSH via russh, SQLite via SQLx,
+  russh-sftp, serialport
 - **Security:** keyring, Argon2id, XChaCha20-Poly1305
 
 Terminal byte streams flow directly between the Rust backend and xterm.js
@@ -89,9 +89,6 @@ through Tauri channels. React stores session metadata, not terminal output.
 - [pnpm](https://pnpm.io)
 - The [Tauri platform prerequisites](https://tauri.app/start/prerequisites/)
   for your operating system
-- A system OpenSSH client for ProxyJump, agent, hardware-token, or fully
-  interactive SSH authentication on desktop
-
 On Linux, serial support also requires the libudev development package (for
 example, `libudev-dev` on Ubuntu).
 
@@ -178,7 +175,7 @@ apps/
       src/commands/     Tauri command boundary
       src/storage/      SQLite repositories
       src/terminal/     PTY lifecycle and streaming
-      src/ssh/          Embedded/system SSH, known-host, and tunnel support
+      src/ssh/          Embedded SSH, known-host, and tunnel support
       src/sftp/         File operations and transfers
       src/sync/         Encryption, merge logic, and sync providers
       migrations/       Versioned SQLite schema

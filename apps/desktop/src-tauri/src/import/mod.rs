@@ -709,11 +709,7 @@ fn authentication_type(candidate: &ParsedCandidate) -> &'static str {
     if candidate.identity_file.is_some() {
         return "key";
     }
-    match candidate.auth_hint.as_str() {
-        "password" | "keyboard-interactive" => "interactive",
-        "public-key" | "agent" | "unknown" => "agent",
-        _ => "agent",
-    }
+    "interactive"
 }
 
 struct PreparedHost {
@@ -1044,6 +1040,6 @@ profiles:
             auth_hint: "public-key".into(),
             identity_file: None,
         };
-        assert_eq!(authentication_type(&candidate), "agent");
+        assert_eq!(authentication_type(&candidate), "interactive");
     }
 }

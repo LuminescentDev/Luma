@@ -3,7 +3,7 @@ import { RotateCcw, ServerOff, X } from "lucide-react";
 /*
  * Prominent centered card shown when the SSH host-key PREFLIGHT fails before the
  * terminal is ever spawned (unreachable host, DNS failure, timeout, key-scan or
- * known_hosts-file problems, missing OpenSSH, invalid input). Unlike a runtime
+ * known_hosts-file problems or invalid input). Unlike a runtime
  * disconnect — which is a quiet bottom banner — a connection-setup failure means
  * nothing ever started, so it earns the middle of the pane.
  *
