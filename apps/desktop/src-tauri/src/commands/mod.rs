@@ -26,6 +26,8 @@ mod hosts;
 mod import;
 mod keystore;
 mod known_hosts;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod live_activity;
 mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod port_forwards;
@@ -42,6 +44,8 @@ pub use hosts::*;
 pub use import::*;
 pub use keystore::*;
 pub use known_hosts::*;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub use live_activity::*;
 pub use platform::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use port_forwards::*;

@@ -1,6 +1,7 @@
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 import { SETTING_KEYS, type ThemeMode } from "../../types";
 import { cn } from "../../lib/utils";
 import { AppearanceSection } from "../settings/AppearanceSection";
@@ -14,9 +15,10 @@ import { CollaborationSection } from "../collaboration/CollaborationSection";
  * Mobile settings. A capability-gated subset of the desktop screen: no local
  * shell / default-shell picker, no shell profiles, no serial, no port
  * forwarding, no updater, and (via SyncSection) no folder-based sync provider.
- * What remains: appearance, terminal scrollback, SSH auto-reconnect, account,
- * sync (WebDAV + Gist + Luma Cloud), collaboration, and encrypted backup
- * import/export (system pickers via the dialog plugin).
+ * What remains: appearance, terminal scrollback, SSH auto-reconnect, the iOS-only
+ * Live Activity toggle, account, sync (WebDAV + Gist + Luma Cloud),
+ * collaboration, and encrypted backup import/export (system pickers via the
+ * dialog plugin).
  */
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -32,6 +34,8 @@ export function MobileSettingsScreen() {
 
   const scrollback = Number(settings?.[SETTING_KEYS.scrollback] ?? 5000);
   const autoReconnect = settings?.[SETTING_KEYS.autoReconnect] !== false;
+  const liveActivity = settings?.[SETTING_KEYS.liveActivity] !== false;
+  const isIos = useCapabilityStore((s) => s.capabilities.os === "ios");
 
   return (
     <div className="h-full overflow-y-auto bg-background">
@@ -102,6 +106,23 @@ export function MobileSettingsScreen() {
               }
             />
           </Field>
+          {isIos && (
+            <Field
+              label="Live Activity"
+              hint="Shows open connections and transfers on the lock screen and Dynamic Island. iOS suspends Luma in the background, so the card dims once its state can no longer be trusted."
+            >
+              <Toggle
+                checked={liveActivity}
+                label="Live Activity"
+                onClick={() =>
+                  setSetting.mutate({
+                    key: SETTING_KEYS.liveActivity,
+                    value: !liveActivity,
+                  })
+                }
+              />
+            </Field>
+          )}
         </Section>
 
         <Section title="Account">

@@ -31,6 +31,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: Shared
       - path: Assets.xcassets
       - path: ../../../../../branding/icon-composer/star.icon
       - path: Externals
@@ -47,6 +48,7 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         LSRequiresIPhoneOS: true
         NSLocalNetworkUsageDescription: Luma uses your local network to connect to SSH servers and transfer files.
+        NSSupportsLiveActivities: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:
@@ -79,8 +81,15 @@ targets:
         LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
         EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+        SWIFT_VERSION: '5.0'
+        # ActivityKit is iOS 16.1+ and this target deploys to 14.0; without the weak
+        # link dyld fails the app at launch on older systems instead of letting the
+        # availability guards in LumaLiveActivity.swift take effect.
+        OTHER_LDFLAGS: $(inherited) -weak_framework ActivityKit
       groups: [app]
     dependencies:
+      - target: LumaLiveActivityExtension
+        embed: true
       - framework: libapp.a
         embed: false
       - sdk: CoreGraphics.framework
@@ -110,3 +119,38 @@ targets:
         outputFiles:
           - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
           - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+  LumaLiveActivityExtension:
+    type: app-extension
+    platform: iOS
+    # Live Activities need 16.1 and ActivityContent(state:staleDate:) needs 16.2.
+    deploymentTarget: '16.2'
+    sources:
+      - path: LumaLiveActivityExtension
+      - path: Shared
+    info:
+      path: LumaLiveActivityExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Luma
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: LumaLiveActivity
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bwmp.luma.LiveActivity
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 828MX392ZN
+        # Must track the app target: the App Store rejects an extension whose
+        # version differs from its host app.
+        MARKETING_VERSION: 0.14.2
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: '5.0'
+        ENABLE_BITCODE: false
+        SKIP_INSTALL: true
+        ARCHS: [arm64]
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+    dependencies:
+      - sdk: ActivityKit.framework
+      - sdk: SwiftUI.framework
+      - sdk: WidgetKit.framework

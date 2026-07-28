@@ -173,4 +173,7 @@ export const SETTING_KEYS = {
   terminalCustomThemes: "terminal.customThemes",
   /** Terminal font family (CSS font stack); empty falls back to the default. */
   terminalFontFamily: "terminal.fontFamily",
+  /** iOS-only toggle: mirror open connections and transfers to a Live Activity on
+   * the lock screen and Dynamic Island. Default on; ignored elsewhere. */
+  liveActivity: "mobile.liveActivity",
 } as const;

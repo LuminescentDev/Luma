@@ -355,6 +355,7 @@ pub fn run() {
         commands::sync_disable,
         commands::sync_now,
         commands::sync_resolve,
+        commands::live_activity_sync,
     ]);
 
     let app = builder

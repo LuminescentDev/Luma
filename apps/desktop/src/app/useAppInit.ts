@@ -14,6 +14,7 @@ import {
   parseSnapshot,
   startSnapshotPersistence,
 } from "../features/terminal/sessionSnapshot";
+import { startLiveActivitySync } from "../features/mobile/liveActivity";
 import { SETTING_KEYS } from "../types";
 import { useKeymapStore } from "../stores/keymapStore";
 import { useTerminalStyleStore } from "../stores/terminalStyleStore";
@@ -129,6 +130,9 @@ export function useAppInit(): void {
   const portForwardingAvailable = useCapabilityStore(
     (s) => s.capabilities.features.portForwarding,
   );
+  const isIos = useCapabilityStore((s) => s.capabilities.os === "ios");
+  const liveActivityEnabled =
+    isIos && !!settings && settings[SETTING_KEYS.liveActivity] !== false; // default on
 
   // Push persisted terminal settings into the manager (outside React state).
   useEffect(() => {
@@ -204,6 +208,15 @@ export function useAppInit(): void {
     }, 4000);
     return () => clearTimeout(timer);
   }, [settings, updaterAvailable]);
+
+  // Mirror open connections and transfers to the iOS Live Activity (lock screen
+  // and Dynamic Island). Opt-out; nothing runs on other platforms. Keyed on the
+  // resolved flag rather than `settings` so an unrelated settings write does not
+  // tear the running activity down and start a new one.
+  useEffect(() => {
+    if (!liveActivityEnabled) return;
+    return startLiveActivitySync();
+  }, [liveActivityEnabled]);
 
   // Restore the previous workspace (if enabled) then keep the snapshot fresh.
   useEffect(() => {

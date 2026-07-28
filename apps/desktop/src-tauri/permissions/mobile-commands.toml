@@ -101,4 +101,5 @@ commands.allow = [
   "sync_disable",
   "sync_now",
   "sync_resolve",
+  "live_activity_sync",
 ]
