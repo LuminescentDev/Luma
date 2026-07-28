@@ -9,20 +9,32 @@ import { terminalManager } from "../terminal/terminalManager";
  * grid refits (which triggers the backend ssh_resize through xterm's onResize)
  * without corrupting sizing.
  *
- * Returns the current height in CSS pixels (falls back to window.innerHeight when
- * the API is unavailable, e.g. older WebViews / jsdom).
+ * Returns the visible height and its offset within the layout viewport. iOS can
+ * pan the visual viewport when a regular form field receives focus; applying
+ * both values keeps the mobile shell aligned instead of leaving its top clipped.
  */
-export function useVisualViewportHeight(activeSessionId: string | null): number {
-  const [height, setHeight] = useState<number>(() =>
-    typeof window === "undefined"
-      ? 0
-      : (window.visualViewport?.height ?? window.innerHeight),
-  );
+export function useVisualViewportMetrics(activeSessionId: string | null): {
+  height: number;
+  offsetTop: number;
+} {
+  const [metrics, setMetrics] = useState(() => ({
+    height:
+      typeof window === "undefined"
+        ? 0
+        : (window.visualViewport?.height ?? window.innerHeight),
+    offsetTop:
+      typeof window === "undefined"
+        ? 0
+        : (window.visualViewport?.offsetTop ?? 0),
+  }));
 
   useEffect(() => {
     const vv = window.visualViewport;
     const update = () => {
-      setHeight(vv?.height ?? window.innerHeight);
+      setMetrics({
+        height: vv?.height ?? window.innerHeight,
+        offsetTop: vv?.offsetTop ?? 0,
+      });
       // Refit on the next frame so the container has taken its new height first,
       // then let xterm's onResize propagate the size to the backend.
       if (activeSessionId) {
@@ -46,5 +58,5 @@ export function useVisualViewportHeight(activeSessionId: string | null): number 
     };
   }, [activeSessionId]);
 
-  return height;
+  return metrics;
 }

@@ -1,11 +1,11 @@
-import { useEffect } from "react";
-import { ChevronLeft, Layers, Plus, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { ChevronLeft, Keyboard, Layers, Plus, X } from "lucide-react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { Workspace } from "../terminal/Workspace";
 import { MobileAccessoryBar } from "./MobileAccessoryBar";
-import { useVisualViewportHeight } from "./useVisualViewport";
+import { useVisualViewportMetrics } from "./useVisualViewport";
 import { cn } from "../../lib/utils";
 
 /*
@@ -40,9 +40,14 @@ export function MobileTerminalView({
   const closeTab = useSessionStore((s) => s.closeTab);
   const searchOpen = useUiStore((s) => s.terminalSearchOpen);
   const setSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
+  const [accessoryOpen, setAccessoryOpen] = useState(false);
 
-  const height = useVisualViewportHeight(activeSessionId);
+  const { height, offsetTop } = useVisualViewportMetrics(activeSessionId);
   const activeSession = sessions.find((s) => s.id === activeSessionId);
+  const terminalKeysAvailable =
+    Boolean(activeSessionId) &&
+    !searchOpen &&
+    !activeSession?.connectionPrompt;
 
   // If every tab closed while full-screen, drop back to the session list.
   useEffect(() => {
@@ -57,7 +62,10 @@ export function MobileTerminalView({
   return (
     <div
       className="fixed inset-0 z-30 flex flex-col bg-background"
-      style={{ height: height > 0 ? `${height}px` : "100%" }}
+      style={{
+        height: height > 0 ? `${height}px` : "100%",
+        top: offsetTop > 0 ? `${offsetTop}px` : 0,
+      }}
     >
       <header className="flex shrink-0 items-center gap-1 border-b border-border bg-surface px-1 pt-safe">
         <button
@@ -83,6 +91,20 @@ export function MobileTerminalView({
             {status}
           </p>
         </div>
+        {terminalKeysAvailable && (
+          <button
+            type="button"
+            onClick={() => setAccessoryOpen((open) => !open)}
+            aria-label={`${accessoryOpen ? "Hide" : "Show"} terminal keys`}
+            aria-pressed={accessoryOpen}
+            className={cn(
+              "flex h-11 w-11 items-center justify-center rounded-md active:bg-raised",
+              accessoryOpen ? "bg-raised text-accent" : "text-muted",
+            )}
+          >
+            <Keyboard size={19} />
+          </button>
+        )}
         <SessionSheet
           tabs={tabs}
           activeTabId={activeTabId}
@@ -102,7 +124,7 @@ export function MobileTerminalView({
         <Workspace />
       </div>
 
-      {searchOpen ? null : activeSessionId ? (
+      {terminalKeysAvailable && accessoryOpen && activeSessionId ? (
         <MobileAccessoryBar sessionId={activeSessionId} />
       ) : null}
     </div>

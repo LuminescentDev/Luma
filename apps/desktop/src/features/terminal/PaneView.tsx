@@ -548,9 +548,9 @@ function ConnectionOverlay({ session, onClose }: { session: TerminalSession; onC
       // Keep the native context menu for the credential input rather than the
       // terminal right-click menu that wraps the pane.
       onContextMenu={(event) => event.stopPropagation()}
-      className="absolute inset-0 z-10 flex items-center justify-center bg-background p-6"
+      className="absolute inset-0 z-10 flex items-start justify-center overflow-y-auto bg-background p-3 sm:items-center sm:p-6"
     >
-      <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-6 shadow-xl">
+      <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-4 shadow-xl sm:p-6">
         {session.connectionIssue && <div role="alert" className="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{session.connectionIssue}</div>}
         {!prompt && <div className="text-center">
           <LoaderCircle className="mx-auto animate-spin text-accent" size={28} />

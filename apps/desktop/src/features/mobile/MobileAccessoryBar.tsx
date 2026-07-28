@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -17,9 +17,8 @@ import { useUiStore } from "../../stores/uiStore";
 import { cn } from "../../lib/utils";
 
 /*
- * Terminal accessory key row for touch devices. It sits directly above the
- * on-screen keyboard (the mobile terminal container is sized to the visual
- * viewport, so this row is always reachable). Keys that the soft keyboard can't
+ * Optional terminal key row for touch devices. The terminal header toggles it,
+ * keeping the default keyboard view clear. Keys that the soft keyboard can't
  * produce comfortably — Esc, Tab, control sequences, arrows, and the shell
  * punctuation / - | — are provided here, alongside explicit copy / paste /
  * select-all / search / reconnect / disconnect actions.
@@ -60,6 +59,11 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
   // manager callback) or toggled off.
   const [sticky, setSticky] = useState<"ctrl" | "alt" | null>(null);
 
+  useEffect(
+    () => () => terminalManager.setPendingModifier(sessionId, null),
+    [sessionId],
+  );
+
   const armModifier = (modifier: "ctrl" | "alt") => {
     if (sticky === modifier) {
       terminalManager.setPendingModifier(sessionId, null);
@@ -77,8 +81,12 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
   };
 
   return (
-    <div className="shrink-0 border-t border-border bg-surface pb-safe">
-      <div className="flex items-center gap-1 overflow-x-auto px-1.5 py-1.5">
+    <div className="shrink-0 border-t border-border bg-surface">
+      <div
+        className="flex items-center gap-1 overflow-x-auto px-1.5 py-1"
+        role="toolbar"
+        aria-label="Terminal keys"
+      >
         <ModKey
           label="Ctrl"
           active={sticky === "ctrl"}
@@ -100,7 +108,7 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
           </KeyButton>
         ))}
 
-        <span className="mx-1 h-6 w-px shrink-0 bg-border" aria-hidden="true" />
+        <span className="mx-0.5 h-5 w-px shrink-0 bg-border" aria-hidden="true" />
 
         <ActionKey aria="Copy selection" onPress={() => terminalManager.copySelection(sessionId)}>
           <ClipboardCopy size={16} />
@@ -153,8 +161,8 @@ function KeyButton({
       onMouseDown={preventFocusSteal}
       onClick={onPress}
       className={cn(
-        "flex h-11 shrink-0 items-center justify-center rounded-md border border-border bg-raised text-sm text-foreground active:bg-accent/20",
-        wide ? "min-w-14 px-3" : "min-w-11 px-2",
+        "flex h-9 shrink-0 items-center justify-center rounded-md border border-border bg-raised text-sm text-foreground active:bg-accent/20",
+        wide ? "min-w-12 px-2.5" : "min-w-9 px-2",
       )}
     >
       {children}
@@ -179,7 +187,7 @@ function ModKey({
       onMouseDown={preventFocusSteal}
       onClick={onPress}
       className={cn(
-        "flex h-11 min-w-12 shrink-0 items-center justify-center rounded-md border px-2 text-sm font-medium",
+        "flex h-9 min-w-11 shrink-0 items-center justify-center rounded-md border px-2 text-xs font-medium",
         active
           ? "border-accent bg-accent text-accent-foreground shadow-glow"
           : "border-border bg-raised text-foreground active:bg-accent/20",
@@ -209,7 +217,7 @@ function ActionKey({
       onMouseDown={preventFocusSteal}
       onClick={onPress}
       className={cn(
-        "flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-border bg-raised active:bg-accent/20",
+        "flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-raised active:bg-accent/20",
         destructive ? "text-danger" : "text-muted",
       )}
     >
