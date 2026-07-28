@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "build": "tsc && vp build && tsx scripts/prerender.tsx",
+    "build": "tsc && vp build && tsx --tsconfig tsconfig.prerender.json scripts/prerender.tsx",
     "preview": "vp preview",
     "typecheck": "tsc --noEmit"
   },
