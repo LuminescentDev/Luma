@@ -5,6 +5,12 @@ pub mod identities;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[path = "identities_mobile.rs"]
 pub mod identities;
+/// The mobile identity store is cfg'd out of desktop builds, and CI only builds
+/// desktop targets — so its tests would never run. Compile it a second time
+/// under its own name in desktop test builds to keep that coverage honest.
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+#[path = "identities_mobile.rs"]
+pub mod identities_mobile;
 pub mod key_references;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod port_forwards;
@@ -12,6 +18,7 @@ pub mod port_forwards;
 pub mod profiles;
 pub mod settings;
 pub mod snippets;
+pub mod vaults;
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -41,6 +48,9 @@ const LEGACY_CRLF_CHECKSUMS: &[(i64, &str)] = &[
     (9, "eb25da2bc4b4cd74450ce4a0c14b23b72ffaf90f2ed06dfaa17ff86c04f4a49a08c13470d7a3bfce11981052ffdbc507"),
     (10, "048870f9eac80f8100896b0ef3fb263b0b11ff5cf263d4ebd2c64e1683275d23d56e70991ddab198b2bf6591bf08cb57"),
     (11, "8cf0be92da2994058716c209c4955f84cce0d2efa7d4a7919aa5c1d0cc1747c6cfb1c95dd05409339706847f6e2af870"),
+    (12, "c3e520af5217bd569e56dddf46145d0f9c88182d2cc7f21dcba98b94bb09438cd5f64df08cb363eaedf1c86315cb19aa"),
+    (13, "9c8b937fcc6ebf80e336a818127d65208defdd6ae41ff23996196183000516b67886ee7a4076eb06b500df564e9bfbb9"),
+    (14, "40281f5190bdde6249d0e4a10210326a2ed6f5e3d80de06f18428791ac5bc36fb501370eaf5ce06b0f8c9d4561a7d5d8"),
 ];
 
 fn is_allowlisted_legacy_checksum(version: i64, recorded: &[u8]) -> bool {
@@ -285,6 +295,209 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tombstoned, 1);
+    }
+
+    /// Apply every shipped migration strictly below `version` to a fresh
+    /// in-memory database, reproducing the schema an upgrading install has just
+    /// before that migration runs.
+    async fn pool_at_migration(version: i64) -> SqlitePool {
+        use std::str::FromStr;
+        let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .unwrap();
+        for migration in MIGRATOR.iter().filter(|m| m.version < version) {
+            apply_migration(&pool, migration.version).await;
+        }
+        pool
+    }
+
+    /// SQLx wraps every migration in a transaction, and SQLite only accepts
+    /// `ALTER TABLE ... ADD COLUMN ... REFERENCES` with a non-NULL default
+    /// inside one. Applying migration SQL any other way would test something
+    /// the app never does.
+    async fn apply_migration(pool: &SqlitePool, version: i64) {
+        let migration = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == version)
+            .unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::raw_sql(&migration.sql)
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn migration_0012_renames_vault_tables_and_preserves_secrets() {
+        let pool = pool_at_migration(12).await;
+        sqlx::query(
+            "INSERT INTO vault_config (id, salt, verifier_nonce, verifier_ciphertext, remember_on_device)
+             VALUES (1, X'00', X'01', X'02', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO vault_secrets (owner_type, owner_id, secret_type, nonce, ciphertext)
+             VALUES ('key', 'k1', 'private-key', X'03', X'04')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_migration(&pool, 12).await;
+
+        let remembered: i64 =
+            sqlx::query_scalar("SELECT remember_on_device FROM keystore_config WHERE id = 1")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remembered, 1);
+
+        let secret: (Vec<u8>, Vec<u8>) = sqlx::query_as(
+            "SELECT nonce, ciphertext FROM keystore_secrets
+             WHERE owner_type = 'key' AND owner_id = 'k1' AND secret_type = 'private-key'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(secret, (vec![0x03], vec![0x04]));
+
+        let leftovers: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name IN ('vault_config', 'vault_secrets', 'vault_metadata')",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(
+            leftovers.is_empty(),
+            "stale vault tables remain: {leftovers:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_0013_backfills_the_personal_vault_and_rebuilds_tombstones() {
+        let pool = pool_at_migration(13).await;
+        sqlx::query(
+            "INSERT INTO host_groups (id, name) VALUES ('g1', 'Group');
+             INSERT INTO key_references (id, name) VALUES ('k1', 'Key');
+             INSERT INTO identities (id, name, username) VALUES ('i1', 'Identity', 'root');
+             INSERT INTO hosts (id, name, hostname, group_id, auth_type, key_id, identity_id)
+             VALUES ('h1', 'Host', 'a.example.com', 'g1', 'key', 'k1', 'i1');
+             INSERT INTO snippets (id, name, command, host_id) VALUES ('s1', 'Snip', 'ls', 'h1');
+             INSERT INTO tombstones (object_type, object_id, deleted_at)
+             VALUES ('host', 'gone', 1700000000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_migration(&pool, 13).await;
+
+        for table in [
+            "hosts",
+            "host_groups",
+            "key_references",
+            "identities",
+            "snippets",
+        ] {
+            let vaults: Vec<String> = sqlx::query_scalar(&format!("SELECT vault_id FROM {table}"))
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                vaults,
+                vec!["personal".to_string()],
+                "{table} was not backfilled"
+            );
+        }
+
+        let tombstone: (String, String, String, i64) =
+            sqlx::query_as("SELECT vault_id, object_type, object_id, deleted_at FROM tombstones")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            tombstone,
+            (
+                "personal".into(),
+                "host".into(),
+                "gone".into(),
+                1_700_000_000
+            )
+        );
+
+        let vault: (String, String, i64) =
+            sqlx::query_as("SELECT id, kind, share_secrets FROM vaults")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(vault, ("personal".into(), "personal".into(), 0));
+    }
+
+    #[tokio::test]
+    async fn migration_0014_moves_existing_sync_configuration_to_the_personal_vault() {
+        let pool = pool_at_migration(14).await;
+        sqlx::query(
+            "INSERT INTO sync_state (id, device_id, provider, last_synced_at, state)
+             VALUES (1, 'device-1', 'local-folder', 1700000000, '{\"folderPath\":\"/tmp/luma\"}');
+             INSERT INTO settings (key, value) VALUES ('sync.includePrivateKeys', 'true')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_migration(&pool, 14).await;
+
+        let migrated: (String, String, i64, String) =
+            sqlx::query_as("SELECT vault_id, provider, last_synced_at, state FROM sync_state")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            migrated,
+            (
+                "personal".into(),
+                "local-folder".into(),
+                1_700_000_000,
+                "{\"folderPath\":\"/tmp/luma\"}".into()
+            )
+        );
+
+        let carried: String = sqlx::query_scalar("SELECT device_id FROM device_state WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(carried, "device-1");
+
+        let share_secrets: i64 =
+            sqlx::query_scalar("SELECT share_secrets FROM vaults WHERE id = 'personal'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            share_secrets, 1,
+            "the global key opt-in was not carried over"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_0014_leaves_share_secrets_off_without_the_global_opt_in() {
+        let pool = pool_at_migration(14).await;
+
+        apply_migration(&pool, 14).await;
+
+        let share_secrets: i64 =
+            sqlx::query_scalar("SELECT share_secrets FROM vaults WHERE id = 'personal'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(share_secrets, 0);
     }
 
     #[tokio::test]

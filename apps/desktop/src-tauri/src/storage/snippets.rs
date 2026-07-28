@@ -20,6 +20,7 @@ const MAX_VARIABLE_LENGTH: usize = 64;
 #[serde(rename_all = "camelCase")]
 pub struct Snippet {
     pub id: String,
+    pub vault_id: String,
     pub name: String,
     pub command: String,
     pub description: Option<String>,
@@ -31,6 +32,8 @@ pub struct Snippet {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnippetInput {
+    #[serde(default = "crate::storage::vaults::default_id")]
+    pub vault_id: String,
     pub name: String,
     pub command: String,
     pub description: Option<String>,
@@ -104,12 +107,13 @@ pub(crate) fn validate_fields(input: &SnippetInput) -> Result<()> {
     Ok(())
 }
 
-async fn validate_host(pool: &SqlitePool, host_id: Option<&str>) -> Result<()> {
+async fn validate_host(pool: &SqlitePool, vault_id: &str, host_id: Option<&str>) -> Result<()> {
     let Some(host_id) = host_id else {
         return Ok(());
     };
-    if sqlx::query_scalar::<_, i64>("SELECT 1 FROM hosts WHERE id = ?1")
+    if sqlx::query_scalar::<_, i64>("SELECT 1 FROM hosts WHERE id = ?1 AND vault_id = ?2")
         .bind(host_id)
+        .bind(vault_id)
         .fetch_optional(pool)
         .await?
         .is_none()
@@ -124,6 +128,7 @@ fn row_to_snippet(row: &sqlx::sqlite::SqliteRow) -> Snippet {
     let variables: String = row.get("variables");
     Snippet {
         id: row.get("id"),
+        vault_id: row.get("vault_id"),
         name: row.get("name"),
         command: row.get("command"),
         description: row.get("description"),
@@ -133,11 +138,12 @@ fn row_to_snippet(row: &sqlx::sqlite::SqliteRow) -> Snippet {
     }
 }
 
-pub async fn list(pool: &SqlitePool) -> Result<Vec<Snippet>> {
+pub async fn list(pool: &SqlitePool, vault_id: Option<&str>) -> Result<Vec<Snippet>> {
     let rows = sqlx::query(
-        "SELECT id, name, command, description, tags, variables, host_id
-         FROM snippets ORDER BY name COLLATE NOCASE",
+        "SELECT id, vault_id, name, command, description, tags, variables, host_id
+         FROM snippets WHERE ?1 IS NULL OR vault_id = ?1 ORDER BY name COLLATE NOCASE",
     )
+    .bind(vault_id)
     .fetch_all(pool)
     .await?;
     Ok(rows.iter().map(row_to_snippet).collect())
@@ -145,7 +151,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Snippet>> {
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Snippet>> {
     let row = sqlx::query(
-        "SELECT id, name, command, description, tags, variables, host_id
+        "SELECT id, vault_id, name, command, description, tags, variables, host_id
          FROM snippets WHERE id = ?1",
     )
     .bind(id)
@@ -156,9 +162,10 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Snippet>> {
 
 pub async fn create(pool: &SqlitePool, mut input: SnippetInput) -> Result<Snippet> {
     validate_fields(&input)?;
+    crate::storage::vaults::require(pool, &input.vault_id).await?;
     input.description = optional_trimmed(input.description);
     input.host_id = optional_trimmed(input.host_id);
-    validate_host(pool, input.host_id.as_deref()).await?;
+    validate_host(pool, &input.vault_id, input.host_id.as_deref()).await?;
     input.tags = input
         .tags
         .into_iter()
@@ -172,8 +179,8 @@ pub async fn create(pool: &SqlitePool, mut input: SnippetInput) -> Result<Snippe
 
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO snippets (id, name, command, description, tags, variables, host_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO snippets (id, vault_id, name, command, description, tags, variables, host_id)
+         VALUES (?1, ?8, ?2, ?3, ?4, ?5, ?6, ?7)",
     )
     .bind(&id)
     .bind(input.name.trim())
@@ -188,6 +195,7 @@ pub async fn create(pool: &SqlitePool, mut input: SnippetInput) -> Result<Snippe
             .map_err(|error| LumaError::InvalidInput(format!("invalid variables: {error}")))?,
     )
     .bind(&input.host_id)
+    .bind(&input.vault_id)
     .execute(pool)
     .await?;
 
@@ -197,13 +205,14 @@ pub async fn create(pool: &SqlitePool, mut input: SnippetInput) -> Result<Snippe
 }
 
 pub async fn update(pool: &SqlitePool, id: &str, mut input: SnippetInput) -> Result<Snippet> {
-    if get(pool, id).await?.is_none() {
-        return Err(LumaError::InvalidInput("unknown snippet".into()));
-    }
+    let current = get(pool, id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown snippet".into()))?;
+    input.vault_id = current.vault_id;
     validate_fields(&input)?;
     input.description = optional_trimmed(input.description);
     input.host_id = optional_trimmed(input.host_id);
-    validate_host(pool, input.host_id.as_deref()).await?;
+    validate_host(pool, &input.vault_id, input.host_id.as_deref()).await?;
     input.tags = input
         .tags
         .into_iter()
@@ -242,6 +251,9 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: SnippetInput) -> Res
 }
 
 pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
+    let snippet = get(pool, id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown snippet".into()))?;
     let mut transaction = pool.begin().await?;
     let result = sqlx::query("DELETE FROM snippets WHERE id = ?1")
         .bind(id)
@@ -251,11 +263,12 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
         return Err(LumaError::InvalidInput("unknown snippet".into()));
     }
     sqlx::query(
-        "INSERT INTO tombstones (object_type, object_id, deleted_at)
-         VALUES ('snippet', ?1, unixepoch())
-         ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+        "INSERT INTO tombstones (vault_id, object_type, object_id, deleted_at)
+         VALUES (?2, 'snippet', ?1, unixepoch())
+         ON CONFLICT(vault_id, object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
     )
     .bind(id)
+    .bind(&snippet.vault_id)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -269,6 +282,7 @@ mod tests {
 
     fn sample_input() -> SnippetInput {
         SnippetInput {
+            vault_id: crate::storage::vaults::default_id(),
             name: "Deploy".into(),
             command: "deploy --environment {{environment}}".into(),
             description: Some("Deploy the current service".into()),
@@ -282,6 +296,7 @@ mod tests {
         hosts::create(
             pool,
             HostInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Server".into(),
                 hostname: "server.example.com".into(),
                 port: 22,
@@ -318,7 +333,7 @@ mod tests {
         updated_input.variables = vec!["environment-name".into()];
         let updated = update(&pool, &created.id, updated_input).await.unwrap();
         assert_eq!(updated.name, "Deploy service");
-        assert_eq!(list(&pool).await.unwrap(), vec![updated.clone()]);
+        assert_eq!(list(&pool, None).await.unwrap(), vec![updated.clone()]);
 
         delete(&pool, &created.id).await.unwrap();
         let tombstone: i64 = sqlx::query_scalar(
@@ -370,5 +385,43 @@ mod tests {
         let mut unknown_host = sample_input();
         unknown_host.host_id = Some("missing".into());
         assert!(create(&pool, unknown_host).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_snippet_cannot_reference_a_host_in_another_vault() {
+        use crate::storage::vaults::{self, VaultInput};
+
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let personal_host = create_host(&pool).await;
+        let shared = vaults::create(
+            &pool,
+            VaultInput {
+                name: "Infra".into(),
+                share_secrets: false,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut leaked = sample_input();
+        leaked.vault_id = shared.id.clone();
+        leaked.host_id = Some(personal_host.clone());
+        assert!(create(&pool, leaked).await.is_err());
+
+        let mut scoped = sample_input();
+        scoped.vault_id = shared.id.clone();
+        let scoped = create(&pool, scoped).await.unwrap();
+        assert_eq!(scoped.vault_id, shared.id);
+        assert!(list(&pool, Some(vaults::PERSONAL_VAULT_ID))
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Moving between vaults is not a snippet update; the vault is pinned.
+        let mut move_attempt = sample_input();
+        move_attempt.vault_id = vaults::PERSONAL_VAULT_ID.into();
+        let updated = update(&pool, &scoped.id, move_attempt).await.unwrap();
+        assert_eq!(updated.vault_id, shared.id);
     }
 }

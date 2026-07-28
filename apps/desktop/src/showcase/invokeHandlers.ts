@@ -11,6 +11,7 @@ import {
   SHELLS,
   SNIPPETS,
   SYNC_CONFIG,
+  VAULTS,
   buildSettings,
 } from "./seed";
 import {
@@ -27,6 +28,13 @@ const NARROW_VIEWPORT_MAX_PX = 600;
 function isNarrowViewport(platform: "desktop" | "ios"): boolean {
   if (platform !== "ios") return false;
   return typeof window !== "undefined" && window.innerWidth <= NARROW_VIEWPORT_MAX_PX;
+}
+
+/** Mirrors the backend's `?1 IS NULL OR vault_id = ?1`: a null vaultId lists
+ * across every vault. */
+function inVault<T extends { vaultId: string }>(rows: T[], args: InvokeArgs): T[] {
+  const vaultId = args.vaultId as string | null | undefined;
+  return vaultId ? rows.filter((row) => row.vaultId === vaultId) : rows;
 }
 
 const AUTH_FINALIZE_MS = 750;
@@ -117,21 +125,26 @@ export function createInvokeHandler(
         return PROFILES;
 
       case "hosts_list":
-        return HOSTS;
+        return inVault(HOSTS, args);
       case "recent_hosts_list":
         return RECENT_HOSTS;
       case "host_groups_list":
-        return GROUPS;
+        return inVault(GROUPS, args);
       case "key_references_list":
-        return KEY_REFERENCES;
+        return inVault(KEY_REFERENCES, args);
       case "identities_list":
-        return IDENTITIES;
+        return inVault(IDENTITIES, args);
 
       case "snippets_list":
-        return SNIPPETS;
+        return inVault(SNIPPETS, args);
+
+      case "vaults_list":
+        return VAULTS;
 
       case "sync_get_config":
         return SYNC_CONFIG;
+      case "sync_list_configs":
+        return [SYNC_CONFIG];
       case "tunnels_list":
       case "port_forwards_list":
         return [];

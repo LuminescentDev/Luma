@@ -26,6 +26,8 @@ pub struct SshConfigCandidate {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SshConfigImportRequest {
+    #[serde(default = "crate::storage::vaults::default_id")]
+    pub vault_id: String,
     pub selected_names: Vec<String>,
 }
 
@@ -230,9 +232,11 @@ fn read_config() -> Result<String> {
     }
 }
 
-pub async fn preview_config(pool: &SqlitePool) -> Result<Vec<SshConfigCandidate>> {
+pub async fn preview_config(pool: &SqlitePool, vault_id: &str) -> Result<Vec<SshConfigCandidate>> {
     let mut candidates = parse_config(&read_config()?);
-    let rows = sqlx::query("SELECT name FROM hosts")
+    // A name only collides inside the vault being imported into.
+    let rows = sqlx::query("SELECT name FROM hosts WHERE vault_id = ?1")
+        .bind(vault_id)
         .fetch_all(pool)
         .await?;
     let existing: HashSet<String> = rows
@@ -303,6 +307,7 @@ pub async fn import_config(
     pool: &SqlitePool,
     request: SshConfigImportRequest,
 ) -> Result<SshConfigImportResult> {
+    crate::storage::vaults::require(pool, &request.vault_id).await?;
     if request.selected_names.len() > MAX_IMPORT_ENTRIES {
         return Err(LumaError::InvalidInput(format!(
             "at most {MAX_IMPORT_ENTRIES} SSH config entries can be imported at once"
@@ -330,9 +335,11 @@ pub async fn import_config(
         )));
     }
 
-    let existing_rows = sqlx::query("SELECT id, name, proxy_jump_host_id FROM hosts")
-        .fetch_all(pool)
-        .await?;
+    let existing_rows =
+        sqlx::query("SELECT id, name, proxy_jump_host_id FROM hosts WHERE vault_id = ?1")
+            .bind(&request.vault_id)
+            .fetch_all(pool)
+            .await?;
     let mut host_ids_by_name = HashMap::new();
     let mut proxy_graph = HashMap::new();
     for row in &existing_rows {
@@ -373,6 +380,7 @@ pub async fn import_config(
             .as_ref()
             .map(|_| uuid::Uuid::new_v4().to_string());
         let input = HostInput {
+            vault_id: request.vault_id.clone(),
             name: candidate.name.clone(),
             hostname: candidate.hostname.clone(),
             port: i64::from(candidate.port),
@@ -407,9 +415,10 @@ pub async fn import_config(
             let local_path = expanded_identity_file(identity_file);
             if let Some(existing_key_id) = sqlx::query_scalar::<_, String>(
                 "SELECT id FROM key_references
-                 WHERE storage_mode = 'local-path' AND local_path = ?1 LIMIT 1",
+                 WHERE storage_mode = 'local-path' AND local_path = ?1 AND vault_id = ?2 LIMIT 1",
             )
             .bind(&local_path)
+            .bind(&request.vault_id)
             .fetch_optional(&mut *transaction)
             .await?
             {
@@ -421,12 +430,13 @@ pub async fn import_config(
                 let mut key_name = format!("{} key", candidate.name);
                 key_name.truncate(key_name.floor_char_boundary(128));
                 sqlx::query(
-                    "INSERT INTO key_references (id, name, storage_mode, local_path)
-                     VALUES (?1, ?2, 'local-path', ?3)",
+                    "INSERT INTO key_references (id, vault_id, name, storage_mode, local_path)
+                     VALUES (?1, ?4, ?2, 'local-path', ?3)",
                 )
                 .bind(&key_id)
                 .bind(key_name)
                 .bind(local_path)
+                .bind(&request.vault_id)
                 .execute(&mut *transaction)
                 .await?;
                 Some(key_id)
@@ -437,8 +447,8 @@ pub async fn import_config(
 
         sqlx::query(
             "INSERT INTO hosts (
-                 id, name, hostname, port, username, auth_type, key_id, tags, favorite
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '[]', 0)",
+                 id, vault_id, name, hostname, port, username, auth_type, key_id, tags, favorite
+             ) VALUES (?1, ?8, ?2, ?3, ?4, ?5, ?6, ?7, '[]', 0)",
         )
         .bind(host_id)
         .bind(input.name.trim())
@@ -447,6 +457,7 @@ pub async fn import_config(
         .bind(input.username.as_deref().map(str::trim))
         .bind(&input.authentication_type)
         .bind(key_id)
+        .bind(&request.vault_id)
         .execute(&mut *transaction)
         .await?;
     }

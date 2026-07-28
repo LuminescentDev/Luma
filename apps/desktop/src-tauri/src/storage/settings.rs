@@ -7,6 +7,9 @@ use crate::errors::{LumaError, Result};
 
 const MAX_KEY_LENGTH: usize = 128;
 const MAX_VALUE_BYTES: usize = 64 * 1024;
+/// Superseded by each vault's `share_secrets` column, which migration 0014 seeds from
+/// this value. The key stays readable and validated for one release so a downgrade or
+/// an old peer's bundle still round-trips it.
 pub(crate) const SYNC_INCLUDE_PRIVATE_KEYS_KEY: &str = "sync.includePrivateKeys";
 
 pub(crate) fn validate_key(key: &str) -> Result<()> {
@@ -44,19 +47,6 @@ pub async fn all(pool: &SqlitePool) -> Result<HashMap<String, Value>> {
     Ok(settings)
 }
 
-pub async fn sync_include_private_keys(pool: &SqlitePool) -> Result<bool> {
-    let raw: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
-        .bind(SYNC_INCLUDE_PRIVATE_KEYS_KEY)
-        .fetch_optional(pool)
-        .await?;
-    match raw {
-        None => Ok(false),
-        Some(raw) => serde_json::from_str::<bool>(&raw).map_err(|_| {
-            LumaError::InvalidInput(format!("{SYNC_INCLUDE_PRIVATE_KEYS_KEY} must be a boolean"))
-        }),
-    }
-}
-
 pub async fn set(pool: &SqlitePool, key: &str, value: &Value) -> Result<()> {
     validate_key(key)?;
     if key == SYNC_INCLUDE_PRIVATE_KEYS_KEY && !value.is_boolean() {
@@ -89,10 +79,11 @@ pub async fn delete(pool: &SqlitePool, key: &str) -> Result<()> {
         .execute(&mut *transaction)
         .await?;
     if result.rows_affected() > 0 {
+        // Settings sync only with the personal vault.
         sqlx::query(
-            "INSERT INTO tombstones (object_type, object_id, deleted_at)
-             VALUES ('setting', ?1, unixepoch())
-             ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+            "INSERT INTO tombstones (vault_id, object_type, object_id, deleted_at)
+             VALUES ('personal', 'setting', ?1, unixepoch())
+             ON CONFLICT(vault_id, object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
         )
         .bind(key)
         .execute(&mut *transaction)
@@ -151,13 +142,19 @@ mod tests {
     #[tokio::test]
     async fn private_key_sync_preference_is_boolean_and_defaults_off() {
         let pool = crate::storage::init_in_memory().await.unwrap();
-        assert!(!sync_include_private_keys(&pool).await.unwrap());
+        assert_eq!(
+            all(&pool).await.unwrap()[SYNC_INCLUDE_PRIVATE_KEYS_KEY],
+            json!(false)
+        );
         assert!(set(&pool, SYNC_INCLUDE_PRIVATE_KEYS_KEY, &json!("yes"))
             .await
             .is_err());
         set(&pool, SYNC_INCLUDE_PRIVATE_KEYS_KEY, &json!(true))
             .await
             .unwrap();
-        assert!(sync_include_private_keys(&pool).await.unwrap());
+        assert_eq!(
+            all(&pool).await.unwrap()[SYNC_INCLUDE_PRIVATE_KEYS_KEY],
+            json!(true)
+        );
     }
 }

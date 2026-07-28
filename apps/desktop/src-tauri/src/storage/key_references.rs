@@ -22,6 +22,7 @@ const MAX_PASSPHRASE_LENGTH: usize = 16 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct KeyReference {
     pub id: String,
+    pub vault_id: String,
     pub name: String,
     pub public_key: Option<String>,
     pub storage_mode: String,
@@ -34,6 +35,8 @@ pub struct KeyReference {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyReferenceInput {
+    #[serde(default = "crate::storage::vaults::default_id")]
+    pub vault_id: String,
     pub name: String,
     pub public_key: Option<String>,
     pub storage_mode: String,
@@ -220,7 +223,7 @@ pub fn derive_public_key(private_key: &str, passphrase: Option<&str>) -> Result<
     ))
 }
 
-pub(crate) fn apply_derived_vault_metadata(input: &mut KeyReferenceInput) -> Result<()> {
+pub(crate) fn apply_derived_keystore_metadata(input: &mut KeyReferenceInput) -> Result<()> {
     if input.storage_mode != "encrypted-vault" {
         return Ok(());
     }
@@ -320,6 +323,7 @@ pub(crate) fn validate(input: &KeyReferenceInput) -> Result<()> {
 fn row_to_key_reference(row: &sqlx::sqlite::SqliteRow) -> KeyReference {
     KeyReference {
         id: row.get("id"),
+        vault_id: row.get("vault_id"),
         name: row.get("name"),
         public_key: row.get("public_key"),
         storage_mode: row.get("storage_mode"),
@@ -330,11 +334,12 @@ fn row_to_key_reference(row: &sqlx::sqlite::SqliteRow) -> KeyReference {
     }
 }
 
-pub async fn list(pool: &SqlitePool) -> Result<Vec<KeyReference>> {
+pub async fn list(pool: &SqlitePool, vault_id: Option<&str>) -> Result<Vec<KeyReference>> {
     let rows = sqlx::query(
-        "SELECT id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key
-         FROM key_references ORDER BY name COLLATE NOCASE",
+        "SELECT id, vault_id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key
+         FROM key_references WHERE ?1 IS NULL OR vault_id = ?1 ORDER BY name COLLATE NOCASE",
     )
+    .bind(vault_id)
     .fetch_all(pool)
     .await?;
     Ok(rows.iter().map(row_to_key_reference).collect())
@@ -342,7 +347,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<KeyReference>> {
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<KeyReference>> {
     let row = sqlx::query(
-        "SELECT id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key
+        "SELECT id, vault_id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key
          FROM key_references WHERE id = ?1",
     )
     .bind(id)
@@ -385,7 +390,7 @@ pub(crate) async fn create_metadata(
 }
 
 fn prepare_metadata_input(mut input: KeyReferenceInput) -> Result<KeyReferenceInput> {
-    apply_derived_vault_metadata(&mut input)?;
+    apply_derived_keystore_metadata(&mut input)?;
     validate(&input)?;
     input.public_key = optional_trimmed(input.public_key.take());
     input.local_path = optional_trimmed(input.local_path.take());
@@ -406,8 +411,8 @@ where
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO key_references
-             (id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, vault_id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key)
+         VALUES (?1, ?9, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(&id)
     .bind(input.name.trim())
@@ -417,6 +422,7 @@ where
     .bind(&input.fingerprint)
     .bind(&input.certificate)
     .bind(has_private_key)
+    .bind(&input.vault_id)
     .execute(executor)
     .await?;
     Ok(id)
@@ -440,8 +446,8 @@ async fn create_validated(
     };
     sqlx::query(
         "INSERT INTO key_references
-             (id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, vault_id, name, public_key, storage_mode, local_path, fingerprint, certificate, has_private_key)
+         VALUES (?1, ?9, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )
     .bind(&id)
     .bind(input.name.trim())
@@ -451,6 +457,7 @@ async fn create_validated(
     .bind(&input.fingerprint)
     .bind(&input.certificate)
     .bind(has_private_key)
+    .bind(&input.vault_id)
     .execute(pool)
     .await?;
 
@@ -514,6 +521,14 @@ pub(crate) async fn delete_metadata(
     transaction: &mut sqlx::Transaction<'_, Sqlite>,
     id: &str,
 ) -> Result<()> {
+    let vault_id: Option<String> =
+        sqlx::query_scalar("SELECT vault_id FROM key_references WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&mut **transaction)
+            .await?;
+    let Some(vault_id) = vault_id else {
+        return Err(LumaError::InvalidInput("unknown key reference".into()));
+    };
     let result = sqlx::query("DELETE FROM key_references WHERE id = ?1")
         .bind(id)
         .execute(&mut **transaction)
@@ -522,11 +537,12 @@ pub(crate) async fn delete_metadata(
         return Err(LumaError::InvalidInput("unknown key reference".into()));
     }
     sqlx::query(
-        "INSERT INTO tombstones (object_type, object_id, deleted_at)
-         VALUES ('key_reference', ?1, unixepoch())
-         ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+        "INSERT INTO tombstones (vault_id, object_type, object_id, deleted_at)
+         VALUES (?2, 'key_reference', ?1, unixepoch())
+         ON CONFLICT(vault_id, object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
     )
     .bind(id)
+    .bind(&vault_id)
     .execute(&mut **transaction)
     .await?;
     Ok(())
@@ -636,7 +652,7 @@ mod tests {
         }
     }
 
-    async fn assert_vault_import_stores_authoritative_metadata(
+    async fn assert_keystore_import_stores_authoritative_metadata(
         pool: &SqlitePool,
         name: &str,
         private_key: &str,
@@ -644,6 +660,7 @@ mod tests {
         expected: &DerivedPublicKey,
     ) {
         let input = KeyReferenceInput {
+            vault_id: crate::storage::vaults::default_id(),
             name: name.into(),
             public_key: Some("ssh-ed25519 AAAA unrelated caller value".into()),
             storage_mode: "encrypted-vault".into(),
@@ -675,7 +692,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vault_imports_derive_rsa_and_ed25519_metadata_from_private_keys() {
+    async fn keystore_imports_derive_rsa_and_ed25519_metadata_from_private_keys() {
         let pool = crate::storage::init_in_memory().await.unwrap();
         let mut rng = OsRng;
         let rsa = PrivateKey::random(&mut rng, Algorithm::Rsa { hash: None }).unwrap();
@@ -684,7 +701,7 @@ mod tests {
         for (name, private_key) in [("RSA", &rsa), ("ed25519", &ed25519)] {
             let expected = authoritative_values(private_key);
             let unencrypted = private_key.to_openssh(LineEnding::LF).unwrap();
-            assert_vault_import_stores_authoritative_metadata(
+            assert_keystore_import_stores_authoritative_metadata(
                 &pool,
                 &format!("{name} unencrypted"),
                 &unencrypted,
@@ -698,7 +715,7 @@ mod tests {
                 .unwrap()
                 .to_openssh(LineEnding::LF)
                 .unwrap();
-            assert_vault_import_stores_authoritative_metadata(
+            assert_keystore_import_stores_authoritative_metadata(
                 &pool,
                 &format!("{name} encrypted"),
                 &encrypted,
@@ -710,7 +727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vault_update_replaces_existing_mismatched_metadata() {
+    async fn keystore_update_replaces_existing_mismatched_metadata() {
         let pool = crate::storage::init_in_memory().await.unwrap();
         let mut rng = OsRng;
         let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
@@ -719,6 +736,7 @@ mod tests {
         let existing = create_metadata(
             &pool,
             KeyReferenceInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Existing mismatched key".into(),
                 public_key: Some("ssh-rsa AAAA stale value".into()),
                 storage_mode: "encrypted-vault".into(),
@@ -733,6 +751,7 @@ mod tests {
         .unwrap();
 
         let mut input = KeyReferenceInput {
+            vault_id: crate::storage::vaults::default_id(),
             name: existing.name.clone(),
             public_key: existing.public_key.clone(),
             storage_mode: existing.storage_mode.clone(),
@@ -742,7 +761,7 @@ mod tests {
             private_key: Some(private_key.to_string()),
             passphrase: None,
         };
-        apply_derived_vault_metadata(&mut input).unwrap();
+        apply_derived_keystore_metadata(&mut input).unwrap();
         let private_key = input.private_key.take().map(Zeroizing::new);
         let updated = update(&pool, &existing.id, input).await.unwrap();
 
@@ -856,6 +875,7 @@ mod tests {
         let created = create(
             &pool,
             KeyReferenceInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Personal".into(),
                 public_key: Some("ssh-ed25519 AAAA example".into()),
                 storage_mode: "local-path".into(),
@@ -874,6 +894,7 @@ mod tests {
             &pool,
             &created.id,
             KeyReferenceInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Agent key".into(),
                 public_key: None,
                 storage_mode: "ssh-agent".into(),
@@ -890,7 +911,8 @@ mod tests {
         let invalid = create(
             &pool,
             KeyReferenceInput {
-                name: "Vault".into(),
+                vault_id: crate::storage::vaults::default_id(),
+                name: "Keystore".into(),
                 public_key: None,
                 storage_mode: "encrypted-vault".into(),
                 local_path: None,
@@ -906,6 +928,7 @@ mod tests {
         let private_key = create(
             &pool,
             KeyReferenceInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Secret material".into(),
                 public_key: Some("-----BEGIN OPENSSH PRIVATE KEY-----".into()),
                 storage_mode: "local-path".into(),

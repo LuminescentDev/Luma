@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Cable, Clock3, FolderKanban, Layers, Loader2, PlugZap, Search, Server, SquareTerminal, Star, X } from "lucide-react";
 import { useHostGroups, useHosts, useRecentHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId } from "../../stores/vaultStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import {
@@ -23,9 +24,10 @@ export function NewTabLauncher({
   const [quickError, setQuickError] = useState<string | null>(null);
   const [quickBusy, setQuickBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const { data: hosts = [] } = useHosts();
+  const browsingVaultId = useBrowsingVaultId();
+  const { data: hosts = [] } = useHosts(browsingVaultId);
   const { data: recent = [] } = useRecentHosts();
-  const { data: groups = [] } = useHostGroups();
+  const { data: groups = [] } = useHostGroups(browsingVaultId);
   const templates = useTemplateStore((s) => s.templates);
   const removeTemplate = useTemplateStore((s) => s.removeTemplate);
   const openSshSession = useSessionStore((s) => s.openSshSession);
@@ -55,13 +57,18 @@ export function NewTabLauncher({
 
   const needle = query.trim().toLowerCase();
   const matchingHosts = useMemo(() => {
-    const source = needle ? hosts : recent.length ? recent : hosts;
+    // Recents are per-device history across every vault, so they need the same
+    // scope applied that useHosts already applied to `hosts`.
+    const scopedRecent = browsingVaultId
+      ? recent.filter((host) => host.vaultId === browsingVaultId)
+      : recent;
+    const source = needle ? hosts : scopedRecent.length ? scopedRecent : hosts;
     return source.filter((host) =>
       [host.name, host.hostname, host.username, ...host.tags]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(needle)),
     );
-  }, [hosts, recent, needle]);
+  }, [hosts, recent, needle, browsingVaultId]);
   const matchingGroups = groups.filter((group) =>
     group.name.toLowerCase().includes(needle),
   );

@@ -12,10 +12,13 @@ import {
 } from "../lib/sync";
 
 /*
- * Shared sync runtime state. Wraps sync_now / sync_resolve so the settings UI
- * and the title-bar indicator observe one source of truth. Pending conflicts
- * live only in backend memory across restarts, so this store simply mirrors the
- * most recent report.
+ * Shared sync runtime state, keyed by vault. Each vault has its own remote,
+ * passphrase and baseline, so a conflict or error in one must leave the others
+ * running. `activeVaultId` names the vault whose conflicts or passphrase prompt
+ * the shared dialogs are currently showing.
+ *
+ * Pending conflicts live only in backend memory across restarts, so this store
+ * simply mirrors the most recent report per vault.
  *
  * SECURITY: no secrets are ever held in this store. Passphrases pass through
  * `submitPassphrase` as a transient argument and are never persisted here.
@@ -23,7 +26,11 @@ import {
 
 export type SyncRuntimeStatus = "idle" | "syncing" | "error" | "conflict";
 
-/** Query keys refreshed after a pull applies remote changes. */
+/**
+ * Query keys refreshed after a pull applies remote changes. Entity keys carry
+ * the vault id as their second element, so these bare prefixes match every
+ * vault's cached list.
+ */
 const PULL_INVALIDATION_KEYS = [
   ["hosts"],
   ["recent-hosts"],
@@ -35,7 +42,7 @@ const PULL_INVALIDATION_KEYS = [
   ["snippets"],
 ];
 
-type SyncState = {
+export type VaultSyncState = {
   status: SyncRuntimeStatus;
   /** Pending conflicts from the last sync/resolve (empty when none). */
   conflicts: Conflict[];
@@ -43,36 +50,107 @@ type SyncState = {
   lastReport: SyncReport | null;
   errorCategory: string | null;
   errorMessage: string | null;
-  /** True when sync failed because no passphrase is loaded (vault-locked). */
+  /** True when sync failed because this vault's passphrase is not loaded. */
   needsPassphrase: boolean;
-  /** Whether the shared conflict-resolution dialog is open. */
-  conflictDialogOpen: boolean;
-  /** Whether the shared passphrase prompt is open. */
-  passphraseDialogOpen: boolean;
-  /** Set-passphrase / resolve in-flight flag distinct from top-level status. */
+  /** Set-passphrase / resolve in-flight flag distinct from `status`. */
   busy: boolean;
-
-  /** Run a sync. On vault-locked, opens the passphrase prompt automatically. */
-  syncNow: () => Promise<void>;
-  /** Submit resolutions for every displayed conflict in one call. */
-  resolve: (resolutions: ConflictResolution[]) => Promise<void>;
-  /** Load a passphrase (optionally remembering it) then retry sync once. */
-  submitPassphrase: (passphrase: string, remember: boolean) => Promise<void>;
-  /** Title-bar entry point: open conflicts if pending, otherwise sync. */
-  activate: () => void;
-  openConflicts: () => void;
-  closeConflicts: () => void;
-  openPassphrasePrompt: () => void;
-  closePassphrasePrompt: () => void;
-  clearError: () => void;
-  /** Clear all runtime state (called when sync is disabled). */
-  reset: () => void;
 };
 
-function applyReport(
-  report: SyncReport,
-  set: (partial: Partial<SyncState>) => void,
+export const EMPTY_VAULT_SYNC_STATE: VaultSyncState = {
+  status: "idle",
+  conflicts: [],
+  lastReport: null,
+  errorCategory: null,
+  errorMessage: null,
+  needsPassphrase: false,
+  busy: false,
+};
+
+type SyncState = {
+  byVault: Record<string, VaultSyncState>;
+  /** The vault the shared conflict / passphrase dialogs are showing. */
+  activeVaultId: string | null;
+  conflictDialogOpen: boolean;
+  passphraseDialogOpen: boolean;
+
+  /** Run a sync. On a missing passphrase, opens the prompt for that vault. */
+  syncNow: (vaultId: string) => Promise<void>;
+  /** Submit resolutions for every displayed conflict of one vault at once. */
+  resolve: (vaultId: string, resolutions: ConflictResolution[]) => Promise<void>;
+  /** Load a vault's passphrase (optionally remembering it) then retry its sync. */
+  submitPassphrase: (
+    vaultId: string,
+    passphrase: string,
+    remember: boolean,
+  ) => Promise<void>;
+  /** Title-bar entry point: surface whichever vault needs attention, else sync all. */
+  activate: (vaultIds: string[]) => void;
+  openConflicts: (vaultId: string) => void;
+  closeConflicts: () => void;
+  openPassphrasePrompt: (vaultId: string) => void;
+  closePassphrasePrompt: () => void;
+  clearError: (vaultId: string) => void;
+  /** Clear one vault's runtime state (called when its sync is disabled). */
+  reset: (vaultId: string) => void;
+  /** Clear every vault's runtime state. */
+  resetAll: () => void;
+};
+
+/** One vault's state, or the empty state when it has never synced. */
+export function selectVault(state: SyncState, vaultId: string | null): VaultSyncState {
+  if (!vaultId) return EMPTY_VAULT_SYNC_STATE;
+  return state.byVault[vaultId] ?? EMPTY_VAULT_SYNC_STATE;
+}
+
+const STATUS_PRIORITY: Record<SyncRuntimeStatus, number> = {
+  conflict: 3,
+  error: 2,
+  syncing: 1,
+  idle: 0,
+};
+
+/** The most urgent status across every vault: conflict > error > syncing > idle. */
+export function selectAggregateStatus(state: SyncState): SyncRuntimeStatus {
+  let worst: SyncRuntimeStatus = "idle";
+  for (const vault of Object.values(state.byVault)) {
+    if (STATUS_PRIORITY[vault.status] > STATUS_PRIORITY[worst]) worst = vault.status;
+  }
+  return worst;
+}
+
+/** Total pending conflicts across every vault. */
+export function selectTotalConflictCount(state: SyncState): number {
+  let total = 0;
+  for (const vault of Object.values(state.byVault)) total += vault.conflicts.length;
+  return total;
+}
+
+/** The vault that most needs attention, or null when none does. */
+export function selectAttentionVaultId(state: SyncState): string | null {
+  let needsPassphrase: string | null = null;
+  for (const [vaultId, vault] of Object.entries(state.byVault)) {
+    if (vault.conflicts.length > 0) return vaultId;
+    if (vault.needsPassphrase && !needsPassphrase) needsPassphrase = vaultId;
+  }
+  return needsPassphrase;
+}
+
+type SetState = (updater: (state: SyncState) => Partial<SyncState>) => void;
+
+function patchVault(
+  set: SetState,
+  vaultId: string,
+  patch: Partial<VaultSyncState>,
 ) {
+  set((state) => ({
+    byVault: {
+      ...state.byVault,
+      [vaultId]: { ...selectVault(state, vaultId), ...patch },
+    },
+  }));
+}
+
+function applyReport(report: SyncReport, vaultId: string, set: SetState) {
   if (report.pulled) {
     for (const key of PULL_INVALIDATION_KEYS) {
       void queryClient.invalidateQueries({ queryKey: key });
@@ -81,130 +159,137 @@ function applyReport(
   // The config's lastSyncAt / lastRemoteVersion changed after any sync attempt.
   void queryClient.invalidateQueries({ queryKey: SYNC_CONFIG_KEY });
 
-  if (report.conflicts.length > 0) {
-    set({
-      status: "conflict",
-      conflicts: report.conflicts,
-      lastReport: report,
-      conflictDialogOpen: true,
-      errorCategory: null,
-      errorMessage: null,
-    });
-  } else {
-    set({
-      status: "idle",
-      conflicts: [],
-      lastReport: report,
-      conflictDialogOpen: false,
-      errorCategory: null,
-      errorMessage: null,
-    });
-  }
+  const conflicted = report.conflicts.length > 0;
+  patchVault(set, vaultId, {
+    status: conflicted ? "conflict" : "idle",
+    conflicts: report.conflicts,
+    lastReport: report,
+    errorCategory: null,
+    errorMessage: null,
+  });
+  set((state) => {
+    if (conflicted) return { activeVaultId: vaultId, conflictDialogOpen: true };
+    // Only close the dialog if it was showing this vault's conflicts.
+    if (state.activeVaultId !== vaultId) return {};
+    return { conflictDialogOpen: false };
+  });
 }
 
-function handleError(
-  error: unknown,
-  set: (partial: Partial<SyncState>) => void,
-) {
+function handleError(error: unknown, vaultId: string, set: SetState) {
   const { category, message } = parseLumaError(error);
-  if (category === "vault-locked") {
-    set({
+  // A missing sync passphrase is recoverable in place; a locked device keystore
+  // is a different condition with a different remedy, so it falls through to
+  // the plain error path.
+  if (category === "sync-passphrase-required") {
+    patchVault(set, vaultId, {
       status: "error",
       needsPassphrase: true,
-      passphraseDialogOpen: true,
       errorCategory: category,
       errorMessage: null,
     });
+    set(() => ({ activeVaultId: vaultId, passphraseDialogOpen: true }));
     return;
   }
   const friendly =
     category === "sync-conflict"
       ? "Remote changed during sync — try again."
       : message;
-  set({ status: "error", errorCategory: category, errorMessage: friendly });
+  patchVault(set, vaultId, {
+    status: "error",
+    errorCategory: category,
+    errorMessage: friendly,
+  });
 }
 
 export const useSyncStore = create<SyncState>((set, get) => ({
-  status: "idle",
-  conflicts: [],
-  lastReport: null,
-  errorCategory: null,
-  errorMessage: null,
-  needsPassphrase: false,
+  byVault: {},
+  activeVaultId: null,
   conflictDialogOpen: false,
   passphraseDialogOpen: false,
-  busy: false,
 
-  syncNow: async () => {
-    if (get().status === "syncing") return;
-    set({ status: "syncing", errorCategory: null, errorMessage: null });
-    try {
-      const report = await runSyncNow();
-      applyReport(report, set);
-    } catch (error) {
-      handleError(error, set);
-    }
-  },
-
-  resolve: async (resolutions) => {
-    set({ busy: true, errorCategory: null, errorMessage: null });
-    try {
-      const report = await runSyncResolve(resolutions);
-      applyReport(report, set);
-    } catch (error) {
-      handleError(error, set);
-    } finally {
-      set({ busy: false });
-    }
-  },
-
-  submitPassphrase: async (passphrase, remember) => {
-    set({ busy: true, errorCategory: null, errorMessage: null });
-    try {
-      await syncSetPassphrase(passphrase, remember);
-      void queryClient.invalidateQueries({ queryKey: SYNC_CONFIG_KEY });
-      set({
-        needsPassphrase: false,
-        passphraseDialogOpen: false,
-        busy: false,
-      });
-      // Retry the sync once now that a passphrase is loaded.
-      await get().syncNow();
-    } catch (error) {
-      handleError(error, set);
-      set({ busy: false });
-    }
-  },
-
-  activate: () => {
-    const state = get();
-    if (state.conflicts.length > 0) {
-      set({ conflictDialogOpen: true });
-      return;
-    }
-    if (state.needsPassphrase) {
-      set({ passphraseDialogOpen: true });
-      return;
-    }
-    void state.syncNow();
-  },
-
-  openConflicts: () => set({ conflictDialogOpen: true }),
-  closeConflicts: () => set({ conflictDialogOpen: false }),
-  openPassphrasePrompt: () => set({ passphraseDialogOpen: true }),
-  closePassphrasePrompt: () => set({ passphraseDialogOpen: false }),
-  clearError: () => set({ errorCategory: null, errorMessage: null }),
-
-  reset: () =>
-    set({
-      status: "idle",
-      conflicts: [],
-      lastReport: null,
+  syncNow: async (vaultId) => {
+    if (selectVault(get(), vaultId).status === "syncing") return;
+    patchVault(set, vaultId, {
+      status: "syncing",
       errorCategory: null,
       errorMessage: null,
-      needsPassphrase: false,
+    });
+    try {
+      applyReport(await runSyncNow(vaultId), vaultId, set);
+    } catch (error) {
+      handleError(error, vaultId, set);
+    }
+  },
+
+  resolve: async (vaultId, resolutions) => {
+    patchVault(set, vaultId, { busy: true, errorCategory: null, errorMessage: null });
+    try {
+      applyReport(await runSyncResolve(vaultId, resolutions), vaultId, set);
+    } catch (error) {
+      handleError(error, vaultId, set);
+    } finally {
+      patchVault(set, vaultId, { busy: false });
+    }
+  },
+
+  submitPassphrase: async (vaultId, passphrase, remember) => {
+    patchVault(set, vaultId, { busy: true, errorCategory: null, errorMessage: null });
+    try {
+      await syncSetPassphrase(vaultId, passphrase, remember);
+      void queryClient.invalidateQueries({ queryKey: SYNC_CONFIG_KEY });
+      patchVault(set, vaultId, { needsPassphrase: false, busy: false });
+      set((state) =>
+        state.activeVaultId === vaultId ? { passphraseDialogOpen: false } : {},
+      );
+      // Retry the sync once now that a passphrase is loaded.
+      await get().syncNow(vaultId);
+    } catch (error) {
+      handleError(error, vaultId, set);
+      patchVault(set, vaultId, { busy: false });
+    }
+  },
+
+  activate: (vaultIds) => {
+    const state = get();
+    const attention = selectAttentionVaultId(state);
+    if (attention) {
+      const vault = selectVault(state, attention);
+      set(() => ({
+        activeVaultId: attention,
+        conflictDialogOpen: vault.conflicts.length > 0,
+        passphraseDialogOpen: vault.conflicts.length === 0,
+      }));
+      return;
+    }
+    for (const vaultId of vaultIds) void state.syncNow(vaultId);
+  },
+
+  openConflicts: (vaultId) =>
+    set(() => ({ activeVaultId: vaultId, conflictDialogOpen: true })),
+  closeConflicts: () => set(() => ({ conflictDialogOpen: false })),
+  openPassphrasePrompt: (vaultId) =>
+    set(() => ({ activeVaultId: vaultId, passphraseDialogOpen: true })),
+  closePassphrasePrompt: () => set(() => ({ passphraseDialogOpen: false })),
+  clearError: (vaultId) =>
+    patchVault(set, vaultId, { errorCategory: null, errorMessage: null }),
+
+  reset: (vaultId) =>
+    set((state) => {
+      const { [vaultId]: _removed, ...rest } = state.byVault;
+      if (state.activeVaultId !== vaultId) return { byVault: rest };
+      return {
+        byVault: rest,
+        activeVaultId: null,
+        conflictDialogOpen: false,
+        passphraseDialogOpen: false,
+      };
+    }),
+
+  resetAll: () =>
+    set(() => ({
+      byVault: {},
+      activeVaultId: null,
       conflictDialogOpen: false,
       passphraseDialogOpen: false,
-      busy: false,
-    }),
+    })),
 }));

@@ -16,7 +16,6 @@ import { parseLumaError } from "../../lib/hosts";
 import {
   formatRelativeTime,
   truncateVersion,
-  SYNC_INCLUDE_PRIVATE_KEYS_KEY,
   type SyncConfig,
   type SyncConfigureInput,
   type SyncProvider,
@@ -27,8 +26,9 @@ import {
   useSetSyncPassphrase,
   useSyncConfig,
 } from "../../hooks/useSync";
-import { useSettings, useSetSetting } from "../../hooks/useSettings";
-import { useSyncStore } from "../../stores/syncStore";
+import { useUpdateVault, useVault } from "../../hooks/useVaults";
+import { PERSONAL_VAULT_ID, type Vault } from "../../lib/vaults";
+import { selectVault, useSyncStore } from "../../stores/syncStore";
 import { useCapabilityStore } from "../../stores/capabilityStore";
 import { cn } from "../../lib/utils";
 
@@ -51,16 +51,27 @@ const PROVIDER_LABELS: Record<SyncProvider, string> = {
 
 const DEFAULT_LUMA_CLOUD_URL = "https://sync.luma.bwmp.dev";
 
-export function SyncSection() {
-  const { data: config, isLoading } = useSyncConfig();
+/**
+ * The personal vault's sync, for the Account settings category. Other vaults
+ * are configured from the vault list, which passes its own `vault`.
+ */
+export function PersonalVaultSyncSection() {
+  const vault = useVault(PERSONAL_VAULT_ID);
+  if (!vault) return <p className="text-sm text-muted">Loading sync configuration…</p>;
+  return <SyncSection vault={vault} />;
+}
+
+export function SyncSection({ vault }: { vault: Vault }) {
+  const { data: config, isLoading } = useSyncConfig(vault.id);
 
   if (isLoading || !config) {
     return <p className="text-sm text-muted">Loading sync configuration…</p>;
   }
-  return <SyncSectionBody config={config} />;
+  return <SyncSectionBody vault={vault} config={config} />;
 }
 
-function SyncSectionBody({ config }: { config: SyncConfig }) {
+function SyncSectionBody({ vault, config }: { vault: Vault; config: SyncConfig }) {
+  const vaultId = vault.id;
   // The folder-based provider needs arbitrary filesystem access, which mobile
   // does not grant; hide it there. WebDAV and GitHub Gist remain on every
   // platform. Desktop keeps all providers (folderSync=true).
@@ -70,20 +81,18 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const providerOptions = PROVIDER_OPTIONS.filter(
     (option) => folderSyncEnabled || option.value !== "local-folder",
   );
-  const configure = useConfigureSync();
-  const disable = useDisableSync();
-  const setPassphrase = useSetSyncPassphrase();
+  const configure = useConfigureSync(vaultId);
+  const disable = useDisableSync(vaultId);
+  const setPassphrase = useSetSyncPassphrase(vaultId);
+  const updateVault = useUpdateVault();
 
-  const { data: settings } = useSettings();
-  const setSetting = useSetSetting();
-  const includePrivateKeys = Boolean(settings?.[SYNC_INCLUDE_PRIVATE_KEYS_KEY]);
+  const shared = vault.kind === "shared";
+  const shareSecrets = vault.shareSecrets;
 
-  const status = useSyncStore((s) => s.status);
-  const lastReport = useSyncStore((s) => s.lastReport);
-  const errorCategory = useSyncStore((s) => s.errorCategory);
-  const errorMessage = useSyncStore((s) => s.errorMessage);
+  const runtime = useSyncStore((s) => selectVault(s, vaultId));
   const runSyncNow = useSyncStore((s) => s.syncNow);
   const resetSyncRuntime = useSyncStore((s) => s.reset);
+  const { status, lastReport, errorCategory, errorMessage } = runtime;
 
   // Provider form state. Secrets (password / token) are never prefilled and are
   // cleared after a successful configure.
@@ -102,24 +111,23 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const [confirmDisable, setConfirmDisable] = useState(false);
   const [passphraseOpen, setPassphraseOpen] = useState(false);
   const [confirmPassphraseChange, setConfirmPassphraseChange] = useState(false);
-  const [confirmIncludeKeys, setConfirmIncludeKeys] = useState(false);
+  const [confirmShareSecrets, setConfirmShareSecrets] = useState(false);
 
-  // Turning the private-key toggle ON requires an explicit confirmation of the
-  // risk; turning it OFF persists immediately.
-  const onToggleIncludeKeys = () => {
-    if (setSetting.isPending) return;
-    if (includePrivateKeys) {
-      setSetting.mutate({ key: SYNC_INCLUDE_PRIVATE_KEYS_KEY, value: false });
-    } else {
-      setConfirmIncludeKeys(true);
-    }
-  };
-
-  const confirmEnableIncludeKeys = () => {
-    setSetting.mutate(
-      { key: SYNC_INCLUDE_PRIVATE_KEYS_KEY, value: true },
-      { onSuccess: () => setConfirmIncludeKeys(false) },
+  const setShareSecrets = (value: boolean, onSuccess?: () => void) =>
+    updateVault.mutate(
+      {
+        id: vaultId,
+        input: { name: vault.name, shareSecrets: value, sortOrder: vault.sortOrder },
+      },
+      { onSuccess },
     );
+
+  // Turning secret sharing ON requires an explicit confirmation of the risk;
+  // turning it OFF persists immediately.
+  const onToggleShareSecrets = () => {
+    if (updateVault.isPending) return;
+    if (shareSecrets) setShareSecrets(false);
+    else setConfirmShareSecrets(true);
   };
 
   const configureError = configure.isError ? parseLumaError(configure.error).message : null;
@@ -156,7 +164,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
     configure.mutate(input, {
       onSuccess: () => {
         clearSecrets();
-        resetSyncRuntime();
+        resetSyncRuntime(vaultId);
       },
     });
   };
@@ -179,7 +187,7 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
   const onDisable = () => {
     disable.mutate(undefined, {
       onSuccess: () => {
-        resetSyncRuntime();
+        resetSyncRuntime(vaultId);
         setProvider("none");
         setConfirmDisable(false);
       },
@@ -207,9 +215,11 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
               : 0
           }
           runtimeError={
-            status === "error" && errorCategory !== "vault-locked" ? errorMessage : null
+            status === "error" && errorCategory !== "sync-passphrase-required"
+              ? errorMessage
+              : null
           }
-          onSyncNow={() => void runSyncNow()}
+          onSyncNow={() => void runSyncNow(vaultId)}
         />
       ) : (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-muted">
@@ -394,25 +404,39 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
         </div>
       </div>
 
-      {/* Private key sync (opt-in) ---------------------------------------- */}
+      {/* Secret sharing (opt-in, per vault) ------------------------------- */}
       <div className="space-y-2 rounded-lg border border-border bg-background p-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm font-medium">Include private keys in sync</p>
+            <p className="text-sm font-medium">
+              {shared ? "Share private keys and passwords" : "Include private keys in sync"}
+            </p>
             <p className="text-xs text-muted">
-              Off by default. Keys are encrypted before leaving this device.
+              Off by default. Secrets are encrypted before leaving this device.
             </p>
           </div>
           <Toggle
-            checked={includePrivateKeys}
-            disabled={setSetting.isPending}
-            onClick={onToggleIncludeKeys}
-            label="Include private keys in sync"
+            checked={shareSecrets}
+            disabled={updateVault.isPending}
+            onClick={onToggleShareSecrets}
+            label={
+              shared
+                ? `Share private keys and passwords in ${vault.name}`
+                : "Include private keys in sync"
+            }
           />
         </div>
+        {shared && shareSecrets && (
+          <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+            <ShieldAlert size={14} className="mt-0.5 shrink-0" />
+            Everyone with this vault's location and passphrase gets its private keys
+            and passwords. Removing someone later does not take back what they
+            already have.
+          </div>
+        )}
         <p className="text-xs text-muted">
-          Keys are only included when the vault is unlocked at sync time. On other
-          devices the vault must be unlocked to import them.
+          Secrets are only included when the keystore is unlocked at sync time. On
+          other devices the keystore must be unlocked to import them.
         </p>
       </div>
 
@@ -476,29 +500,41 @@ function SyncSectionBody({ config }: { config: SyncConfig }) {
       />
 
       <ConfirmDialog
-        open={confirmIncludeKeys}
+        open={confirmShareSecrets}
         onOpenChange={(o) => {
-          if (!o) setConfirmIncludeKeys(false);
+          if (!o) setConfirmShareSecrets(false);
         }}
-        title="Include private keys in sync?"
-        confirmLabel="I understand, include keys"
-        busy={setSetting.isPending}
-        onConfirm={confirmEnableIncludeKeys}
+        title={
+          shared
+            ? `Share private keys and passwords in ${vault.name}?`
+            : "Include private keys in sync?"
+        }
+        confirmLabel={shared ? "I understand, share secrets" : "I understand, include keys"}
+        busy={updateVault.isPending}
+        onConfirm={() => setShareSecrets(true, () => setConfirmShareSecrets(false))}
         message={
           <div className="space-y-2.5">
             <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-400">
               <ShieldAlert size={15} className="mt-0.5 shrink-0" />
               <span className="text-xs">
-                Your private keys will be encrypted before they leave this device,
-                but the encrypted key material will be uploaded to your sync
-                provider.
+                {shared
+                  ? "Every member of this vault will be able to read its private keys and identity passwords, and to use them to connect."
+                  : "Your private keys will be encrypted before they leave this device, but the encrypted key material will be uploaded to your sync provider."}
               </span>
             </div>
+            {shared && (
+              <p>
+                Anyone with this vault's location and passphrase is a member. Removing
+                someone later does not retract secrets they already hold, and anyone
+                who has had shell access to a host may have left their own access
+                behind. Only share secrets with people you trust.
+              </p>
+            )}
             <p>
-              Keys are only included when the vault is unlocked at sync time, and
-              other devices must unlock the vault to import them.
+              Secrets are only included when the keystore is unlocked at sync time, and
+              other devices must unlock the keystore to import them.
             </p>
-            <p>Only enable this if you understand and accept the risk.</p>
+            {!shared && <p>Only enable this if you understand and accept the risk.</p>}
           </div>
         }
       />
@@ -589,10 +625,10 @@ function StatusPanel({
       )}
       {!syncing && privateKeysSkippedLocked > 0 && (
         <div className="mt-2.5 flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
-          <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Vault locked —{" "}
+          <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Keystore locked —{" "}
           {privateKeysSkippedLocked} private key
           {privateKeysSkippedLocked === 1 ? " was" : "s were"} not synced. Unlock the
-          vault and sync again.
+          keystore and sync again.
         </div>
       )}
       {syncing && (

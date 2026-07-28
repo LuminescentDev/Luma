@@ -13,10 +13,12 @@ import {
 
 export const SNIPPETS_KEY = ["snippets"];
 
-export function useSnippets() {
+/** Omitting vaultId lists across every vault; passing one appends it to the
+ * query key so the bare-prefix invalidation below still matches. */
+export function useSnippets(vaultId?: string) {
   return useQuery({
-    queryKey: SNIPPETS_KEY,
-    queryFn: listSnippets,
+    queryKey: vaultId ? [...SNIPPETS_KEY, vaultId] : SNIPPETS_KEY,
+    queryFn: () => listSnippets(vaultId),
     staleTime: 30_000,
   });
 }

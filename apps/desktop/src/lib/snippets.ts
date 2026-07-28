@@ -8,6 +8,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Snippet = {
   id: string;
+  /** Vault that owns this snippet; `hostId`, when set, points into the same one. */
+  vaultId: string;
   name: string;
   command: string;
   description: string | null;
@@ -16,7 +18,10 @@ export type Snippet = {
   hostId: string | null;
 };
 
+/** `vaultId` is optional: the backend defaults it to the personal vault, and a
+ * snippet never changes vault on update. */
 export type SnippetInput = {
+  vaultId?: string;
   name: string;
   command: string;
   description?: string | null;
@@ -25,8 +30,9 @@ export type SnippetInput = {
   hostId?: string | null;
 };
 
-export function listSnippets(): Promise<Snippet[]> {
-  return invoke<Snippet[]>("snippets_list");
+/** Omitting `vaultId` lists across every vault. */
+export function listSnippets(vaultId?: string): Promise<Snippet[]> {
+  return invoke<Snippet[]>("snippets_list", { vaultId: vaultId ?? null });
 }
 
 export function createSnippet(input: SnippetInput): Promise<Snippet> {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, ServerCog, X } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { useHosts, useHostGroups } from "../../hooks/useHosts";
+import { useBrowsingVaultId } from "../../stores/vaultStore";
 import { useSnippetHostRunStore } from "../../stores/snippetHostRunStore";
 import type { Host } from "../../lib/hosts";
 import { SnippetRunResults } from "./SnippetRunResults";
@@ -33,8 +34,11 @@ export function MultiHostRunDialog() {
   const running = useSnippetHostRunStore((s) => s.running);
   const launchError = useSnippetHostRunStore((s) => s.launchError);
 
-  const { data: allHosts } = useHosts();
-  const { data: groups } = useHostGroups();
+  // The snippet is run against hosts, not stored against them, so the targets
+  // follow the vault being browsed rather than the snippet's own vault.
+  const browsingVaultId = useBrowsingVaultId();
+  const { data: allHosts } = useHosts(browsingVaultId);
+  const { data: groups } = useHostGroups(browsingVaultId);
 
   const [step, setStep] = useState<Step>("select");
   const [selected, setSelected] = useState<Set<string>>(new Set());

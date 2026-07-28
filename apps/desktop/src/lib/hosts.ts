@@ -10,6 +10,9 @@ export type AuthenticationType = "key" | "password" | "interactive";
 
 export type Host = {
   id: string;
+  /** Vault that owns this host. Every reference it holds (group, key, identity,
+   * proxy jump) is in the same vault; the backend rejects anything else. */
+  vaultId: string;
   name: string;
   hostname: string;
   port: number;
@@ -36,7 +39,10 @@ export type Host = {
   isEphemeral: boolean;
 };
 
+/** `vaultId` is optional on every input: the backend defaults it to the personal
+ * vault, and an entity never changes vault on update. */
 export type HostInput = {
+  vaultId?: string;
   name: string;
   hostname: string;
   port: number;
@@ -57,12 +63,14 @@ export type HostInput = {
 
 export type HostGroup = {
   id: string;
+  vaultId: string;
   name: string;
   parentId: string | null;
   sortOrder: number;
 };
 
 export type HostGroupInput = {
+  vaultId?: string;
   name: string;
   parentId: string | null;
   sortOrder: number;
@@ -72,6 +80,7 @@ export type KeyStorageMode = "local-path" | "encrypted-vault";
 
 export type KeyReference = {
   id: string;
+  vaultId: string;
   name: string;
   publicKey: string | null;
   storageMode: KeyStorageMode;
@@ -82,6 +91,7 @@ export type KeyReference = {
 };
 
 export type KeyReferenceInput = {
+  vaultId?: string;
   name: string;
   publicKey: string | null;
   storageMode: KeyStorageMode;
@@ -92,8 +102,8 @@ export type KeyReferenceInput = {
   passphrase?: string | null;
 };
 
-export type Identity = { id: string; name: string; username: string; keyId: string | null; hasPassword: boolean };
-export type IdentityInput = { name: string; username: string; keyId: string | null; password: string | null };
+export type Identity = { id: string; vaultId: string; name: string; username: string; keyId: string | null; hasPassword: boolean };
+export type IdentityInput = { vaultId?: string; name: string; username: string; keyId: string | null; password: string | null };
 
 export type SshConfigCandidate = {
   name: string;
@@ -114,6 +124,7 @@ export type SshImportResult = {
  * duplicate / favorite-toggle updates where the whole record is resubmitted. */
 export function hostToInput(host: Host): HostInput {
   return {
+    vaultId: host.vaultId,
     name: host.name,
     hostname: host.hostname,
     port: host.port,
@@ -134,8 +145,9 @@ export function hostToInput(host: Host): HostInput {
 
 // Hosts ---------------------------------------------------------------------
 
-export function listHosts(): Promise<Host[]> {
-  return invoke<Host[]>("hosts_list", {});
+/** Omitting `vaultId` lists across every vault. */
+export function listHosts(vaultId?: string): Promise<Host[]> {
+  return invoke<Host[]>("hosts_list", { vaultId: vaultId ?? null });
 }
 
 export function getHost(id: string): Promise<Host | null> {
@@ -175,17 +187,24 @@ export function quickConnectPrepare(input: string): Promise<Host> {
 /** Promote an ephemeral quick-connect host into a saved host (clears
  * isEphemeral). `name` defaults to the backend-derived label when null.
  * Rejects with invalid-input / database. */
+/** Quick-connect hosts are created in the personal vault; saving one is the
+ * only point a host changes vault, since it holds no references yet. */
 export function quickConnectSave(
   hostId: string,
   name?: string | null,
+  vaultId?: string,
 ): Promise<Host> {
-  return invoke<Host>("quick_connect_save", { hostId, name: name ?? null });
+  return invoke<Host>("quick_connect_save", {
+    hostId,
+    name: name ?? null,
+    vaultId: vaultId ?? null,
+  });
 }
 
 // Host groups ---------------------------------------------------------------
 
-export function listHostGroups(): Promise<HostGroup[]> {
-  return invoke<HostGroup[]>("host_groups_list", {});
+export function listHostGroups(vaultId?: string): Promise<HostGroup[]> {
+  return invoke<HostGroup[]>("host_groups_list", { vaultId: vaultId ?? null });
 }
 
 export function createHostGroup(input: HostGroupInput): Promise<HostGroup> {
@@ -202,8 +221,8 @@ export function deleteHostGroup(id: string): Promise<void> {
 
 // Key references ------------------------------------------------------------
 
-export function listKeyReferences(): Promise<KeyReference[]> {
-    return invoke<KeyReference[]>("key_references_list", {});
+export function listKeyReferences(vaultId?: string): Promise<KeyReference[]> {
+    return invoke<KeyReference[]>("key_references_list", { vaultId: vaultId ?? null });
 }
 
 export type KeyReferenceSecrets = { privateKey: string | null; passphrase: string | null };
@@ -241,22 +260,24 @@ export function updateKeyReference(
 export function deleteKeyReference(id: string): Promise<void> {
   return invoke<void>("key_reference_delete", { id });
 }
-export function generateSshKey(name: string, localPath: string, passphrase: string, certificate: string | null): Promise<KeyReference> { return invoke<KeyReference>("ssh_key_generate", { input: { name, localPath, passphrase, certificate } }); }
+export function generateSshKey(name: string, localPath: string, passphrase: string, certificate: string | null, vaultId?: string): Promise<KeyReference> { return invoke<KeyReference>("ssh_key_generate", { input: { vaultId, name, localPath, passphrase, certificate } }); }
 
-/** SSH key algorithms Luma can generate into the encrypted vault. */
+/** SSH key algorithms Luma can generate into the encrypted keystore. */
 export type GeneratedKeyType = "ed25519" | "rsa4096";
 
-/** Generate a new SSH key pair stored in the encrypted vault. The vault must be
- * configured and unlocked first. Returns a KeyReference with the derived
+/** Generate a new SSH key pair stored in the encrypted keystore. The keystore
+ * must be configured and unlocked first. Returns a KeyReference with the derived
  * publicKey + fingerprint (storageMode "encrypted-vault", localPath null).
- * Rejects with invalid-input / vault-locked / database. */
-export function generateVaultSshKey(input: {
+ * Rejects with invalid-input / keystore-locked / database. */
+export function generateKeystoreSshKey(input: {
+  vaultId?: string;
   keyType: GeneratedKeyType;
   name: string;
   passphrase?: string | null;
   comment?: string | null;
 }): Promise<KeyReference> {
   return invoke<KeyReference>("ssh_key_generate", {
+    vaultId: input.vaultId ?? null,
     keyType: input.keyType,
     name: input.name,
     passphrase: input.passphrase ?? null,
@@ -264,20 +285,26 @@ export function generateVaultSshKey(input: {
   });
 }
 
-export const listIdentities = () => invoke<Identity[]>("identities_list", {});
+export const listIdentities = (vaultId?: string) =>
+  invoke<Identity[]>("identities_list", { vaultId: vaultId ?? null });
 export const createIdentity = (input: IdentityInput) => invoke<Identity>("identity_create", { input });
 export const updateIdentity = (id: string, input: IdentityInput) => invoke<Identity>("identity_update", { id, input });
 export const deleteIdentity = (id: string) => invoke<void>("identity_delete", { id });
 
 // SSH availability + config import ------------------------------------------
 
-export function previewSshConfig(): Promise<SshConfigCandidate[]> {
-  return invoke<SshConfigCandidate[]>("ssh_config_preview", {});
+/** `alreadyExists` is decided within the target vault, so the preview must use
+ * the same vault the import will write to. */
+export function previewSshConfig(vaultId?: string): Promise<SshConfigCandidate[]> {
+  return invoke<SshConfigCandidate[]>("ssh_config_preview", { vaultId: vaultId ?? null });
 }
 
-export function importSshConfig(selectedNames: string[]): Promise<SshImportResult> {
+export function importSshConfig(
+  selectedNames: string[],
+  vaultId?: string,
+): Promise<SshImportResult> {
   return invoke<SshImportResult>("ssh_config_import", {
-    request: { selectedNames },
+    request: { vaultId, selectedNames },
   });
 }
 
@@ -316,8 +343,13 @@ export type ImportedHostsResult = {
 export function previewImportHosts(
   source: ImportSource,
   path: string,
+  vaultId?: string,
 ): Promise<ImportedHostCandidate[]> {
-  return invoke<ImportedHostCandidate[]>("import_hosts_preview", { source, path });
+  return invoke<ImportedHostCandidate[]>("import_hosts_preview", {
+    source,
+    path,
+    vaultId: vaultId ?? null,
+  });
 }
 
 /** Import the selected hosts from a Tabby/Electerm export. `selectedNames`
@@ -327,11 +359,12 @@ export function applyImportHosts(
   source: ImportSource,
   path: string,
   selectedNames: string[],
+  vaultId?: string,
 ): Promise<ImportedHostsResult> {
   return invoke<ImportedHostsResult>("import_hosts_apply", {
     source,
     path,
-    request: { selectedNames },
+    request: { vaultId, selectedNames },
   });
 }
 
@@ -351,9 +384,9 @@ export function parseLumaError(error: unknown): { category: string; message: str
   return { category: "unknown", message: String(error) };
 }
 
-export type VaultStatus = { configured: boolean; unlocked: boolean; rememberOnDevice: boolean };
-export const getVaultStatus = () => invoke<VaultStatus>("vault_status");
-export const setupVault = (password: string, rememberDevice: boolean) => invoke<void>("vault_setup", { input: { password, rememberDevice } });
-export const unlockVault = (password: string) => invoke<void>("vault_unlock", { password });
-export const lockVault = () => invoke<void>("vault_lock");
-export const setVaultPolicy = (rememberDevice: boolean) => invoke<void>("vault_set_policy", { rememberDevice });
+export type KeystoreStatus = { configured: boolean; unlocked: boolean; rememberOnDevice: boolean };
+export const getKeystoreStatus = () => invoke<KeystoreStatus>("keystore_status");
+export const setupKeystore = (password: string, rememberDevice: boolean) => invoke<void>("keystore_setup", { input: { password, rememberDevice } });
+export const unlockKeystore = (password: string) => invoke<void>("keystore_unlock", { password });
+export const lockKeystore = () => invoke<void>("keystore_lock");
+export const setKeystorePolicy = (rememberDevice: boolean) => invoke<void>("keystore_set_policy", { rememberDevice });

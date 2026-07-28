@@ -10,9 +10,10 @@ import { invoke } from "@tauri-apps/api/core";
  */
 
 /**
- * Device-local settings key for the opt-in "include private keys in sync"
- * preference. Stored as a JSON boolean via settings_set; defaults to false when
- * unset. Enabling it only takes effect while the vault is unlocked at sync time.
+ * Legacy device-local settings key for the global "include private keys in
+ * sync" preference. Superseded by each vault's `shareSecrets` flag, which the
+ * backend seeded from this value; it is still readable for one release so a
+ * downgrade round-trips. Nothing reads it to decide what gets synced.
  */
 export const SYNC_INCLUDE_PRIVATE_KEYS_KEY = "sync.includePrivateKeys";
 
@@ -62,6 +63,7 @@ export type SyncProvider =
   | "luma-cloud";
 
 export type SyncConfig = {
+  vaultId: string;
   enabled: boolean;
   provider: SyncProvider | null;
   folderPath: string | null;
@@ -90,7 +92,7 @@ export type SyncReport = {
   upToDate: boolean;
   /** Private keys decrypted+imported during this sync (0 unless key sync is on). */
   privateKeysApplied: number;
-  /** Private keys that could not be included because the vault was locked. */
+  /** Private keys that could not be included because the keystore was locked. */
   privateKeysSkippedLocked: number;
 };
 
@@ -110,52 +112,85 @@ export type ImportApplyResult = {
   conflicts: Conflict[];
   /** Private keys decrypted+imported during this import (0 unless included). */
   privateKeysApplied: number;
-  /** Private keys that could not be imported because the vault was locked. */
+  /** Private keys that could not be imported because the keystore was locked. */
   privateKeysSkippedLocked: number;
 };
 
+/*
+ * Every call below is scoped to one vault. Each vault has its own remote, its
+ * own passphrase and its own baseline, so the id is a required argument rather
+ * than an ambient default — a sync aimed at the wrong vault would push one
+ * team's data under another's key.
+ */
+
 // Export / import -----------------------------------------------------------
 
-export function exportEncrypted(path: string, passphrase: string): Promise<ExportResult> {
-  return invoke<ExportResult>("export_encrypted", { path, passphrase });
+export function exportEncrypted(
+  vaultId: string,
+  path: string,
+  passphrase: string,
+): Promise<ExportResult> {
+  return invoke<ExportResult>("export_encrypted", { vaultId, path, passphrase });
 }
 
-export function importPreview(path: string, passphrase: string): Promise<ImportPreview> {
-  return invoke<ImportPreview>("import_preview", { path, passphrase });
+export function importPreview(
+  vaultId: string,
+  path: string,
+  passphrase: string,
+): Promise<ImportPreview> {
+  return invoke<ImportPreview>("import_preview", { vaultId, path, passphrase });
 }
 
 export function importApply(
+  vaultId: string,
   path: string,
   passphrase: string,
   resolutions: ConflictResolution[],
 ): Promise<ImportApplyResult> {
-  return invoke<ImportApplyResult>("import_apply", { path, passphrase, resolutions });
+  return invoke<ImportApplyResult>("import_apply", {
+    vaultId,
+    path,
+    passphrase,
+    resolutions,
+  });
 }
 
 // Sync ----------------------------------------------------------------------
 
-export function syncGetConfig(): Promise<SyncConfig> {
-  return invoke<SyncConfig>("sync_get_config", {});
+export function syncGetConfig(vaultId: string): Promise<SyncConfig> {
+  return invoke<SyncConfig>("sync_get_config", { vaultId });
 }
 
-export function syncConfigure(input: SyncConfigureInput): Promise<null> {
-  return invoke<null>("sync_configure", { input });
+/** Every vault's configuration in one round trip, for the title-bar aggregate. */
+export function syncListConfigs(): Promise<SyncConfig[]> {
+  return invoke<SyncConfig[]>("sync_list_configs", {});
 }
 
-export function syncSetPassphrase(passphrase: string, remember: boolean): Promise<null> {
-  return invoke<null>("sync_set_passphrase", { passphrase, remember });
+export function syncConfigure(vaultId: string, input: SyncConfigureInput): Promise<null> {
+  return invoke<null>("sync_configure", { vaultId, input });
 }
 
-export function syncDisable(): Promise<null> {
-  return invoke<null>("sync_disable", {});
+export function syncSetPassphrase(
+  vaultId: string,
+  passphrase: string,
+  remember: boolean,
+): Promise<null> {
+  return invoke<null>("sync_set_passphrase", { vaultId, passphrase, remember });
 }
 
-export function syncNow(): Promise<SyncReport> {
-  return invoke<SyncReport>("sync_now", {});
+export function syncDisable(vaultId: string): Promise<null> {
+  return invoke<null>("sync_disable", { vaultId });
 }
 
-export function syncResolve(resolutions: ConflictResolution[]): Promise<SyncReport> {
-  return invoke<SyncReport>("sync_resolve", { resolutions });
+export function syncNow(vaultId: string): Promise<SyncReport> {
+  return invoke<SyncReport>("sync_now", { vaultId });
+}
+
+export function syncResolve(
+  vaultId: string,
+  resolutions: ConflictResolution[],
+): Promise<SyncReport> {
+  return invoke<SyncReport>("sync_resolve", { vaultId, resolutions });
 }
 
 /** Sum every object count into a single total (for compact summaries). */

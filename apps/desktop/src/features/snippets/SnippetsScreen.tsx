@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useSnippets, useSnippetMutations } from "../../hooks/useSnippets";
 import { useHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId, useCreationVaultId } from "../../stores/vaultStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useSnippetRunStore } from "../../stores/snippetRunStore";
 import type { Snippet, SnippetInput } from "../../lib/snippets";
@@ -33,8 +34,10 @@ function matches(snippet: Snippet, q: string): boolean {
 }
 
 export function SnippetsScreen() {
-  const { data: snippets } = useSnippets();
-  const { data: hosts } = useHosts();
+  const browsingVaultId = useBrowsingVaultId();
+  const creationVaultId = useCreationVaultId();
+  const { data: snippets } = useSnippets(browsingVaultId);
+  const { data: hosts } = useHosts(browsingVaultId);
   const { create, update, remove } = useSnippetMutations();
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const requestRun = useSnippetRunStore((s) => s.request);
@@ -62,9 +65,17 @@ export function SnippetsScreen() {
     setDialogOpen(true);
   };
 
+  // A snippet stays in its own vault on edit, and its host must live there too.
+  const dialogVaultId = editing?.vaultId ?? creationVaultId;
+  const dialogHosts = useMemo(
+    () => allHosts.filter((host) => host.vaultId === dialogVaultId),
+    [allHosts, dialogVaultId],
+  );
+
   const save = async (input: SnippetInput) => {
-    if (editing) await update.mutateAsync({ id: editing.id, input });
-    else await create.mutateAsync(input);
+    const scoped = { ...input, vaultId: dialogVaultId };
+    if (editing) await update.mutateAsync({ id: editing.id, input: scoped });
+    else await create.mutateAsync(scoped);
   };
 
   return (
@@ -131,7 +142,7 @@ export function SnippetsScreen() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         snippet={editing}
-        hosts={allHosts}
+        hosts={dialogHosts}
         onSave={save}
         saving={create.isPending || update.isPending}
       />

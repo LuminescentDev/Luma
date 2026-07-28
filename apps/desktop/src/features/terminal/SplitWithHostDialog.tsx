@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Server, SquareTerminal, Star } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { useHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId } from "../../stores/vaultStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { cn } from "../../lib/utils";
 import type { RestoreDescriptor } from "../../types";
@@ -19,7 +20,7 @@ export function SplitWithHostDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { data: hosts = [] } = useHosts();
+  const { data: hosts = [] } = useHosts(useBrowsingVaultId());
   const splitActivePaneWith = useSessionStore((s) => s.splitActivePaneWith);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);

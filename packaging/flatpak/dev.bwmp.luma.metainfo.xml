@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.bwmp.luma</id>
+  <name>Luma</name>
+  <summary>Free open-source terminal and SSH client</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="dev.bwmp">
+    <name>BWMP</name>
+  </developer>
+  <description>
+    <p>
+      Luma combines local and serial terminals, saved SSH connections, SFTP,
+      port forwarding, snippets, and optional end-to-end encrypted
+      configuration sync in one modern application.
+    </p>
+    <p>
+      This independently distributed Flatpak uses broad host filesystem and
+      device access because Luma manages local files, SSH keys, and serial
+      devices. Local terminal sessions run inside the Flatpak environment.
+    </p>
+  </description>
+  <url type="homepage">https://luma.bwmp.dev/</url>
+  <url type="bugtracker">https://github.com/bwmp-dev/Luma/issues</url>
+  <url type="vcs-browser">https://github.com/bwmp-dev/Luma</url>
+  <launchable type="desktop-id">dev.bwmp.luma.desktop</launchable>
+  <provides>
+    <binary>luma</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+    <category>System</category>
+    <category>TerminalEmulator</category>
+  </categories>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://luma.bwmp.dev/screenshots/dark/terminal@2x.png</image>
+      <caption>A local terminal session in Luma</caption>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.14.2" date="2026-07-25" />
+  </releases>
+</component>

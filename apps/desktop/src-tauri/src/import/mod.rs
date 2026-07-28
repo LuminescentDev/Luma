@@ -30,6 +30,8 @@ pub struct ImportedHostCandidate {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportHostsRequest {
+    #[serde(default = "crate::storage::vaults::default_id")]
+    pub vault_id: String,
     pub selected_names: Vec<String>,
 }
 
@@ -675,10 +677,13 @@ pub async fn preview_hosts(
     pool: &SqlitePool,
     source: String,
     path: String,
+    vault_id: &str,
 ) -> Result<Vec<ImportedHostCandidate>> {
     let source = ImportSource::parse(&source)?;
     let candidates = read_candidates(source, &path)?;
-    let rows = sqlx::query("SELECT name FROM hosts")
+    // A name only collides inside the vault being imported into.
+    let rows = sqlx::query("SELECT name FROM hosts WHERE vault_id = ?1")
+        .bind(vault_id)
         .fetch_all(pool)
         .await?;
     let existing: HashSet<String> = rows
@@ -726,6 +731,7 @@ pub async fn apply_hosts(
     request: ImportHostsRequest,
 ) -> Result<ImportedHostsResult> {
     let source = ImportSource::parse(&source)?;
+    crate::storage::vaults::require(pool, &request.vault_id).await?;
     if request.selected_names.len() > MAX_IMPORT_ENTRIES {
         return Err(LumaError::InvalidInput(format!(
             "at most {MAX_IMPORT_ENTRIES} hosts can be imported at once"
@@ -753,14 +759,16 @@ pub async fn apply_hosts(
         )));
     }
 
-    let existing_host_rows = sqlx::query("SELECT name FROM hosts")
+    let existing_host_rows = sqlx::query("SELECT name FROM hosts WHERE vault_id = ?1")
+        .bind(&request.vault_id)
         .fetch_all(pool)
         .await?;
     let mut existing_names: HashSet<String> = existing_host_rows
         .iter()
         .map(|row| row.get::<String, _>("name").to_ascii_lowercase())
         .collect();
-    let group_rows = sqlx::query("SELECT id, name FROM host_groups")
+    let group_rows = sqlx::query("SELECT id, name FROM host_groups WHERE vault_id = ?1")
+        .bind(&request.vault_id)
         .fetch_all(pool)
         .await?;
     let mut group_ids: HashMap<String, String> = group_rows
@@ -809,6 +817,7 @@ pub async fn apply_hosts(
             let mut key_name = format!("{} key", candidate.name);
             key_name.truncate(key_name.floor_char_boundary(128));
             key_references::validate(&KeyReferenceInput {
+                vault_id: request.vault_id.clone(),
                 name: key_name,
                 public_key: None,
                 storage_mode: "local-path".into(),
@@ -820,6 +829,7 @@ pub async fn apply_hosts(
             })?;
         }
         let input = HostInput {
+            vault_id: request.vault_id.clone(),
             name: candidate.name.clone(),
             hostname: candidate.hostname.clone(),
             port: i64::from(candidate.port),
@@ -848,10 +858,11 @@ pub async fn apply_hosts(
     let mut transaction = pool.begin().await?;
     for (group_id, group_name) in &new_groups {
         sqlx::query(
-            "INSERT INTO host_groups (id, name, parent_id, sort_order) VALUES (?1, ?2, NULL, 0)",
+            "INSERT INTO host_groups (id, vault_id, name, parent_id, sort_order) VALUES (?1, ?3, ?2, NULL, 0)",
         )
         .bind(group_id)
         .bind(group_name.trim())
+        .bind(&request.vault_id)
         .execute(&mut *transaction)
         .await?;
     }
@@ -861,9 +872,10 @@ pub async fn apply_hosts(
             let local_path = expanded_identity_file(identity_file);
             if let Some(existing_key_id) = sqlx::query_scalar::<_, String>(
                 "SELECT id FROM key_references
-                 WHERE storage_mode = 'local-path' AND local_path = ?1 LIMIT 1",
+                 WHERE storage_mode = 'local-path' AND local_path = ?1 AND vault_id = ?2 LIMIT 1",
             )
             .bind(&local_path)
+            .bind(&request.vault_id)
             .fetch_optional(&mut *transaction)
             .await?
             {
@@ -876,12 +888,13 @@ pub async fn apply_hosts(
                 let mut key_name = format!("{} key", prepared_host.candidate.name);
                 key_name.truncate(key_name.floor_char_boundary(128));
                 sqlx::query(
-                    "INSERT INTO key_references (id, name, storage_mode, local_path)
-                     VALUES (?1, ?2, 'local-path', ?3)",
+                    "INSERT INTO key_references (id, vault_id, name, storage_mode, local_path)
+                     VALUES (?1, ?4, ?2, 'local-path', ?3)",
                 )
                 .bind(&key_id)
                 .bind(key_name)
                 .bind(local_path)
+                .bind(&request.vault_id)
                 .execute(&mut *transaction)
                 .await?;
                 Some(key_id)
@@ -892,9 +905,9 @@ pub async fn apply_hosts(
 
         sqlx::query(
             "INSERT INTO hosts (
-                 id, name, hostname, port, username, group_id, auth_type, key_id,
+                 id, vault_id, name, hostname, port, username, group_id, auth_type, key_id,
                  proxy_jump_host_id, tags, favorite
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, '[]', 0)",
+             ) VALUES (?1, ?9, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, '[]', 0)",
         )
         .bind(&prepared_host.id)
         .bind(prepared_host.input.name.trim())
@@ -904,6 +917,7 @@ pub async fn apply_hosts(
         .bind(&prepared_host.input.group_id)
         .bind(&prepared_host.input.authentication_type)
         .bind(key_id)
+        .bind(&request.vault_id)
         .execute(&mut *transaction)
         .await?;
     }

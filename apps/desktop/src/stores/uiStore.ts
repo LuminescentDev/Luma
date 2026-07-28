@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { SidebarSection } from "../types";
+import type { VaultJoinLink } from "../lib/vaults";
 
 /**
  * What the main area shows. Decoupled from the sidebar rail: the terminal
@@ -56,6 +57,12 @@ type UiState = {
   openCollab: (intent?: CollabIntent) => void;
   closeCollab: () => void;
   clearCollabIntent: () => void;
+  /** Join-a-vault dialog visibility, and the deep link that prefills it. The
+   * link names a remote only — it carries no passphrase and no credentials. */
+  vaultJoinOpen: boolean;
+  vaultJoinLink: VaultJoinLink | null;
+  openVaultJoin: (link?: VaultJoinLink) => void;
+  closeVaultJoin: () => void;
 };
 
 export type CollabIntent = {
@@ -138,4 +145,8 @@ export const useUiStore = create<UiState>((set) => ({
         : null,
     })),
   clearCollabIntent: () => set({ collabIntent: null }),
+  vaultJoinOpen: false,
+  vaultJoinLink: null,
+  openVaultJoin: (link) => set({ vaultJoinOpen: true, vaultJoinLink: link ?? null }),
+  closeVaultJoin: () => set({ vaultJoinOpen: false, vaultJoinLink: null }),
 }));

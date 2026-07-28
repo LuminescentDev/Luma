@@ -1,0 +1,36 @@
+app-id: dev.bwmp.luma
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+command: luma
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=all
+  - --filesystem=host
+  - --talk-name=org.freedesktop.secrets
+
+modules:
+  - name: luma
+    buildsystem: simple
+    build-commands:
+      - ar x luma.deb
+      - tar -xf data.tar.*
+      - cp -a usr/bin/luma /app/bin/luma
+      - install -Dm644 dev.bwmp.luma.desktop /app/share/applications/dev.bwmp.luma.desktop
+      - install -Dm644 dev.bwmp.luma.metainfo.xml /app/share/metainfo/dev.bwmp.luma.metainfo.xml
+      - install -Dm644 dev.bwmp.luma.svg /app/share/icons/hicolor/scalable/apps/dev.bwmp.luma.svg
+    sources:
+      - type: file
+        url: https://github.com/bwmp-dev/Luma/releases/download/v0.14.2/Luma_0.14.2_amd64.deb
+        sha256: 01b14e3241d830f2612a30e93962daf2a79abbde1a0001394087d75a10c1b752
+        dest-filename: luma.deb
+      - type: file
+        path: dev.bwmp.luma.desktop
+      - type: file
+        path: dev.bwmp.luma.metainfo.xml
+      - type: file
+        path: dev.bwmp.luma.svg

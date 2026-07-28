@@ -19,6 +19,7 @@ const MAX_OS_PRETTY_NAME_LENGTH: usize = 256;
 #[serde(rename_all = "camelCase")]
 pub struct Host {
     pub id: String,
+    pub vault_id: String,
     pub name: String,
     pub hostname: String,
     pub port: u16,
@@ -49,6 +50,8 @@ pub struct QuickConnectTarget {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostInput {
+    #[serde(default = "crate::storage::vaults::default_id")]
+    pub vault_id: String,
     pub name: String,
     pub hostname: String,
     #[serde(default = "default_port")]
@@ -337,6 +340,7 @@ fn row_to_host(row: &sqlx::sqlite::SqliteRow) -> Host {
     let port: i64 = row.get("port");
     Host {
         id: row.get("id"),
+        vault_id: row.get("vault_id"),
         name: row.get("name"),
         hostname: row.get("hostname"),
         port: u16::try_from(port).unwrap_or(22),
@@ -359,15 +363,18 @@ fn row_to_host(row: &sqlx::sqlite::SqliteRow) -> Host {
 }
 
 const HOST_COLUMNS: &str =
-    "id, name, hostname, port, username, group_id, auth_type, key_id, identity_id, proxy_jump_host_id, \
+    "id, vault_id, name, hostname, port, username, group_id, auth_type, key_id, identity_id, proxy_jump_host_id, \
      startup_command, working_directory, environment, tags, favorite, tab_color, os_id, os_pretty_name, is_ephemeral";
 
-pub async fn list(pool: &SqlitePool) -> Result<Vec<Host>> {
+/// `vault_id` of `None` spans every vault, which is what the command palette and
+/// the vault overview need; pass `Some` to scope to one vault.
+pub async fn list(pool: &SqlitePool, vault_id: Option<&str>) -> Result<Vec<Host>> {
     let query = format!(
-        "SELECT {HOST_COLUMNS} FROM hosts WHERE is_ephemeral = 0 \
+        "SELECT {HOST_COLUMNS} FROM hosts \
+         WHERE is_ephemeral = 0 AND (?1 IS NULL OR vault_id = ?1) \
          ORDER BY favorite DESC, name COLLATE NOCASE"
     );
-    let rows = sqlx::query(&query).fetch_all(pool).await?;
+    let rows = sqlx::query(&query).bind(vault_id).fetch_all(pool).await?;
     Ok(rows.iter().map(row_to_host).collect())
 }
 
@@ -377,10 +384,19 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Host>> {
     Ok(row.as_ref().map(row_to_host))
 }
 
-async fn validate_reference(pool: &SqlitePool, table: &str, id: &str, label: &str) -> Result<()> {
-    let query = format!("SELECT 1 FROM {table} WHERE id = ?1");
+/// Passing `vault_id` restricts the lookup to one vault, which is what stops a
+/// host from referencing a group, key or identity another member cannot see.
+async fn validate_reference(
+    pool: &SqlitePool,
+    table: &str,
+    vault_id: Option<&str>,
+    id: &str,
+    label: &str,
+) -> Result<()> {
+    let query = format!("SELECT 1 FROM {table} WHERE id = ?1 AND (?2 IS NULL OR vault_id = ?2)");
     if sqlx::query_scalar::<_, i64>(&query)
         .bind(id)
+        .bind(vault_id)
         .fetch_optional(pool)
         .await?
         .is_none()
@@ -392,6 +408,7 @@ async fn validate_reference(pool: &SqlitePool, table: &str, id: &str, label: &st
 
 pub(crate) async fn validate_proxy_jump(
     pool: &SqlitePool,
+    vault_id: &str,
     current_host_id: Option<&str>,
     proxy_jump_host_id: Option<&str>,
 ) -> Result<()> {
@@ -418,10 +435,12 @@ pub(crate) async fn validate_proxy_jump(
                 "proxy jump chain may contain at most {MAX_PROXY_JUMP_DEPTH} hosts"
             )));
         }
-        let row = sqlx::query("SELECT proxy_jump_host_id FROM hosts WHERE id = ?1")
-            .bind(&id)
-            .fetch_optional(pool)
-            .await?;
+        let row =
+            sqlx::query("SELECT proxy_jump_host_id FROM hosts WHERE id = ?1 AND vault_id = ?2")
+                .bind(&id)
+                .bind(vault_id)
+                .fetch_optional(pool)
+                .await?;
         let Some(row) = row else {
             return Err(LumaError::InvalidInput("unknown proxy jump host".into()));
         };
@@ -435,22 +454,24 @@ async fn validate_references(
     current_host_id: Option<&str>,
     input: &HostInput,
 ) -> Result<()> {
+    let vault_id = Some(input.vault_id.as_str());
     if let Some(group_id) = optional_trimmed(input.group_id.clone()) {
-        validate_reference(pool, "host_groups", &group_id, "host group").await?;
+        validate_reference(pool, "host_groups", vault_id, &group_id, "host group").await?;
     }
     if let Some(key_id) = optional_trimmed(input.key_id.clone()) {
-        validate_reference(pool, "key_references", &key_id, "key reference").await?;
+        validate_reference(pool, "key_references", vault_id, &key_id, "key reference").await?;
     }
     if let Some(identity_id) = optional_trimmed(input.identity_id.clone()) {
-        validate_reference(pool, "identities", &identity_id, "identity").await?;
+        validate_reference(pool, "identities", vault_id, &identity_id, "identity").await?;
     }
     let proxy_id = optional_trimmed(input.proxy_jump_host_id.clone());
-    validate_proxy_jump(pool, current_host_id, proxy_id.as_deref()).await
+    validate_proxy_jump(pool, &input.vault_id, current_host_id, proxy_id.as_deref()).await
 }
 
 pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
     clear_host_credentials_when_using_identity(&mut input);
     validate_fields(&input)?;
+    super::vaults::require(pool, &input.vault_id).await?;
     validate_references(pool, None, &input).await?;
 
     input.username = optional_trimmed(input.username);
@@ -469,10 +490,10 @@ pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
     let id = uuid::Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO hosts (
-             id, name, hostname, port, username, group_id, auth_type, key_id, identity_id,
+             id, vault_id, name, hostname, port, username, group_id, auth_type, key_id, identity_id,
              proxy_jump_host_id, startup_command, working_directory, environment, tags, favorite,
              tab_color
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         ) VALUES (?1, ?17, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
     )
     .bind(&id)
     .bind(input.name.trim())
@@ -500,6 +521,7 @@ pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
     )
     .bind(input.favorite)
     .bind(&input.tab_color)
+    .bind(&input.vault_id)
     .execute(pool)
     .await?;
 
@@ -550,7 +572,15 @@ pub async fn create_ephemeral(pool: &SqlitePool, input: &str) -> Result<Host> {
         .ok_or_else(|| LumaError::InvalidInput("quick connect host creation failed".into()))
 }
 
-pub async fn save_ephemeral(pool: &SqlitePool, id: &str, name: Option<&str>) -> Result<Host> {
+/// Promote a quick-connect host into the saved list. A quick-connect host is
+/// created in the personal vault, so this is the one point where a host does
+/// change vault — it has no references and no secrets of its own yet.
+pub async fn save_ephemeral(
+    pool: &SqlitePool,
+    id: &str,
+    name: Option<&str>,
+    vault_id: Option<&str>,
+) -> Result<Host> {
     let name = name.map(str::trim).filter(|value| !value.is_empty());
     if name
         .is_some_and(|value| value.len() > MAX_NAME_LENGTH || value.chars().any(char::is_control))
@@ -559,12 +589,17 @@ pub async fn save_ephemeral(pool: &SqlitePool, id: &str, name: Option<&str>) -> 
             "host name must be 1-{MAX_NAME_LENGTH} non-control characters"
         )));
     }
+    if let Some(vault_id) = vault_id {
+        crate::storage::vaults::require(pool, vault_id).await?;
+    }
     let result = sqlx::query(
-        "UPDATE hosts SET is_ephemeral = 0, name = COALESCE(?2, name), updated_at = unixepoch()
+        "UPDATE hosts SET is_ephemeral = 0, name = COALESCE(?2, name),
+             vault_id = COALESCE(?3, vault_id), updated_at = unixepoch()
          WHERE id = ?1 AND is_ephemeral = 1",
     )
     .bind(id)
     .bind(name)
+    .bind(vault_id)
     .execute(pool)
     .await?;
     if result.rows_affected() == 0 {
@@ -586,9 +621,12 @@ pub async fn cleanup_stale_ephemeral(pool: &SqlitePool) -> Result<u64> {
 }
 
 pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result<Host> {
-    if get(pool, id).await?.is_none() {
-        return Err(LumaError::InvalidInput("unknown host".into()));
-    }
+    let current = get(pool, id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
+    // A host stays in the vault it was created in; moving between vaults means
+    // re-encrypting under another key and is a separate operation.
+    input.vault_id = current.vault_id;
     clear_host_credentials_when_using_identity(&mut input);
     validate_fields(&input)?;
     validate_references(pool, Some(id), &input).await?;
@@ -662,6 +700,7 @@ pub async fn duplicate(pool: &SqlitePool, id: &str) -> Result<Host> {
     create(
         pool,
         HostInput {
+            vault_id: host.vault_id,
             name: format!("{base}{suffix}"),
             hostname: host.hostname,
             port: i64::from(host.port),
@@ -683,6 +722,9 @@ pub async fn duplicate(pool: &SqlitePool, id: &str) -> Result<Host> {
 }
 
 pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
+    let host = get(pool, id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
     let mut transaction = pool.begin().await?;
     let result = sqlx::query("DELETE FROM hosts WHERE id = ?1")
         .bind(id)
@@ -692,11 +734,12 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
         return Err(LumaError::InvalidInput("unknown host".into()));
     }
     sqlx::query(
-        "INSERT INTO tombstones (object_type, object_id, deleted_at)
-         VALUES ('host', ?1, unixepoch())
-         ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+        "INSERT INTO tombstones (vault_id, object_type, object_id, deleted_at)
+         VALUES (?2, 'host', ?1, unixepoch())
+         ON CONFLICT(vault_id, object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
     )
     .bind(id)
+    .bind(&host.vault_id)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -704,7 +747,7 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
 }
 
 pub async fn record_recent_connection(pool: &SqlitePool, host_id: &str) -> Result<()> {
-    validate_reference(pool, "hosts", host_id, "host").await?;
+    validate_reference(pool, "hosts", None, host_id, "host").await?;
     sqlx::query("INSERT INTO recent_connections (host_id, connected_at) VALUES (?1, unixepoch())")
         .bind(host_id)
         .execute(pool)
@@ -798,6 +841,7 @@ mod tests {
 
     fn sample_input(name: &str, hostname: &str) -> HostInput {
         HostInput {
+            vault_id: crate::storage::vaults::default_id(),
             name: name.into(),
             hostname: hostname.into(),
             port: 22,
@@ -927,6 +971,7 @@ mod tests {
         let key = key_references::create(
             &pool,
             KeyReferenceInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Test key".into(),
                 public_key: None,
                 storage_mode: "local-path".into(),
@@ -1026,18 +1071,18 @@ mod tests {
             .await
             .unwrap();
         assert!(ephemeral.is_ephemeral);
-        assert!(list(&pool).await.unwrap().is_empty());
+        assert!(list(&pool, None).await.unwrap().is_empty());
         record_recent_connection(&pool, &ephemeral.id)
             .await
             .unwrap();
         assert!(recent(&pool, 10).await.unwrap().is_empty());
 
-        let saved = save_ephemeral(&pool, &ephemeral.id, Some("Saved server"))
+        let saved = save_ephemeral(&pool, &ephemeral.id, Some("Saved server"), None)
             .await
             .unwrap();
         assert!(!saved.is_ephemeral);
         assert_eq!(saved.name, "Saved server");
-        assert_eq!(list(&pool).await.unwrap().len(), 1);
+        assert_eq!(list(&pool, None).await.unwrap().len(), 1);
         assert_eq!(recent(&pool, 10).await.unwrap().len(), 1);
 
         let stale = create_ephemeral(&pool, "stale.example.com").await.unwrap();
@@ -1068,5 +1113,80 @@ mod tests {
         let mut self_jump = sample_input("First", "first.example.com");
         self_jump.proxy_jump_host_id = Some(first.id.clone());
         assert!(update(&pool, &first.id, self_jump).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_host_cannot_reference_a_key_group_or_jump_host_in_another_vault() {
+        use crate::storage::host_groups::{self, HostGroupInput};
+        use crate::storage::vaults::{self, VaultInput};
+
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let shared = vaults::create(
+            &pool,
+            VaultInput {
+                name: "Infra".into(),
+                share_secrets: false,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        let personal_key = key_references::create(
+            &pool,
+            KeyReferenceInput {
+                vault_id: crate::storage::vaults::default_id(),
+                name: "Personal key".into(),
+                public_key: None,
+                storage_mode: "local-path".into(),
+                local_path: Some("/not/required/to/exist/yet".into()),
+                fingerprint: None,
+                certificate: None,
+                private_key: None,
+                passphrase: None,
+            },
+        )
+        .await
+        .unwrap();
+        let personal_group = host_groups::create(
+            &pool,
+            HostGroupInput {
+                vault_id: crate::storage::vaults::default_id(),
+                name: "Personal".into(),
+                parent_id: None,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let personal_host = create(&pool, sample_input("Personal host", "personal.example.com"))
+            .await
+            .unwrap();
+
+        let shared_input = |mutate: fn(&mut HostInput, &str, &str, &str)| {
+            let mut input = sample_input("Leaked", "leaked.example.com");
+            input.vault_id = shared.id.clone();
+            mutate(
+                &mut input,
+                &personal_key.id,
+                &personal_group.id,
+                &personal_host.id,
+            );
+            input
+        };
+
+        for input in [
+            shared_input(|input, key_id, _, _| {
+                input.authentication_type = "key".into();
+                input.key_id = Some(key_id.into());
+            }),
+            shared_input(|input, _, group_id, _| input.group_id = Some(group_id.into())),
+            shared_input(|input, _, _, host_id| input.proxy_jump_host_id = Some(host_id.into())),
+        ] {
+            let error = create(&pool, input).await.unwrap_err();
+            assert_eq!(error.category(), "invalid-input");
+        }
+
+        assert_eq!(list(&pool, Some(&shared.id)).await.unwrap().len(), 0);
     }
 }

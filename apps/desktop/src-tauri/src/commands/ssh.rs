@@ -6,12 +6,12 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::errors::{LumaError, Result};
+use crate::keystore::KeystoreState;
 use crate::sftp::{self, SftpManager};
 use crate::ssh::{self, EmbeddedSshManager, SshExit, SshHostKeyStatus, SshRemoteOs};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::ssh::{SshConfigCandidate, SshConfigImportRequest, SshConfigImportResult};
 use crate::storage::{hosts, key_references};
-use crate::vault::VaultState;
 use crate::AppState;
 
 pub const SSH_REMOTE_OS_EVENT_NAME: &str = "ssh-remote-os";
@@ -104,9 +104,10 @@ pub async fn quick_connect_save(
     state: State<'_, AppState>,
     host_id: String,
     name: Option<String>,
+    vault_id: Option<String>,
 ) -> Result<crate::storage::hosts::Host> {
     ssh::validate_host_id(&host_id)?;
-    hosts::save_ephemeral(&state.pool, &host_id, name.as_deref()).await
+    hosts::save_ephemeral(&state.pool, &host_id, name.as_deref(), vault_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -211,7 +212,7 @@ fn probe_error(error: std::io::Error) -> LumaError {
 #[tauri::command]
 pub async fn ssh_key_install(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     sftp_manager: State<'_, SftpManager>,
     host_id: String,
     key_reference_id: String,
@@ -228,7 +229,7 @@ pub async fn ssh_key_install(
         .map_err(|_| LumaError::InvalidInput("stored public key is invalid".into()))?;
 
     let session = sftp_manager
-        .connect(&state.pool, &vault_state, &host_id)
+        .connect(&state.pool, &keystore_state, &host_id)
         .await?;
     let install_result = sftp::install_authorized_key(
         &sftp_manager,
@@ -261,14 +262,14 @@ pub async fn ssh_key_install(
 #[tauri::command]
 pub async fn ssh_host_key_status(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     request: SshHostKeyRequest,
 ) -> Result<SshHostKeyStatus> {
     ssh::validate_host_id(&request.host_id)?;
     let known_hosts_file = ssh::known_hosts_file_path(&state.app_data_dir);
     let config = ssh::host_key_connection_config(
         &state.pool,
-        &vault_state,
+        &keystore_state,
         &request.host_id,
         known_hosts_file.clone(),
     )
@@ -295,12 +296,21 @@ pub async fn ssh_spawn(
     app: AppHandle,
     state: State<'_, AppState>,
     embedded: State<'_, EmbeddedSshManager>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     request: SshSpawnRequest,
     on_data: Channel<InvokeResponseBody>,
     on_exit: Channel<SshExit>,
 ) -> Result<SshSpawnResponse> {
-    ssh_spawn_impl(app, state, embedded, vault_state, request, on_data, on_exit).await
+    ssh_spawn_impl(
+        app,
+        state,
+        embedded,
+        keystore_state,
+        request,
+        on_data,
+        on_exit,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -308,7 +318,7 @@ async fn ssh_spawn_impl(
     app: AppHandle,
     state: State<'_, AppState>,
     embedded: State<'_, EmbeddedSshManager>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     request: SshSpawnRequest,
     on_data: Channel<InvokeResponseBody>,
     on_exit: Channel<SshExit>,
@@ -320,7 +330,7 @@ async fn ssh_spawn_impl(
         ));
     }
     let (config, title) =
-        ssh::connection_config(&state.pool, &vault_state, &request.host_id).await?;
+        ssh::connection_config(&state.pool, &keystore_state, &request.host_id).await?;
     let pending_remote_os = Arc::new(Mutex::new(PendingRemoteOsEvent {
         host_id: request.host_id.clone(),
         ..PendingRemoteOsEvent::default()
@@ -388,8 +398,17 @@ async fn ssh_spawn_impl(
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
-pub async fn ssh_config_preview(state: State<'_, AppState>) -> Result<Vec<SshConfigCandidate>> {
-    ssh::preview_config(&state.pool).await
+pub async fn ssh_config_preview(
+    state: State<'_, AppState>,
+    vault_id: Option<String>,
+) -> Result<Vec<SshConfigCandidate>> {
+    ssh::preview_config(
+        &state.pool,
+        vault_id
+            .as_deref()
+            .unwrap_or(crate::storage::vaults::PERSONAL_VAULT_ID),
+    )
+    .await
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

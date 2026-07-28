@@ -24,6 +24,7 @@ use crate::AppState;
 mod collaboration;
 mod hosts;
 mod import;
+mod keystore;
 mod known_hosts;
 mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -34,11 +35,12 @@ mod sftp;
 mod snippets;
 mod ssh;
 mod sync;
-mod vault;
+mod vaults;
 
 pub use collaboration::*;
 pub use hosts::*;
 pub use import::*;
+pub use keystore::*;
 pub use known_hosts::*;
 pub use platform::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -49,7 +51,7 @@ pub use sftp::*;
 pub use snippets::*;
 pub use ssh::*;
 pub use sync::*;
-pub use vault::*;
+pub use vaults::*;
 
 // --- Settings ---
 

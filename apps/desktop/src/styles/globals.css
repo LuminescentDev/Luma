@@ -1,6 +1,19 @@
 @import "tailwindcss";
 
 /*
+ * Ship the terminal's baseline font with the app. Relying on an OS font stack
+ * made Powerline/Nerd Font private-use glyphs render as tofu (or as unrelated
+ * fallback glyphs) on clean mobile and desktop installs.
+ */
+@font-face {
+  font-family: "Luma Cascadia Mono NF";
+  src: url("/fonts/CascadiaMonoNF.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 200 700;
+  font-display: block;
+}
+
+/*
  * Luma theme tokens. Dark is the default identity; light is a first-class
  * alternative. The resolved theme is applied as data-theme on <html>.
  */

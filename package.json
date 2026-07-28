@@ -2,6 +2,14 @@
   "name": "luma-monorepo",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bwmp-dev/Luma.git"
+  },
+  "homepage": "https://github.com/bwmp-dev/Luma",
+  "bugs": {
+    "url": "https://github.com/bwmp-dev/Luma/issues"
+  },
   "scripts": {
     "dev": "pnpm --dir apps/desktop dev",
     "build": "pnpm shared:build && pnpm --dir apps/desktop build",

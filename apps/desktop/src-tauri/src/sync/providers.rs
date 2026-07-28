@@ -20,6 +20,62 @@ const LOCK_FILE_NAME: &str = ".luma-sync.lock";
 const GIST_FILE_NAME: &str = "luma-sync.bin.b64";
 const STALE_LOCK_AGE: Duration = Duration::from_secs(15 * 60);
 
+/// Distinguishes one vault's blob from another's at the same remote location.
+/// `None` is the personal vault, which keeps the historical bare names so remotes
+/// configured before vaults existed keep working untouched.
+///
+/// The slot is a vault id — a UUID — but it reaches a filesystem path and a URL,
+/// so it is hashed rather than interpolated: nothing a caller supplies can walk
+/// out of the directory or reshape the request.
+#[derive(Debug, Clone)]
+pub struct RemoteSlot(Option<String>);
+
+impl RemoteSlot {
+    pub fn new(vault_slot: Option<String>) -> Self {
+        Self(vault_slot.map(|slot| {
+            let mut digest = format!("{:x}", Sha256::digest(slot.as_bytes()));
+            digest.truncate(16);
+            digest
+        }))
+    }
+
+    fn qualify(&self, base: &str) -> String {
+        match &self.0 {
+            None => base.to_string(),
+            Some(slot) => match base.rsplit_once('.') {
+                Some((stem, extension)) => format!("{stem}-{slot}.{extension}"),
+                None => format!("{base}-{slot}"),
+            },
+        }
+    }
+
+    /// Qualify the last path segment of a URL, leaving query and fragment alone.
+    /// The configured WebDAV URL names the blob itself, so this is the same
+    /// rename `qualify` does for a filename.
+    fn qualify_url(&self, url: &str) -> String {
+        if self.0.is_none() {
+            return url.to_string();
+        }
+        let end = url.find(['?', '#']).unwrap_or(url.len());
+        let (base, suffix) = url.split_at(end);
+        match base.rsplit_once('/') {
+            // A trailing slash means the URL names a collection, not a blob, so
+            // the slot becomes a new segment instead of renaming an empty one.
+            Some((prefix, last)) if !last.is_empty() => {
+                format!("{prefix}/{}{suffix}", self.qualify(last))
+            }
+            _ => format!("{}{}{suffix}", base.trim_end_matches('/'), self.segment()),
+        }
+    }
+
+    fn segment(&self) -> String {
+        match &self.0 {
+            None => String::new(),
+            Some(slot) => format!("/{slot}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RemoteBlob {
     pub bytes: Vec<u8>,
@@ -44,15 +100,19 @@ pub trait SyncProvider: Send + Sync {
 
 pub struct LocalFolderProvider {
     directory: PathBuf,
+    slot: RemoteSlot,
 }
 
 impl LocalFolderProvider {
-    pub fn new(directory: PathBuf) -> Self {
-        Self { directory }
+    pub fn new(directory: PathBuf, vault_slot: Option<String>) -> Self {
+        Self {
+            directory,
+            slot: RemoteSlot::new(vault_slot),
+        }
     }
 
     fn blob_path(&self) -> PathBuf {
-        self.directory.join(SYNC_FILE_NAME)
+        self.directory.join(self.slot.qualify(SYNC_FILE_NAME))
     }
 
     fn current(&self) -> Result<Option<RemoteBlob>> {
@@ -344,23 +404,25 @@ pub struct WebDavProvider {
 
 pub struct LumaCloudProvider {
     client: reqwest::Client,
-    api_url: String,
+    endpoint: String,
     access_token: String,
 }
 
 impl LumaCloudProvider {
-    pub fn new(api_url: String, access_token: String) -> Result<Self> {
+    pub fn new(api_url: String, access_token: String, vault_slot: Option<String>) -> Result<Self> {
         validate_cloud_api_url(&api_url)?;
+        let api_url = api_url.trim_end_matches('/');
+        let slot = RemoteSlot::new(vault_slot);
         Ok(Self {
             client: http_client()?,
-            api_url: api_url.trim_end_matches('/').to_string(),
+            endpoint: format!("{api_url}/v1/sync{}", slot.segment()),
             access_token,
         })
     }
 
     fn request(&self, method: reqwest::Method) -> reqwest::RequestBuilder {
         self.client
-            .request(method, format!("{}/v1/sync", self.api_url))
+            .request(method, &self.endpoint)
             .bearer_auth(&self.access_token)
     }
 }
@@ -436,8 +498,14 @@ impl SyncProvider for LumaCloudProvider {
 }
 
 impl WebDavProvider {
-    pub fn new(url: String, username: String, password: String) -> Result<Self> {
+    pub fn new(
+        url: String,
+        username: String,
+        password: String,
+        vault_slot: Option<String>,
+    ) -> Result<Self> {
         validate_https_url(&url)?;
+        let url = RemoteSlot::new(vault_slot).qualify_url(&url);
         Ok(Self {
             client: http_client()?,
             url,
@@ -527,14 +595,16 @@ pub struct GitHubGistProvider {
     client: reqwest::Client,
     token: String,
     gist_id: Option<String>,
+    file_name: String,
 }
 
 impl GitHubGistProvider {
-    pub fn new(token: String, gist_id: Option<String>) -> Result<Self> {
+    pub fn new(token: String, gist_id: Option<String>, vault_slot: Option<String>) -> Result<Self> {
         Ok(Self {
             client: http_client()?,
             token,
             gist_id,
+            file_name: RemoteSlot::new(vault_slot).qualify(GIST_FILE_NAME),
         })
     }
 
@@ -578,7 +648,7 @@ impl GitHubGistProvider {
         let gist: GistResponse = serde_json::from_slice(&response_bytes).map_err(|_| {
             LumaError::SyncUnavailable("GitHub returned an invalid gist response".into())
         })?;
-        let file = gist.files.get(GIST_FILE_NAME).ok_or_else(|| {
+        let file = gist.files.get(&self.file_name).ok_or_else(|| {
             LumaError::SyncUnavailable("the configured gist has no Luma sync file".into())
         })?;
         let encoded = if file.truncated.unwrap_or(false) {
@@ -639,7 +709,7 @@ impl SyncProvider for GitHubGistProvider {
         verify_expected_version(current.as_ref(), expected_remote_version)?;
 
         let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
-        let body = gist_upload_body(encoded);
+        let body = gist_upload_body(&self.file_name, encoded);
         let (method, url) = match &self.gist_id {
             Some(gist_id) => (
                 reqwest::Method::PATCH,
@@ -677,9 +747,9 @@ impl SyncProvider for GitHubGistProvider {
     }
 }
 
-fn gist_upload_body(encoded: String) -> Value {
+fn gist_upload_body(file_name: &str, encoded: String) -> Value {
     let mut files = serde_json::Map::new();
-    files.insert(GIST_FILE_NAME.into(), json!({ "content": encoded }));
+    files.insert(file_name.into(), json!({ "content": encoded }));
     json!({
         "description": "Luma encrypted sync bundle",
         "public": false,
@@ -837,7 +907,7 @@ mod tests {
     #[tokio::test]
     async fn local_folder_roundtrip_and_version_conflict() {
         let directory = temporary_directory();
-        let provider = LocalFolderProvider::new(directory.clone());
+        let provider = LocalFolderProvider::new(directory.clone(), None);
         assert!(provider.download().await.unwrap().is_none());
 
         let first = provider.upload(b"first", None).await.unwrap();
@@ -869,7 +939,7 @@ mod tests {
         )
         .unwrap();
 
-        let provider = LocalFolderProvider::new(directory.clone());
+        let provider = LocalFolderProvider::new(directory.clone(), None);
         provider.upload(b"recovered", None).await.unwrap();
         assert_eq!(
             provider.download().await.unwrap().unwrap().bytes,
@@ -903,7 +973,7 @@ mod tests {
     #[tokio::test]
     async fn local_folder_atomic_write_replaces_blob_without_temp_files() {
         let directory = temporary_directory();
-        let provider = LocalFolderProvider::new(directory.clone());
+        let provider = LocalFolderProvider::new(directory.clone(), None);
         let first = provider.upload(b"first", None).await.unwrap();
         provider
             .upload(b"second", Some(&first.version))
@@ -931,8 +1001,63 @@ mod tests {
 
     #[test]
     fn gist_payload_uses_the_expected_file_name() {
-        let body = gist_upload_body("encrypted-base64".into());
+        let body = gist_upload_body(GIST_FILE_NAME, "encrypted-base64".into());
         assert_eq!(body["files"][GIST_FILE_NAME]["content"], "encrypted-base64");
         assert!(body["files"].get("GIST_FILE_NAME").is_none());
+    }
+
+    #[test]
+    fn personal_vault_keeps_the_historical_remote_names() {
+        let slot = RemoteSlot::new(None);
+        assert_eq!(slot.qualify(SYNC_FILE_NAME), SYNC_FILE_NAME);
+        assert_eq!(slot.qualify(GIST_FILE_NAME), GIST_FILE_NAME);
+        assert_eq!(
+            slot.qualify_url("https://dav.example.com/luma-sync.bin"),
+            "https://dav.example.com/luma-sync.bin"
+        );
+        assert_eq!(slot.segment(), "");
+    }
+
+    #[test]
+    fn distinct_vaults_get_distinct_remote_names() {
+        let first = RemoteSlot::new(Some("11111111-1111-4111-8111-111111111111".into()));
+        let second = RemoteSlot::new(Some("22222222-2222-4222-8222-222222222222".into()));
+        assert_ne!(
+            first.qualify(SYNC_FILE_NAME),
+            second.qualify(SYNC_FILE_NAME)
+        );
+        assert_ne!(first.segment(), second.segment());
+
+        // The suffix lands before the extension so the blob keeps its file type.
+        let name = first.qualify(SYNC_FILE_NAME);
+        assert!(name.starts_with("luma-sync-"), "{name}");
+        assert!(name.ends_with(".bin"), "{name}");
+        assert_eq!(first.qualify(GIST_FILE_NAME).matches(".b64").count(), 1);
+    }
+
+    #[test]
+    fn a_vault_id_cannot_escape_the_remote_path_or_reshape_the_url() {
+        let hostile = RemoteSlot::new(Some("../../etc/passwd?x=1".into()));
+        let name = hostile.qualify(SYNC_FILE_NAME);
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'),
+            "{name}"
+        );
+        assert!(hostile.segment().matches('/').count() == 1);
+
+        // The slot renames the final segment and leaves the query string alone.
+        assert_eq!(
+            hostile.qualify_url("https://dav.example.com/dir/luma-sync.bin?token=abc"),
+            format!(
+                "https://dav.example.com/dir/{}?token=abc",
+                hostile.qualify("luma-sync.bin")
+            )
+        );
+        // A collection URL gains a segment rather than renaming an empty one.
+        assert_eq!(
+            hostile.qualify_url("https://dav.example.com/dir/"),
+            format!("https://dav.example.com/dir{}", hostile.segment())
+        );
     }
 }

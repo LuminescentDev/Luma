@@ -30,7 +30,7 @@ export function Download() {
         </p>
         <div className='mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row'>
           <a
-            href={GITHUB_REPO_URL + 'releases'}
+            href={`${GITHUB_REPO_URL}/releases`}
             target='_blank'
             rel='noreferrer noopener'
             data-umami-event='download-github-releases'

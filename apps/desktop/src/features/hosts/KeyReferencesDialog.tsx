@@ -13,6 +13,8 @@ import {
   type KeyStorageMode,
 } from "../../lib/hosts";
 import { useKeyReferences, useInvalidateHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId, useCreationVaultId } from "../../stores/vaultStore";
+import { useVaultLabel } from "../../hooks/useVaults";
 import { SelectField, TextField } from "./fields";
 
 type Draft = {
@@ -59,7 +61,12 @@ export function KeyReferencesDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { data: keys } = useKeyReferences();
+  // A key may only be referenced from within its own vault, so the list shows
+  // the vault being browsed and a new key lands in that same one.
+  const browsingVaultId = useBrowsingVaultId();
+  const creationVaultId = useCreationVaultId();
+  const vaultName = useVaultLabel(creationVaultId);
+  const { data: keys } = useKeyReferences(browsingVaultId);
   const invalidate = useInvalidateHosts();
   const [draft, setDraft] = useState<Draft | null>(null);
 
@@ -75,7 +82,7 @@ export function KeyReferencesDialog({
     mutationFn: (id: string) => deleteKeyReference(id),
     onSuccess: invalidate,
   });
-  const generate = useMutation({ mutationFn: ({ name, path, passphrase, certificate }: { name: string; path: string; passphrase: string; certificate: string | null }) => generateSshKey(name, path, passphrase, certificate), onSuccess: () => { invalidate(); setDraft(null); } });
+  const generate = useMutation({ mutationFn: ({ name, path, passphrase, certificate }: { name: string; path: string; passphrase: string; certificate: string | null }) => generateSshKey(name, path, passphrase, certificate, creationVaultId), onSuccess: () => { invalidate(); setDraft(null); } });
 
   const nameMissing = draft ? !draft.name.trim() : false;
   const pathMissing = draft
@@ -88,6 +95,7 @@ export function KeyReferencesDialog({
     save.mutate({
       id: draft.id,
       data: {
+        vaultId: creationVaultId,
         name: draft.name.trim(),
         storageMode: draft.storageMode,
         localPath:
@@ -107,7 +115,7 @@ export function KeyReferencesDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Key references"
-      description="Logical SSH keys. Plain-text private key contents are never stored — only a name and path, or a key sealed in the encrypted vault."
+      description={`Logical SSH keys${vaultName ? ` in ${vaultName}` : ""}. Plain-text private key contents are never stored — only a name and path, or a key sealed in the encrypted keystore.`}
       size="lg"
     >
       <div className="space-y-3">
@@ -188,7 +196,7 @@ export function KeyReferencesDialog({
               onChange={(v) => setDraft({ ...draft, publicKey: v })}
               placeholder="ssh-ed25519 AAAA…"
             />
-            <TextField label={draft.id ? "Passphrase (leave blank to keep current)" : "Passphrase (saved in encrypted vault)"} type="password" value={draft.passphrase} onChange={(passphrase) => setDraft({ ...draft, passphrase })} />
+            <TextField label={draft.id ? "Passphrase (leave blank to keep current)" : "Passphrase (saved in encrypted keystore)"} type="password" value={draft.passphrase} onChange={(passphrase) => setDraft({ ...draft, passphrase })} />
             <TextField label="Certificate (optional)" mono value={draft.certificate} onChange={(certificate) => setDraft({ ...draft, certificate })} placeholder="ssh-ed25519-cert-v01@openssh.com …" />
             <TextField
               label="Fingerprint (optional)"

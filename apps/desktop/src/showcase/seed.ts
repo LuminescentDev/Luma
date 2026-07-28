@@ -1,16 +1,25 @@
 import type { Host, HostGroup, KeyReference, Identity } from "../lib/hosts";
 import type { Snippet } from "../lib/snippets";
+import type { Vault } from "../lib/vaults";
 import type { DetectedShell, TerminalProfile } from "../lib/terminal";
 import { SETTING_KEYS, type ThemeMode } from "../types";
 
+/** The showcase demonstrates a single-vault workspace. */
+const VAULT_ID = "personal";
+
+export const VAULTS: Vault[] = [
+  { id: VAULT_ID, name: "Personal", kind: "personal", shareSecrets: false, sortOrder: 0 },
+];
+
 export const GROUPS: HostGroup[] = [
-  { id: "grp-prod", name: "Production", parentId: null, sortOrder: 0 },
-  { id: "grp-homelab", name: "Homelab", parentId: null, sortOrder: 1 },
-  { id: "grp-cloud", name: "Cloud", parentId: null, sortOrder: 2 },
+  { id: "grp-prod", vaultId: VAULT_ID, name: "Production", parentId: null, sortOrder: 0 },
+  { id: "grp-homelab", vaultId: VAULT_ID, name: "Homelab", parentId: null, sortOrder: 1 },
+  { id: "grp-cloud", vaultId: VAULT_ID, name: "Cloud", parentId: null, sortOrder: 2 },
 ];
 
 function host(partial: Partial<Host> & Pick<Host, "id" | "name" | "hostname">): Host {
   return {
+    vaultId: VAULT_ID,
     port: 22,
     username: "deploy",
     groupId: null,
@@ -133,6 +142,7 @@ export const RECENT_HOSTS: Host[] = [
 
 export const SNIPPETS: Snippet[] = [
   {
+    vaultId: VAULT_ID,
     id: "s-tail",
     name: "Tail nginx errors",
     command: "sudo tail -f /var/log/nginx/error.log",
@@ -142,6 +152,7 @@ export const SNIPPETS: Snippet[] = [
     hostId: null,
   },
   {
+    vaultId: VAULT_ID,
     id: "s-disk",
     name: "Disk usage (top 20)",
     command: "du -ahx / | sort -rh | head -n 20",
@@ -151,6 +162,7 @@ export const SNIPPETS: Snippet[] = [
     hostId: null,
   },
   {
+    vaultId: VAULT_ID,
     id: "s-restart",
     name: "Restart service",
     command: "sudo systemctl restart {{service}} && systemctl status {{service}}",
@@ -160,6 +172,7 @@ export const SNIPPETS: Snippet[] = [
     hostId: null,
   },
   {
+    vaultId: VAULT_ID,
     id: "s-docker",
     name: "Prune docker",
     command: "docker system prune -af --volumes",
@@ -169,6 +182,7 @@ export const SNIPPETS: Snippet[] = [
     hostId: "h-build",
   },
   {
+    vaultId: VAULT_ID,
     id: "s-ports",
     name: "Listening ports",
     command: "ss -tulpn | grep LISTEN",
@@ -178,6 +192,7 @@ export const SNIPPETS: Snippet[] = [
     hostId: null,
   },
   {
+    vaultId: VAULT_ID,
     id: "s-backup",
     name: "Snapshot postgres",
     command: "pg_dump -Fc {{database}} > /backups/{{database}}-$(date +%F).dump",
@@ -207,6 +222,7 @@ export const PROFILES: TerminalProfile[] = [
 
 export const KEY_REFERENCES: KeyReference[] = [
   {
+    vaultId: VAULT_ID,
     id: "key-ed25519",
     name: "id_ed25519 (primary)",
     publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... alex@workstation",
@@ -217,6 +233,7 @@ export const KEY_REFERENCES: KeyReference[] = [
     hasPrivateKey: true,
   },
   {
+    vaultId: VAULT_ID,
     id: "key-vault",
     name: "deploy (vault)",
     publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... deploy@luma",
@@ -229,8 +246,8 @@ export const KEY_REFERENCES: KeyReference[] = [
 ];
 
 export const IDENTITIES: Identity[] = [
-  { id: "id-deploy", name: "deploy", username: "deploy", keyId: "key-ed25519", hasPassword: false },
-  { id: "id-admin", name: "homelab admin", username: "admin", keyId: "key-vault", hasPassword: true },
+  { id: "id-deploy", vaultId: VAULT_ID, name: "deploy", username: "deploy", keyId: "key-ed25519", hasPassword: false },
+  { id: "id-admin", vaultId: VAULT_ID, name: "homelab admin", username: "admin", keyId: "key-vault", hasPassword: true },
 ];
 
 export function buildSettings(theme: ThemeMode): Record<string, unknown> {
@@ -246,6 +263,7 @@ export function buildSettings(theme: ThemeMode): Record<string, unknown> {
 }
 
 export const SYNC_CONFIG = {
+  vaultId: VAULT_ID,
   enabled: false,
   provider: null,
   folderPath: null,

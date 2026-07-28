@@ -38,8 +38,8 @@ pub enum LumaError {
     #[error("private key unavailable: {0}")]
     KeyUnavailable(String),
 
-    #[error("vault locked: {0}")]
-    VaultLocked(String),
+    #[error("keystore locked: {0}")]
+    KeystoreLocked(String),
 
     #[error("sync authentication failed: {0}")]
     SyncAuthFailed(String),
@@ -49,6 +49,12 @@ pub enum LumaError {
 
     #[error("sync unavailable: {0}")]
     SyncUnavailable(String),
+
+    /// A vault's sync passphrase is not loaded. Distinct from `KeystoreLocked`:
+    /// the device keystore may be perfectly unlocked and only this vault's
+    /// passphrase missing.
+    #[error("sync passphrase required: {0}")]
+    SyncPassphraseRequired(String),
 }
 
 impl LumaError {
@@ -64,10 +70,11 @@ impl LumaError {
             LumaError::SshConnection { category, .. } => category,
             LumaError::SftpFailed(_) => "sftp-failed",
             LumaError::KeyUnavailable(_) => "key-unavailable",
-            LumaError::VaultLocked(_) => "vault-locked",
+            LumaError::KeystoreLocked(_) => "keystore-locked",
             LumaError::SyncAuthFailed(_) => "sync-auth-failed",
             LumaError::SyncConflict(_) => "sync-conflict",
             LumaError::SyncUnavailable(_) => "sync-unavailable",
+            LumaError::SyncPassphraseRequired(_) => "sync-passphrase-required",
         }
     }
 }

@@ -4,22 +4,40 @@ import {
   syncConfigure,
   syncDisable,
   syncGetConfig,
+  syncListConfigs,
   syncSetPassphrase,
   type SyncConfigureInput,
 } from "../lib/sync";
 
+/**
+ * The all-vaults list lives at the bare key and each single vault hangs off it,
+ * so invalidating `SYNC_CONFIG_KEY` prefix-matches both.
+ */
 export const SYNC_CONFIG_KEY = ["sync-config"];
 
-/** The sync configuration (never contains secrets). */
-export function useSyncConfig() {
+export function syncConfigKey(vaultId: string) {
+  return [...SYNC_CONFIG_KEY, vaultId];
+}
+
+/** One vault's sync configuration (never contains secrets). */
+export function useSyncConfig(vaultId: string) {
   return useQuery({
-    queryKey: SYNC_CONFIG_KEY,
-    queryFn: syncGetConfig,
+    queryKey: syncConfigKey(vaultId),
+    queryFn: () => syncGetConfig(vaultId),
     staleTime: 15_000,
   });
 }
 
-/** Invalidate the sync config query after any state-changing sync command. */
+/** Every vault's sync configuration, for the title-bar aggregate. */
+export function useSyncConfigs() {
+  return useQuery({
+    queryKey: SYNC_CONFIG_KEY,
+    queryFn: syncListConfigs,
+    staleTime: 15_000,
+  });
+}
+
+/** Invalidate the sync config queries after any state-changing sync command. */
 export function useInvalidateSyncConfig() {
   const queryClient = useQueryClient();
   return useCallback(
@@ -28,27 +46,27 @@ export function useInvalidateSyncConfig() {
   );
 }
 
-export function useConfigureSync() {
+export function useConfigureSync(vaultId: string) {
   const invalidate = useInvalidateSyncConfig();
   return useMutation({
-    mutationFn: (input: SyncConfigureInput) => syncConfigure(input),
+    mutationFn: (input: SyncConfigureInput) => syncConfigure(vaultId, input),
     onSuccess: () => invalidate(),
   });
 }
 
-export function useSetSyncPassphrase() {
+export function useSetSyncPassphrase(vaultId: string) {
   const invalidate = useInvalidateSyncConfig();
   return useMutation({
     mutationFn: ({ passphrase, remember }: { passphrase: string; remember: boolean }) =>
-      syncSetPassphrase(passphrase, remember),
+      syncSetPassphrase(vaultId, passphrase, remember),
     onSuccess: () => invalidate(),
   });
 }
 
-export function useDisableSync() {
+export function useDisableSync(vaultId: string) {
   const invalidate = useInvalidateSyncConfig();
   return useMutation({
-    mutationFn: () => syncDisable(),
+    mutationFn: () => syncDisable(vaultId),
     onSuccess: () => invalidate(),
   });
 }

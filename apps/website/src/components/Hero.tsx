@@ -28,8 +28,9 @@ export function Hero() {
 
         <p className='mt-6 max-w-2xl text-pretty text-base text-muted sm:text-lg'>
           Luma combines local and serial terminals, saved SSH connections, SFTP,
-          and end-to-end encrypted config sync in one modern app. No account and
-          no paid cloud service required.
+          and end-to-end encrypted config sync in one modern app. Use it locally
+          without an account, bring your own sync provider, or sign in for
+          optional Luma Cloud sync.
         </p>
 
         <div className='mt-10 flex flex-col items-center gap-4 sm:flex-row'>

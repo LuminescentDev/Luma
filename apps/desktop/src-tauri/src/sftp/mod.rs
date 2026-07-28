@@ -13,8 +13,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
 use crate::errors::{LumaError, Result};
+use crate::keystore::KeystoreState;
 use crate::ssh::{authenticated_handle, connection_config, AuthenticatedConnection};
-use crate::vault::VaultState;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use local::{local_delete, local_list, local_mkdir, local_rename};
@@ -134,11 +134,11 @@ impl SftpManager {
     pub async fn connect(
         &self,
         pool: &SqlitePool,
-        vault_state: &VaultState,
+        keystore_state: &KeystoreState,
         host_id: &str,
     ) -> Result<SftpConnectResponse> {
         validate_identifier(host_id, "hostId")?;
-        let (mut config, _) = connection_config(pool, vault_state, host_id).await?;
+        let (mut config, _) = connection_config(pool, keystore_state, host_id).await?;
         config.startup_command = None;
         let (client, embedded, initial_path) = connect_embedded_sftp(&config).await?;
         let session_id = uuid::Uuid::new_v4().to_string();

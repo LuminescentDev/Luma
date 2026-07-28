@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { useHosts, useRecentHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId } from "../../stores/vaultStore";
 import {
   sshHostKeyStatus,
   sshHostKeyTrust,
@@ -34,6 +35,9 @@ type Phase =
  * "Trust and install"; a changed key is blocking. Result / error states are
  * shown inline, mapping error categories through describeSshError.
  */
+/* Installing a public key stores no reference, so the host list follows the
+ * vault the user is browsing rather than the key's own vault: installing a key
+ * onto a host in another vault is legitimate. */
 export function InstallKeyDialog({
   keyReferenceId,
   keyName,
@@ -45,7 +49,7 @@ export function InstallKeyDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { data: hosts } = useHosts();
+  const { data: hosts } = useHosts(useBrowsingVaultId());
   const { data: recent } = useRecentHosts();
   const [phase, setPhase] = useState<Phase>({ kind: "pick" });
 

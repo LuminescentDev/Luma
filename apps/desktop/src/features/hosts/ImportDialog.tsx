@@ -81,9 +81,13 @@ function basename(path: string): string {
 export function ImportDialog({
   open,
   onOpenChange,
+  vaultId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Vault the imported hosts land in. It also scopes the preview's
+   * `alreadyExists` check, so preview and apply must be given the same one. */
+  vaultId?: string;
 }) {
   const invalidate = useInvalidateHosts();
   // The "SSH config" source calls ssh_config_preview/ssh_config_import, which are
@@ -118,13 +122,13 @@ export function ImportDialog({
   const previewReady = source === "ssh-config" || filePath !== null;
 
   const preview = useQuery({
-    queryKey: ["host-import-preview", source, filePath],
+    queryKey: ["host-import-preview", source, filePath, vaultId],
     enabled: open && previewReady,
     staleTime: 0,
     gcTime: 0,
     queryFn: async (): Promise<NormalizedCandidate[]> => {
       if (source === "ssh-config") {
-        const rows = await previewSshConfig();
+        const rows = await previewSshConfig(vaultId);
         return rows.map((c) => ({
           name: c.name,
           hostname: c.hostname,
@@ -135,7 +139,7 @@ export function ImportDialog({
           alreadyExists: c.alreadyExists,
         }));
       }
-      const rows = await previewImportHosts(source, filePath as string);
+      const rows = await previewImportHosts(source, filePath as string, vaultId);
       return rows.map((c) => ({
         name: c.name,
         hostname: c.hostname,
@@ -201,14 +205,14 @@ export function ImportDialog({
   const runImport = useMutation({
     mutationFn: async (names: string[]): Promise<NormalizedResult> => {
       if (source === "ssh-config") {
-        const res = await importSshConfig(names);
+        const res = await importSshConfig(names, vaultId);
         return {
           importedCount: res.importedHosts.length,
           createdGroups: [],
           skippedExisting: res.skippedExisting,
         };
       }
-      const res = await applyImportHosts(source, filePath as string, names);
+      const res = await applyImportHosts(source, filePath as string, names, vaultId);
       return {
         importedCount: res.importedHosts.length,
         createdGroups: res.createdGroups,

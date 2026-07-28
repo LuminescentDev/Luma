@@ -12,8 +12,8 @@ use super::{
     AuthenticatedConnection, ForwardedTcpip, SshConnectionConfig,
 };
 use crate::errors::{LumaError, Result};
+use crate::keystore::KeystoreState;
 use crate::storage::port_forwards::PortForward;
-use crate::vault::VaultState;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -392,10 +392,10 @@ fn destination(port_forward: &PortForward) -> Result<(String, u16)> {
 
 pub async fn tunnel_connection_config(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     host_id: &str,
 ) -> Result<SshConnectionConfig> {
-    let (mut config, _) = connection_config(pool, vault_state, host_id).await?;
+    let (mut config, _) = connection_config(pool, keystore_state, host_id).await?;
     for node in config.proxy_jumps.iter().chain(std::iter::once(&config)) {
         let is_key = node.authentication_type == "key";
         let password_auth = node.authentication_type == "password";

@@ -80,7 +80,7 @@ export function Support() {
             <p className='mt-3 leading-7 text-muted'>
               Please do not post sensitive security reports publicly. Follow the private vulnerability reporting instructions in the Luma repository.
             </p>
-            <a href={`${GITHUB_REPO_URL}security`} target='_blank' rel='noreferrer noopener' className='mt-5 inline-flex items-center gap-2 font-medium text-accent hover:text-accent-strong'>
+            <a href={`${GITHUB_REPO_URL}/security`} target='_blank' rel='noreferrer noopener' className='mt-5 inline-flex items-center gap-2 font-medium text-accent hover:text-accent-strong'>
               View security information <ExternalLink className='h-4 w-4' aria-hidden='true' />
             </a>
           </div>

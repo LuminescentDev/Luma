@@ -1,11 +1,11 @@
 use tauri::State;
 
 use crate::errors::Result;
+use crate::keystore::{self, KeystoreState};
 use crate::storage::host_groups::{self, HostGroup, HostGroupInput};
 use crate::storage::hosts::{self, Host, HostInput};
 use crate::storage::identities::{self, Identity, IdentityInput};
 use crate::storage::key_references::{self, DerivedPublicKey, KeyReference, KeyReferenceInput};
-use crate::vault::{self, VaultState};
 use crate::AppState;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
@@ -16,9 +16,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
+/// `vaultId` is optional everywhere it appears: omitting it lists across every
+/// vault, which is what the command palette and the vault overview want.
 #[tauri::command]
-pub async fn hosts_list(state: State<'_, AppState>) -> Result<Vec<Host>> {
-    hosts::list(&state.pool).await
+pub async fn hosts_list(state: State<'_, AppState>, vault_id: Option<String>) -> Result<Vec<Host>> {
+    hosts::list(&state.pool, vault_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -52,8 +54,11 @@ pub async fn recent_hosts_list(state: State<'_, AppState>) -> Result<Vec<Host>> 
 }
 
 #[tauri::command]
-pub async fn host_groups_list(state: State<'_, AppState>) -> Result<Vec<HostGroup>> {
-    host_groups::list(&state.pool).await
+pub async fn host_groups_list(
+    state: State<'_, AppState>,
+    vault_id: Option<String>,
+) -> Result<Vec<HostGroup>> {
+    host_groups::list(&state.pool, vault_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -89,8 +94,11 @@ pub fn derive_public_key(
 }
 
 #[tauri::command]
-pub async fn key_references_list(state: State<'_, AppState>) -> Result<Vec<KeyReference>> {
-    key_references::list(&state.pool).await
+pub async fn key_references_list(
+    state: State<'_, AppState>,
+    vault_id: Option<String>,
+) -> Result<Vec<KeyReference>> {
+    key_references::list(&state.pool, vault_id.as_deref()).await
 }
 
 #[derive(Serialize)]
@@ -103,15 +111,16 @@ pub struct KeyReferenceSecrets {
 #[tauri::command]
 pub async fn key_reference_secrets(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     id: String,
 ) -> Result<KeyReferenceSecrets> {
     key_references::get(&state.pool, &id)
         .await?
         .ok_or_else(|| crate::errors::LumaError::InvalidInput("unknown key reference".into()))?;
     Ok(KeyReferenceSecrets {
-        private_key: vault::load(&state.pool, &vault_state, "key", &id, "private-key").await?,
-        passphrase: vault::load(&state.pool, &vault_state, "key", &id, "passphrase").await?,
+        private_key: keystore::load(&state.pool, &keystore_state, "key", &id, "private-key")
+            .await?,
+        passphrase: keystore::load(&state.pool, &keystore_state, "key", &id, "passphrase").await?,
     })
 }
 
@@ -135,7 +144,7 @@ async fn inject_atomic_write_failure(
 
 async fn create_key_reference(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     mut input: KeyReferenceInput,
     failure: AtomicWriteFailure,
 ) -> Result<KeyReference> {
@@ -148,12 +157,12 @@ async fn create_key_reference(
             .passphrase
             .as_deref()
             .is_some_and(|value| !value.is_empty());
-    if has_secret && !vault::is_unlocked(vault_state) {
+    if has_secret && !keystore::is_unlocked(keystore_state) {
         return Err(crate::errors::LumaError::InvalidInput(
-            "vault is locked; unlock it before saving secrets".into(),
+            "keystore is locked; unlock it before saving secrets".into(),
         ));
     }
-    key_references::apply_derived_vault_metadata(&mut input)?;
+    key_references::apply_derived_keystore_metadata(&mut input)?;
     let private_key = input.private_key.take().map(Zeroizing::new);
     let passphrase = input.passphrase.take().map(Zeroizing::new);
     let has_private_key = private_key
@@ -166,9 +175,9 @@ async fn create_key_reference(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        vault::store(
+        keystore::store(
             &mut *transaction,
-            vault_state,
+            keystore_state,
             "key",
             &id,
             "private-key",
@@ -177,9 +186,9 @@ async fn create_key_reference(
         .await?;
     }
     if let Some(value) = passphrase.as_deref().filter(|value| !value.is_empty()) {
-        vault::store(
+        keystore::store(
             &mut *transaction,
-            vault_state,
+            keystore_state,
             "key",
             &id,
             "passphrase",
@@ -197,15 +206,21 @@ async fn create_key_reference(
 #[tauri::command]
 pub async fn key_reference_create(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: KeyReferenceInput,
 ) -> Result<KeyReference> {
-    create_key_reference(&state.pool, &vault_state, input, AtomicWriteFailure::None).await
+    create_key_reference(
+        &state.pool,
+        &keystore_state,
+        input,
+        AtomicWriteFailure::None,
+    )
+    .await
 }
 
 async fn update_key_reference(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     id: &str,
     mut input: KeyReferenceInput,
     failure: AtomicWriteFailure,
@@ -222,12 +237,12 @@ async fn update_key_reference(
             .passphrase
             .as_deref()
             .is_some_and(|value| !value.is_empty());
-    if has_secret && !vault::is_unlocked(vault_state) {
+    if has_secret && !keystore::is_unlocked(keystore_state) {
         return Err(crate::errors::LumaError::InvalidInput(
-            "vault is locked; unlock it before saving secrets".into(),
+            "keystore is locked; unlock it before saving secrets".into(),
         ));
     }
-    key_references::apply_derived_vault_metadata(&mut input)?;
+    key_references::apply_derived_keystore_metadata(&mut input)?;
     let private_key = input.private_key.take().map(Zeroizing::new);
     let passphrase = input.passphrase.take().map(Zeroizing::new);
     let has_private_key = if private_key
@@ -245,9 +260,9 @@ async fn update_key_reference(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        vault::store(
+        keystore::store(
             &mut *transaction,
-            vault_state,
+            keystore_state,
             "key",
             id,
             "private-key",
@@ -256,9 +271,9 @@ async fn update_key_reference(
         .await?;
     }
     if let Some(value) = passphrase.as_deref().filter(|value| !value.is_empty()) {
-        vault::store(
+        keystore::store(
             &mut *transaction,
-            vault_state,
+            keystore_state,
             "key",
             id,
             "passphrase",
@@ -276,13 +291,13 @@ async fn update_key_reference(
 #[tauri::command]
 pub async fn key_reference_update(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     id: String,
     input: KeyReferenceInput,
 ) -> Result<KeyReference> {
     update_key_reference(
         &state.pool,
-        &vault_state,
+        &keystore_state,
         &id,
         input,
         AtomicWriteFailure::None,
@@ -297,7 +312,7 @@ async fn delete_key_reference(
 ) -> Result<()> {
     let mut transaction = pool.begin().await?;
     key_references::delete_metadata(&mut transaction, id).await?;
-    vault::delete(&mut *transaction, "key", id).await?;
+    keystore::delete(&mut *transaction, "key", id).await?;
     inject_atomic_write_failure(&mut transaction, failure).await?;
     transaction.commit().await?;
     key_references::purge_secrets(id);
@@ -312,23 +327,25 @@ pub async fn key_reference_delete(state: State<'_, AppState>, id: String) -> Res
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateKeyInput {
+    #[serde(default = "crate::storage::vaults::default_id")]
+    vault_id: String,
     name: String,
     local_path: String,
     passphrase: String,
     certificate: Option<String>,
 }
 
-struct GeneratedVaultKey {
+struct GeneratedKeystoreKey {
     private_key: Zeroizing<String>,
     public_key: String,
     fingerprint: String,
 }
 
-fn generate_vault_key_material(
+fn generate_keystore_key_material(
     key_type: &str,
     comment: &str,
     passphrase: Option<&str>,
-) -> Result<GeneratedVaultKey> {
+) -> Result<GeneratedKeystoreKey> {
     if comment.len() > 1024 || comment.chars().any(char::is_control) {
         return Err(crate::errors::LumaError::InvalidInput(
             "key comment must be at most 1024 characters and contain no control characters".into(),
@@ -364,24 +381,25 @@ fn generate_vault_key_material(
     .map_err(|_| {
         crate::errors::LumaError::InvalidInput("could not encode the SSH private key".into())
     })?;
-    Ok(GeneratedVaultKey {
+    Ok(GeneratedKeystoreKey {
         private_key: Zeroizing::new(encoded.to_string()),
         public_key,
         fingerprint,
     })
 }
 
-async fn generate_vault_ssh_key(
+async fn generate_keystore_ssh_key(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
+    vault_id: String,
     key_type: String,
     name: String,
     passphrase: Option<String>,
     comment: Option<String>,
 ) -> Result<KeyReference> {
-    if !vault::is_unlocked(vault_state) {
-        return Err(crate::errors::LumaError::VaultLocked(
-            "unlock the vault before generating a private key".into(),
+    if !keystore::is_unlocked(keystore_state) {
+        return Err(crate::errors::LumaError::KeystoreLocked(
+            "unlock the keystore before generating a private key".into(),
         ));
     }
     let trimmed_name = name.trim();
@@ -403,7 +421,7 @@ async fn generate_vault_ssh_key(
     let comment_for_task = comment.clone();
     let passphrase_for_task = passphrase.clone();
     let generated = tokio::task::spawn_blocking(move || {
-        generate_vault_key_material(
+        generate_keystore_key_material(
             &key_type_for_task,
             &comment_for_task,
             passphrase_for_task.as_deref(),
@@ -416,8 +434,9 @@ async fn generate_vault_ssh_key(
 
     create_key_reference(
         pool,
-        vault_state,
+        keystore_state,
         KeyReferenceInput {
+            vault_id,
             name,
             public_key: Some(generated.public_key),
             storage_mode: "encrypted-vault".into(),
@@ -478,7 +497,7 @@ fn write_new_key_file(path: &Path, contents: &[u8], private: bool) -> Result<()>
 
 async fn generate_ssh_key(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: GenerateKeyInput,
 ) -> Result<KeyReference> {
     let raw_path = input.local_path.trim();
@@ -510,12 +529,13 @@ async fn generate_ssh_key(
         std::fs::create_dir_all(parent)?;
     }
 
+    let vault_id = input.vault_id;
     let name = input.name;
     let certificate = input.certificate;
     let passphrase = Zeroizing::new(input.passphrase);
-    if !passphrase.is_empty() && !vault::is_unlocked(vault_state) {
+    if !passphrase.is_empty() && !keystore::is_unlocked(keystore_state) {
         return Err(crate::errors::LumaError::InvalidInput(
-            "vault is locked; unlock it before saving secrets".into(),
+            "keystore is locked; unlock it before saving secrets".into(),
         ));
     }
     let mut rng = OsRng;
@@ -551,8 +571,9 @@ async fn generate_ssh_key(
 
     let created = create_key_reference(
         pool,
-        vault_state,
+        keystore_state,
         KeyReferenceInput {
+            vault_id,
             name,
             public_key: Some(public_key),
             storage_mode: "local-path".into(),
@@ -570,9 +591,11 @@ async fn generate_ssh_key(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn ssh_key_generate(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
+    vault_id: Option<String>,
     key_type: Option<String>,
     name: Option<String>,
     passphrase: Option<String>,
@@ -585,12 +608,13 @@ pub async fn ssh_key_generate(
                 "legacy input cannot be combined with keyType, name, passphrase, or comment".into(),
             ));
         }
-        return generate_ssh_key(&state.pool, &vault_state, input).await;
+        return generate_ssh_key(&state.pool, &keystore_state, input).await;
     }
 
-    generate_vault_ssh_key(
+    generate_keystore_ssh_key(
         &state.pool,
-        &vault_state,
+        &keystore_state,
+        vault_id.unwrap_or_else(crate::storage::vaults::default_id),
         key_type
             .ok_or_else(|| crate::errors::LumaError::InvalidInput("keyType is required".into()))?,
         name.ok_or_else(|| crate::errors::LumaError::InvalidInput("name is required".into()))?,
@@ -601,40 +625,33 @@ pub async fn ssh_key_generate(
 }
 
 #[tauri::command]
-pub async fn identities_list(state: State<'_, AppState>) -> Result<Vec<Identity>> {
-    identities::list(&state.pool).await
+pub async fn identities_list(
+    state: State<'_, AppState>,
+    vault_id: Option<String>,
+) -> Result<Vec<Identity>> {
+    identities::list(&state.pool, vault_id.as_deref()).await
 }
 #[tauri::command]
 pub async fn identity_create(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: IdentityInput,
 ) -> Result<Identity> {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let _ = &vault_state;
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return identities::create(&state.pool, input).await;
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    return identities::create(&state.pool, &vault_state, input).await;
+    identities::create(&state.pool, &keystore_state, input).await
 }
 #[tauri::command]
 pub async fn identity_update(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     id: String,
     input: IdentityInput,
 ) -> Result<Identity> {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let _ = &vault_state;
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    return identities::update(&state.pool, &id, input).await;
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    return identities::update(&state.pool, &vault_state, &id, input).await;
+    identities::update(&state.pool, &keystore_state, &id, input).await
 }
 #[tauri::command]
 pub async fn identity_delete(
     state: State<'_, AppState>,
-    _vault_state: State<'_, VaultState>,
+    _keystore_state: State<'_, KeystoreState>,
     id: String,
 ) -> Result<()> {
     identities::delete(&state.pool, &id).await
@@ -646,6 +663,7 @@ mod tests {
 
     fn local_key_input(name: &str, passphrase: Option<&str>) -> KeyReferenceInput {
         KeyReferenceInput {
+            vault_id: crate::storage::vaults::default_id(),
             name: name.into(),
             public_key: Some("ssh-ed25519 AAAA test".into()),
             storage_mode: "local-path".into(),
@@ -657,21 +675,21 @@ mod tests {
         }
     }
 
-    async fn unlocked_vault() -> (SqlitePool, VaultState) {
+    async fn unlocked_keystore() -> (SqlitePool, KeystoreState) {
         let pool = crate::storage::init_in_memory().await.unwrap();
-        let state = VaultState::default();
-        vault::setup(&pool, &state, "test vault password", false)
+        let state = KeystoreState::default();
+        keystore::setup(&pool, &state, "test keystore password", false)
             .await
             .unwrap();
         (pool, state)
     }
 
     #[tokio::test]
-    async fn failed_key_reference_create_rolls_back_metadata_and_vault_secret() {
-        let (pool, vault_state) = unlocked_vault().await;
+    async fn failed_key_reference_create_rolls_back_metadata_and_keystore_secret() {
+        let (pool, keystore_state) = unlocked_keystore().await;
         let error = create_key_reference(
             &pool,
-            &vault_state,
+            &keystore_state,
             local_key_input("Failed create", Some("new secret")),
             AtomicWriteFailure::AfterSecretWrite,
         )
@@ -682,7 +700,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        let secret_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault_secrets")
+        let secret_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM keystore_secrets")
             .fetch_one(&pool)
             .await
             .unwrap();
@@ -690,11 +708,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_key_reference_update_restores_metadata_and_vault_secret() {
-        let (pool, vault_state) = unlocked_vault().await;
+    async fn failed_key_reference_update_restores_metadata_and_keystore_secret() {
+        let (pool, keystore_state) = unlocked_keystore().await;
         let created = create_key_reference(
             &pool,
-            &vault_state,
+            &keystore_state,
             local_key_input("Original", Some("old secret")),
             AtomicWriteFailure::None,
         )
@@ -703,7 +721,7 @@ mod tests {
 
         let error = update_key_reference(
             &pool,
-            &vault_state,
+            &keystore_state,
             &created.id,
             local_key_input("Changed", Some("new secret")),
             AtomicWriteFailure::AfterSecretWrite,
@@ -717,7 +735,7 @@ mod tests {
             .unwrap();
         assert_eq!(stored.name, "Original");
         assert_eq!(
-            vault::load(&pool, &vault_state, "key", &created.id, "passphrase")
+            keystore::load(&pool, &keystore_state, "key", &created.id, "passphrase")
                 .await
                 .unwrap()
                 .as_deref(),
@@ -726,11 +744,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_key_reference_delete_restores_metadata_and_vault_secret() {
-        let (pool, vault_state) = unlocked_vault().await;
+    async fn failed_key_reference_delete_restores_metadata_and_keystore_secret() {
+        let (pool, keystore_state) = unlocked_keystore().await;
         let created = create_key_reference(
             &pool,
-            &vault_state,
+            &keystore_state,
             local_key_input("Keep", Some("keep secret")),
             AtomicWriteFailure::None,
         )
@@ -746,7 +764,7 @@ mod tests {
             .unwrap()
             .is_some());
         assert_eq!(
-            vault::load(&pool, &vault_state, "key", &created.id, "passphrase")
+            keystore::load(&pool, &keystore_state, "key", &created.id, "passphrase")
                 .await
                 .unwrap()
                 .as_deref(),
@@ -755,15 +773,16 @@ mod tests {
     }
 
     async fn assert_generated_key(passphrase: &str, encrypted: bool) {
-        let (pool, vault_state) = unlocked_vault().await;
+        let (pool, keystore_state) = unlocked_keystore().await;
         let directory =
             std::env::temp_dir().join(format!("luma-generated-key-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("id_ed25519");
         let created = generate_ssh_key(
             &pool,
-            &vault_state,
+            &keystore_state,
             GenerateKeyInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Generated test key".into(),
                 local_path: path.to_string_lossy().into_owned(),
                 passphrase: passphrase.into(),
@@ -780,7 +799,7 @@ mod tests {
             assert!(parsed.decrypt(passphrase.as_bytes()).is_ok());
             assert!(parsed.decrypt(b"wrong passphrase").is_err());
             assert_eq!(
-                vault::load(&pool, &vault_state, "key", &created.id, "passphrase")
+                keystore::load(&pool, &keystore_state, "key", &created.id, "passphrase")
                     .await
                     .unwrap()
                     .as_deref(),
@@ -796,7 +815,7 @@ mod tests {
     #[test]
     fn generated_ed25519_and_rsa4096_keys_have_stable_public_metadata() {
         for key_type in ["ed25519", "rsa4096"] {
-            let generated = generate_vault_key_material(
+            let generated = generate_keystore_key_material(
                 key_type,
                 "luma-generated-test",
                 Some("test key passphrase"),
@@ -820,29 +839,45 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn generated_private_key_plaintext_is_absent_from_database_file() {
+    async fn assert_generated_key_plaintext_absent_from_database(shared: bool) {
         let directory = std::env::temp_dir().join(format!(
-            "luma-generated-vault-key-test-{}",
+            "luma-generated-keystore-key-test-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let database_path = directory.join("luma.db");
         let pool = crate::storage::init(&database_path).await.unwrap();
-        let vault_state = VaultState::default();
-        vault::setup(&pool, &vault_state, "test vault password", false)
+        let keystore_state = KeystoreState::default();
+        keystore::setup(&pool, &keystore_state, "test keystore password", false)
             .await
             .unwrap();
-        let created = generate_vault_ssh_key(
+        let vault_id = if shared {
+            crate::storage::vaults::create(
+                &pool,
+                crate::storage::vaults::VaultInput {
+                    name: "Infra".into(),
+                    share_secrets: true,
+                    sort_order: 0,
+                },
+            )
+            .await
+            .unwrap()
+            .id
+        } else {
+            crate::storage::vaults::default_id()
+        };
+        let created = generate_keystore_ssh_key(
             &pool,
-            &vault_state,
+            &keystore_state,
+            vault_id.clone(),
             "ed25519".into(),
-            "Vault generated".into(),
+            "Keystore generated".into(),
             Some("private key passphrase".into()),
             Some("db plaintext sentinel".into()),
         )
         .await
         .unwrap();
+        assert_eq!(created.vault_id, vault_id);
         assert_eq!(created.storage_mode, "encrypted-vault");
         assert!(created.has_private_key);
         assert!(created
@@ -854,7 +889,7 @@ mod tests {
             .as_deref()
             .is_some_and(|value| value.starts_with("SHA256:")));
         let private_key = Zeroizing::new(
-            vault::load(&pool, &vault_state, "key", &created.id, "private-key")
+            keystore::load(&pool, &keystore_state, "key", &created.id, "private-key")
                 .await
                 .unwrap()
                 .unwrap(),
@@ -872,6 +907,16 @@ mod tests {
             "plaintext private key was found in SQLite"
         );
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[tokio::test]
+    async fn generated_private_key_plaintext_is_absent_from_database_file() {
+        assert_generated_key_plaintext_absent_from_database(false).await;
+    }
+
+    #[tokio::test]
+    async fn generated_shared_vault_private_key_plaintext_is_absent_from_database_file() {
+        assert_generated_key_plaintext_absent_from_database(true).await;
     }
 
     #[tokio::test]

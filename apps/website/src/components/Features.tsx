@@ -40,7 +40,7 @@ const features: Feature[] = [
       'Encrypted reusable identities',
       'ProxyJump, keepalive, startup commands',
       'Explicit unknown-host confirmation',
-      'Import from OpenSSH and Termius',
+      'Import from OpenSSH, Tabby, and Electerm',
     ],
   },
   {

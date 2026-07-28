@@ -78,7 +78,43 @@ const AUTH_OPTIONS: { value: AuthenticationType; label: string }[] = [
   { value: "interactive", label: "Keyboard-interactive" },
 ];
 
-type FieldErrors = Partial<Record<"name" | "hostname" | "username" | "port" | "keyId", string>>;
+type FieldErrors = Partial<
+  Record<
+    "name" | "hostname" | "username" | "port" | "keyId" | "groupId" | "identityId" | "proxyJumpHostId",
+    string
+  >
+>;
+
+/** Options the caller offered, already narrowed to the host's own vault. */
+type References = {
+  groups: HostGroup[];
+  keyReferences: KeyReference[];
+  identities: Identity[];
+  hosts: Host[];
+};
+
+/* A host may only reference entities in its own vault, or the shared bundle
+ * carries dangling ids for every other member. The pickers only offer in-vault
+ * options, so this catches a selection that has since left the vault or been
+ * deleted — the backend rejects it either way, this names the field. */
+function crossVaultErrors(state: FormState, refs: References): FieldErrors {
+  const missing = <T extends { id: string }>(id: string, options: T[]) =>
+    Boolean(id) && !options.some((option) => option.id === id);
+  const errors: FieldErrors = {};
+  if (missing(state.groupId, refs.groups)) {
+    errors.groupId = "That group is not in this host's vault.";
+  }
+  if (missing(state.keyId, refs.keyReferences)) {
+    errors.keyId = "That key is not in this host's vault.";
+  }
+  if (missing(state.identityId, refs.identities)) {
+    errors.identityId = "That identity is not in this host's vault.";
+  }
+  if (missing(state.proxyJumpHostId, refs.hosts)) {
+    errors.proxyJumpHostId = "That jump host is not in this host's vault.";
+  }
+  return errors;
+}
 
 function validate(state: FormState): FieldErrors {
   const errors: FieldErrors = {};
@@ -148,6 +184,8 @@ export function HostEditorDialog({
   hosts,
   onManageKeys,
   initialGroupId = null,
+  vaultId,
+  vaultName,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -158,6 +196,12 @@ export function HostEditorDialog({
   hosts: Host[];
   onManageKeys: () => void;
   initialGroupId?: string | null;
+  /** Vault a new host lands in; omitted means the backend's default (personal).
+   * Ignored when editing — a host never changes vault. */
+  vaultId?: string;
+  /** Shown so it is never a surprise which vault a host belongs to — a shared
+   * one puts it in front of everyone who has joined. */
+  vaultName?: string;
 }) {
   const invalidate = useInvalidateHosts();
   const [state, setState] = useState<FormState>(() => initialState(host, initialGroupId));
@@ -171,7 +215,23 @@ export function HostEditorDialog({
     }
   }, [open, host, initialGroupId]);
 
-  const errors = useMemo(() => validate(state), [state]);
+  const proxyOptions = useMemo(
+    () => hosts.filter((h) => h.id !== host?.id),
+    [hosts, host?.id],
+  );
+
+  const errors = useMemo(
+    () => ({
+      ...validate(state),
+      ...crossVaultErrors(state, {
+        groups,
+        keyReferences,
+        identities,
+        hosts: proxyOptions,
+      }),
+    }),
+    [state, groups, keyReferences, identities, proxyOptions],
+  );
   const hasErrors = Object.keys(errors).length > 0;
 
   const save = useMutation({
@@ -189,21 +249,25 @@ export function HostEditorDialog({
   const submit = () => {
     setShowErrors(true);
     if (hasErrors) return;
-    save.mutate(toInput(state));
+    save.mutate(host ? toInput(state) : { ...toInput(state), vaultId });
   };
 
   const backendError = save.isError ? parseLumaError(save.error) : null;
   // Surface backend invalid-input under the most likely field, else globally.
   const err = (field: keyof FieldErrors) => (showErrors ? errors[field] : undefined);
 
-  const proxyOptions = hosts.filter((h) => h.id !== host?.id);
-
   return (
     <Modal
       open={open}
       onOpenChange={onOpenChange}
       title={host ? "Edit host" : "New host"}
-      description={host ? host.name : "Save an SSH connection for quick access."}
+      description={
+        vaultName
+          ? `${host ? host.name : "Save an SSH connection for quick access."} · ${vaultName}`
+          : host
+            ? host.name
+            : "Save an SSH connection for quick access."
+      }
       size="lg"
       footer={
         <>
@@ -227,7 +291,7 @@ export function HostEditorDialog({
     >
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <SelectField label="Identity (optional)" value={state.identityId} onChange={(v) => patch({ identityId: v })}>
+          <SelectField label="Identity (optional)" value={state.identityId} onChange={(v) => patch({ identityId: v })} error={err("identityId")}>
             <option value="">Host-specific credentials</option>
             {identities.map((identity) => <option key={identity.id} value={identity.id}>{identity.name} ({identity.username})</option>)}
           </SelectField>
@@ -282,6 +346,7 @@ export function HostEditorDialog({
             label="Group"
             value={state.groupId}
             onChange={(v) => patch({ groupId: v })}
+            error={err("groupId")}
           >
             <option value="">No group</option>
             {groups.map((g) => (
@@ -345,6 +410,7 @@ export function HostEditorDialog({
           label="Proxy jump (optional)"
           value={state.proxyJumpHostId}
           onChange={(v) => patch({ proxyJumpHostId: v })}
+          error={err("proxyJumpHostId")}
         >
           <option value="">None</option>
           {proxyOptions.map((h) => (

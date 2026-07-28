@@ -18,11 +18,11 @@ use sqlx::SqlitePool;
 use zeroize::Zeroizing;
 
 use crate::errors::{LumaError, Result};
+use crate::keystore::{self, KeystoreState};
 use crate::platform::home_dir;
 use crate::storage::hosts::{self, Host};
 use crate::storage::identities;
 use crate::storage::key_references;
-use crate::vault::{self, VaultState};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use config::{
@@ -134,7 +134,7 @@ fn normalize_private_key(value: &str) -> String {
 
 async fn identity_file(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     host: &Host,
 ) -> Result<(Option<String>, Option<Arc<EphemeralIdentityFile>>)> {
     if host.authentication_type != "key" {
@@ -149,9 +149,11 @@ async fn identity_file(
         .ok_or_else(|| LumaError::KeyUnavailable("key reference no longer exists".into()))?;
     if key.storage_mode == "encrypted-vault" {
         let private_key = Zeroizing::new(
-            vault::load(pool, vault_state, "key", key_id, "private-key")
+            keystore::load(pool, keystore_state, "key", key_id, "private-key")
                 .await?
-                .ok_or_else(|| LumaError::KeyUnavailable("vault key has no private key".into()))?,
+                .ok_or_else(|| {
+                    LumaError::KeyUnavailable("keystore key has no private key".into())
+                })?,
         );
         let path = std::env::temp_dir().join(format!("luma-ssh-{}.key", uuid::Uuid::new_v4()));
         let mut options = std::fs::OpenOptions::new();
@@ -163,14 +165,14 @@ async fn identity_file(
         }
         use std::io::Write;
         let mut file = options.open(&path).map_err(|error| {
-            LumaError::KeyUnavailable(format!("could not prepare vault key: {error}"))
+            LumaError::KeyUnavailable(format!("could not prepare keystore key: {error}"))
         })?;
         let normalized_private_key = Zeroizing::new(normalize_private_key(&private_key));
         let write_result = file.write_all(normalized_private_key.as_bytes());
         if let Err(error) = write_result {
             let _ = std::fs::remove_file(&path);
             return Err(LumaError::KeyUnavailable(format!(
-                "could not prepare vault key: {error}"
+                "could not prepare keystore key: {error}"
             )));
         }
         drop(file);
@@ -292,7 +294,7 @@ async fn resolve_host_identity(
 
 async fn resolve_host_connection_config(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     host: Host,
     known_hosts_file: PathBuf,
 ) -> Result<SshConnectionConfig> {
@@ -301,7 +303,7 @@ async fn resolve_host_connection_config(
         .as_ref()
         .filter(|identity| identity.key_id.is_none() && identity.has_password)
     {
-        identities::password(pool, vault_state, &identity.id)
+        identities::password(pool, keystore_state, &identity.id)
             .await?
             .map(Arc::new)
     } else {
@@ -311,18 +313,19 @@ async fn resolve_host_connection_config(
         .as_ref()
         .filter(|identity| identity.key_id.is_some() && identity.has_password)
     {
-        identities::password(pool, vault_state, &identity.id)
+        identities::password(pool, keystore_state, &identity.id)
             .await?
             .map(Arc::new)
     } else {
         None
     };
-    let (identity_file, _ephemeral_identity_file) = identity_file(pool, vault_state, &host).await?;
+    let (identity_file, _ephemeral_identity_file) =
+        identity_file(pool, keystore_state, &host).await?;
     let mut key_passphrase = None;
     if host.authentication_type == "key" {
         if let Some(key_id) = host.key_id.as_deref() {
             let has_saved_passphrase = sqlx::query_scalar::<_, i64>(
-                "SELECT EXISTS(SELECT 1 FROM vault_secrets WHERE owner_type='key' AND owner_id=?1 AND secret_type='passphrase')",
+                "SELECT EXISTS(SELECT 1 FROM keystore_secrets WHERE owner_type='key' AND owner_id=?1 AND secret_type='passphrase')",
             )
             .bind(key_id)
             .fetch_one(pool)
@@ -330,7 +333,7 @@ async fn resolve_host_connection_config(
                 != 0;
             if has_saved_passphrase {
                 let passphrase = Zeroizing::new(
-                    vault::load(pool, vault_state, "key", key_id, "passphrase")
+                    keystore::load(pool, keystore_state, "key", key_id, "passphrase")
                         .await?
                         .unwrap_or_default(),
                 );
@@ -359,7 +362,7 @@ async fn resolve_host_connection_config(
 
 pub(crate) async fn host_key_connection_config(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     host_id: &str,
     known_hosts_file: PathBuf,
 ) -> Result<SshConnectionConfig> {
@@ -367,13 +370,13 @@ pub(crate) async fn host_key_connection_config(
     let mut proxy_jumps = Vec::with_capacity(route.proxy_jumps.len());
     for proxy in route.proxy_jumps {
         let mut config =
-            resolve_host_connection_config(pool, vault_state, proxy, known_hosts_file.clone())
+            resolve_host_connection_config(pool, keystore_state, proxy, known_hosts_file.clone())
                 .await?;
         config.startup_command = None;
         proxy_jumps.push(config);
     }
     let mut config =
-        resolve_host_connection_config(pool, vault_state, route.host, known_hosts_file).await?;
+        resolve_host_connection_config(pool, keystore_state, route.host, known_hosts_file).await?;
     config.startup_command = None;
     config.proxy_jumps = proxy_jumps;
     Ok(config)
@@ -381,7 +384,7 @@ pub(crate) async fn host_key_connection_config(
 
 pub async fn connection_config(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     host_id: &str,
 ) -> Result<(SshConnectionConfig, String)> {
     let route = resolve_connection_route(pool, host_id).await?;
@@ -390,13 +393,13 @@ pub async fn connection_config(
     let mut proxy_jumps = Vec::with_capacity(route.proxy_jumps.len());
     for proxy in route.proxy_jumps {
         let mut config =
-            resolve_host_connection_config(pool, vault_state, proxy, known_hosts_file.clone())
+            resolve_host_connection_config(pool, keystore_state, proxy, known_hosts_file.clone())
                 .await?;
         config.startup_command = None;
         proxy_jumps.push(config);
     }
     let mut config =
-        resolve_host_connection_config(pool, vault_state, route.host, known_hosts_file).await?;
+        resolve_host_connection_config(pool, keystore_state, route.host, known_hosts_file).await?;
     config.proxy_jumps = proxy_jumps;
     Ok((config, title))
 }

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { FolderOpen, Loader2, Server } from "lucide-react";
 import { useHosts, useRecentHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId } from "../../stores/vaultStore";
 import { useSftpStore } from "../../stores/sftpStore";
 import { describeSshError, sshCategoryLabel } from "../hosts/sshErrors";
 import type { Host } from "../../lib/hosts";
@@ -11,7 +12,7 @@ import type { Host } from "../../lib/hosts";
  * describeSshError (the same readable mapping the terminal uses).
  */
 export function HostPicker() {
-  const { data: hosts } = useHosts();
+  const { data: hosts } = useHosts(useBrowsingVaultId());
   const { data: recent } = useRecentHosts();
   const connect = useSftpStore((s) => s.connect);
   const connectingHostId = useSftpStore((s) => s.connectingHostId);

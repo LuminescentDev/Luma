@@ -1463,6 +1463,7 @@ mod tests {
         let host_id = format!("chain-{}", uuid::Uuid::new_v4());
         let host = crate::storage::hosts::Host {
             id: host_id.clone(),
+            vault_id: crate::storage::vaults::default_id(),
             name: "Chain target".into(),
             hostname: config.hostname.clone(),
             port: config.port,

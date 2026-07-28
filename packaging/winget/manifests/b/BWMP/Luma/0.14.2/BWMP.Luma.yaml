@@ -1,0 +1,6 @@
+# Created for submission to microsoft/winget-pkgs.
+PackageIdentifier: BWMP.Luma
+PackageVersion: 0.14.2
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.10.0

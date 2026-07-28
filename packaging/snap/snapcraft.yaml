@@ -1,0 +1,33 @@
+name: luma
+title: Luma
+base: core24
+version: '0.14.2'
+summary: Free open-source terminal and SSH client
+description: |
+  Luma combines local and serial terminals, saved SSH connections, SFTP,
+  port forwarding, snippets, and optional end-to-end encrypted configuration
+  sync in one modern application.
+grade: stable
+confinement: classic
+license: MIT
+website: https://luma.bwmp.dev
+issues: https://github.com/bwmp-dev/Luma/issues
+source-code: https://github.com/bwmp-dev/Luma
+contact: mailto:luma@bwmp.dev
+icon: snap/gui/icon.png
+
+platforms:
+  amd64:
+
+apps:
+  luma:
+    command: usr/bin/luma
+    desktop: usr/share/applications/Luma.desktop
+    extensions: [gnome]
+
+parts:
+  luma:
+    plugin: dump
+    source: https://github.com/bwmp-dev/Luma/releases/download/v0.14.2/Luma_0.14.2_amd64.deb
+    source-type: deb
+    source-checksum: sha256/01b14e3241d830f2612a30e93962daf2a79abbde1a0001394087d75a10c1b752

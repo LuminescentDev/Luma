@@ -273,10 +273,11 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
     if result.rows_affected() == 0 {
         return Err(LumaError::InvalidInput("unknown port forward".into()));
     }
+    // Port forwards are not vaulted; they only ever belong to the personal vault.
     sqlx::query(
-        "INSERT INTO tombstones (object_type, object_id, deleted_at)
-         VALUES ('port_forward', ?1, unixepoch())
-         ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+        "INSERT INTO tombstones (vault_id, object_type, object_id, deleted_at)
+         VALUES ('personal', 'port_forward', ?1, unixepoch())
+         ON CONFLICT(vault_id, object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
     )
     .bind(id)
     .execute(&mut *transaction)
@@ -294,6 +295,7 @@ mod tests {
         hosts::create(
             pool,
             HostInput {
+                vault_id: crate::storage::vaults::default_id(),
                 name: "Server".into(),
                 hostname: "server.example.com".into(),
                 port: 22,

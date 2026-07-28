@@ -161,10 +161,11 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<()> {
         .execute(&mut *transaction)
         .await?;
     if result.rows_affected() > 0 {
+        // Terminal profiles sync only with the personal vault.
         sqlx::query(
-            "INSERT INTO tombstones (object_type, object_id, deleted_at)
-             VALUES ('terminal_profile', ?1, unixepoch())
-             ON CONFLICT(object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
+            "INSERT INTO tombstones (vault_id, object_type, object_id, deleted_at)
+             VALUES ('personal', 'terminal_profile', ?1, unixepoch())
+             ON CONFLICT(vault_id, object_type, object_id) DO UPDATE SET deleted_at = unixepoch()",
         )
         .bind(id)
         .execute(&mut *transaction)

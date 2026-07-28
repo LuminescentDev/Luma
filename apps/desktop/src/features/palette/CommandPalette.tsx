@@ -30,6 +30,7 @@ import { useSftpStore } from "../../stores/sftpStore";
 import { useSnippetRunStore } from "../../stores/snippetRunStore";
 import { useShells, useProfiles } from "../../hooks/useShells";
 import { useHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId } from "../../stores/vaultStore";
 import { useSnippets } from "../../hooks/useSnippets";
 import { useUpdaterStore } from "../../stores/updaterStore";
 import { collectLeaves } from "../terminal/paneTree";
@@ -226,8 +227,9 @@ function useCommands(
 ): Command[] {
   const { data: shells } = useShells();
   const { data: profiles } = useProfiles();
-  const { data: hosts } = useHosts();
-  const { data: snippets } = useSnippets();
+  const browsingVaultId = useBrowsingVaultId();
+  const { data: hosts } = useHosts(browsingVaultId);
+  const { data: snippets } = useSnippets(browsingVaultId);
 
   const openLocalSession = useSessionStore((s) => s.openLocalSession);
   const openSshSession = useSessionStore((s) => s.openSshSession);

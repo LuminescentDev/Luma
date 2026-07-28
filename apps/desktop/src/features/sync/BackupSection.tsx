@@ -42,7 +42,9 @@ type ImportPhase =
   | { kind: "review"; path: string; passphrase: string; preview: ImportPreview }
   | { kind: "done"; result: ImportApplyResult };
 
-export function BackupSection() {
+/** Backups are per-vault: one file carries one vault's objects, encrypted under
+ * the passphrase chosen here. */
+export function BackupSection({ vaultId }: { vaultId: string }) {
   const invalidateHosts = useInvalidateHosts();
   const invalidateSyncConfig = useInvalidateSyncConfig();
   const queryClient = useQueryClient();
@@ -75,7 +77,7 @@ export function BackupSection() {
     setExportBusy(true);
     setExportError(null);
     try {
-      const result = await exportEncrypted(path, passphrase);
+      const result = await exportEncrypted(vaultId, path, passphrase);
       setExportPhase({ kind: "done", result });
     } catch (error) {
       setExportError(parseLumaError(error).message);
@@ -106,7 +108,7 @@ export function BackupSection() {
     setImportBusy(true);
     setImportError(null);
     try {
-      const preview = await importPreview(path, passphrase);
+      const preview = await importPreview(vaultId, path, passphrase);
       setImportPhase({ kind: "review", path, passphrase, preview });
     } catch (error) {
       // Wrong passphrase / corrupted file — keep the prompt open for retry.
@@ -122,6 +124,7 @@ export function BackupSection() {
     setImportError(null);
     try {
       const result = await importApply(
+        vaultId,
         importPhase.path,
         importPhase.passphrase,
         resolutions,
@@ -332,12 +335,12 @@ export function BackupSection() {
             )}
             {importPhase.result.privateKeysSkippedLocked > 0 && (
               <div className="flex items-start gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
-                <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Vault locked —{" "}
+                <AlertTriangle size={13} className="mt-0.5 shrink-0" /> Keystore locked —{" "}
                 {importPhase.result.privateKeysSkippedLocked} private key
                 {importPhase.result.privateKeysSkippedLocked === 1
                   ? " was"
                   : "s were"}{" "}
-                not imported. Unlock the vault and import again.
+                not imported. Unlock the keystore and import again.
               </div>
             )}
           </div>

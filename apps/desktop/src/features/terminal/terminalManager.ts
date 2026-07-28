@@ -172,7 +172,19 @@ export const LIGHT_THEME: ITheme = {
 /** The built-in monospace stack used when the user has not chosen a custom font
  * family. Exported so the settings UI can show it as the placeholder / reset. */
 export const DEFAULT_TERMINAL_FONT_FAMILY =
-  '"Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace';
+  '"Luma Cascadia Mono NF", "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace';
+
+const BUNDLED_TERMINAL_FONT = "Luma Cascadia Mono NF";
+
+/**
+ * xterm measures its grid when it is opened. A webfont can still be loading at
+ * that instant, especially in mobile WebViews, so refit after the bundled font
+ * becomes available rather than leaving fallback-font cell metrics in place.
+ */
+const bundledTerminalFontReady =
+  typeof document !== "undefined" && document.fonts
+    ? document.fonts.load(`14px "${BUNDLED_TERMINAL_FONT}"`).then(() => undefined)
+    : Promise.resolve();
 
 /*
  * Shell integration (OSC 133 prompt marks + OSC 7 / OSC 1337 cwd reporting).
@@ -1311,6 +1323,12 @@ export const terminalManager = {
       // DOM/canvas renderer is the reliable default there. loadWebgl itself also
       // try/catches into the canvas fallback on desktop if the addon fails.
       if (!isMobilePlatform()) void loadWebgl(session.term);
+
+      void bundledTerminalFontReady.then(() => {
+        if (session.disposed || !session.term.element?.isConnected) return;
+        this.fitSession(sessionId);
+        session.term.refresh(0, session.term.rows - 1);
+      });
     } else {
       host.appendChild(existing);
     }

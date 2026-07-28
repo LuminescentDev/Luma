@@ -8,7 +8,6 @@ import {
   Menu,
   Minus,
   RefreshCw,
-  Server,
   Square,
   X,
 } from 'lucide-react';
@@ -17,9 +16,14 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useUiStore } from '../stores/uiStore';
 import { selectRunningCount, useTunnelStore } from '../stores/tunnelStore';
 import { selectActiveTransferCount, useSftpStore } from '../stores/sftpStore';
-import { useSyncConfig } from '../hooks/useSync';
-import { useSyncStore } from '../stores/syncStore';
+import { useSyncConfigs } from '../hooks/useSync';
+import {
+  selectAggregateStatus,
+  selectTotalConflictCount,
+  useSyncStore,
+} from '../stores/syncStore';
 import { TabBar } from '../features/terminal/TabBar';
+import { VaultSwitcher } from './VaultSwitcher';
 
 const appWindow = getCurrentWindow();
 
@@ -28,13 +32,15 @@ export function TitleBar() {
   const focusedAt = useRef(0);
   const navOpen = useUiStore((s) => s.navOpen);
   const toggleNav = useUiStore((s) => s.toggleNav);
-  const openNav = useUiStore((s) => s.openNav);
   const selectSection = useUiStore((s) => s.selectSection);
   const mainView = useUiStore((s) => s.mainView);
   const sftpActive = mainView === 'sftp';
   const runningTunnels = useTunnelStore(selectRunningCount);
   const activeTransfers = useSftpStore(selectActiveTransferCount);
-  const { data: syncConfig } = useSyncConfig();
+  const { data: syncConfigs } = useSyncConfigs();
+  const syncedVaultIds = (syncConfigs ?? [])
+    .filter((config) => config.enabled)
+    .map((config) => config.vaultId);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,23 +91,7 @@ export function TitleBar() {
       >
         <Menu size={15} />
       </button>
-      <button
-        type='button'
-        onClick={() => {
-          openNav();
-          selectSection('hosts');
-        }}
-        onDoubleClick={(event) => event.stopPropagation()}
-        aria-pressed={navOpen && mainView === 'hosts'}
-        aria-label='Open Vaults'
-        className={
-          navOpen && mainView === 'hosts'
-            ? 'flex h-7 shrink-0 items-center gap-1.5 rounded-lg bg-raised px-2.5 text-xs font-medium text-foreground'
-            : 'flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-muted transition-colors hover:bg-raised hover:text-foreground'
-        }
-      >
-        <Server size={13} className='text-accent' /> Vaults
-      </button>
+      <VaultSwitcher />
       <button
         type='button'
         onClick={() => selectSection('sftp')}
@@ -158,7 +148,7 @@ export function TitleBar() {
           <ArrowDownUp size={11} /> {activeTransfers}
         </button>
       )}
-      {syncConfig?.enabled && <SyncIndicator />}
+      {syncedVaultIds.length > 0 && <SyncIndicator vaultIds={syncedVaultIds} />}
       <div className='flex h-full shrink-0 items-stretch'>
         <WindowButton
           label='Minimize'
@@ -184,9 +174,11 @@ export function TitleBar() {
   );
 }
 
-function SyncIndicator() {
-  const status = useSyncStore((s) => s.status);
-  const conflictCount = useSyncStore((s) => s.conflicts.length);
+/** One indicator for every synced vault: the most urgent status wins, and
+ * clicking surfaces whichever vault needs attention before syncing the rest. */
+function SyncIndicator({ vaultIds }: { vaultIds: string[] }) {
+  const status = useSyncStore(selectAggregateStatus);
+  const conflictCount = useSyncStore(selectTotalConflictCount);
   const activate = useSyncStore((s) => s.activate);
 
   const config: Record<
@@ -226,7 +218,7 @@ function SyncIndicator() {
         type='button'
         title={label}
         aria-label={label}
-        onClick={() => activate()}
+        onClick={() => activate(vaultIds)}
         onDoubleClick={(event) => event.stopPropagation()}
         className={`mr-1 flex shrink-0 items-center rounded-md p-1.5 transition-colors hover:bg-raised ${className}`}
       >

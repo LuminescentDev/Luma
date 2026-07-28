@@ -7,8 +7,11 @@ use crate::storage::snippets::{self, Snippet, SnippetInput};
 use crate::AppState;
 
 #[tauri::command]
-pub async fn snippets_list(state: State<'_, AppState>) -> Result<Vec<Snippet>> {
-    snippets::list(&state.pool).await
+pub async fn snippets_list(
+    state: State<'_, AppState>,
+    vault_id: Option<String>,
+) -> Result<Vec<Snippet>> {
+    snippets::list(&state.pool, vault_id.as_deref()).await
 }
 
 #[tauri::command]

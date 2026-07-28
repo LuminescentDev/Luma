@@ -4,17 +4,21 @@ import { KeyRound, Pencil, Plus, Trash2 } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { createIdentity, deleteIdentity, updateIdentity, type Identity, type KeyReference } from "../../lib/hosts";
 import { useIdentities, useInvalidateHosts } from "../../hooks/useHosts";
+import { useBrowsingVaultId, useCreationVaultId } from "../../stores/vaultStore";
 import { SelectField, TextField } from "./fields";
 
 type Draft = { id: string | null; name: string; username: string; keyId: string; password: string };
 const blank = (): Draft => ({ id: null, name: "", username: "", keyId: "", password: "" });
 
 export function IdentitiesDialog({ open, onOpenChange, keys, onManageKeys }: { open: boolean; onOpenChange: (v: boolean) => void; keys: KeyReference[]; onManageKeys: () => void }) {
-  const { data = [] } = useIdentities();
+  // An identity may only reference a key in its own vault; `keys` arrives
+  // already scoped to the browsed one.
+  const vaultId = useCreationVaultId();
+  const { data = [] } = useIdentities(useBrowsingVaultId());
   const invalidate = useInvalidateHosts();
   const [draft, setDraft] = useState<Draft | null>(null);
   const save = useMutation({ mutationFn: (d: Draft) => {
-    const input = { name: d.name.trim(), username: d.username.trim(), keyId: d.keyId || null, password: d.password || null };
+    const input = { vaultId, name: d.name.trim(), username: d.username.trim(), keyId: d.keyId || null, password: d.password || null };
     return d.id ? updateIdentity(d.id, input) : createIdentity(input);
   }, onSuccess: () => { invalidate(); setDraft(null); } });
   const remove = useMutation({ mutationFn: deleteIdentity, onSuccess: invalidate });

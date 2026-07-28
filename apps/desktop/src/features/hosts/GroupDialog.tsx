@@ -17,12 +17,16 @@ export function GroupDialog({
   group,
   groups,
   initialParentId = null,
+  vaultId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   group: HostGroup | null;
   groups: HostGroup[];
   initialParentId?: string | null;
+  /** Vault a new group lands in; omitted means the backend's default (personal).
+   * Ignored when renaming — a group never changes vault. */
+  vaultId?: string;
 }) {
   const invalidate = useInvalidateHosts();
   const [name, setName] = useState("");
@@ -43,7 +47,7 @@ export function GroupDialog({
             parentId: parentId || null,
             sortOrder: group.sortOrder,
           })
-        : createHostGroup({ name: value, parentId: parentId || null, sortOrder: 0 }),
+        : createHostGroup({ name: value, parentId: parentId || null, sortOrder: 0, vaultId }),
     onSuccess: () => {
       invalidate();
       onOpenChange(false);

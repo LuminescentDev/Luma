@@ -17,8 +17,8 @@ use uuid::{Variant, Version};
 use zeroize::Zeroizing;
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
-use crate::vault;
-use crate::vault::VaultState;
+use crate::keystore;
+use crate::keystore::KeystoreState;
 
 const SNAPSHOT_CONTENT_TYPE: &str = "application/vnd.luma.encrypted-room-snapshot";
 const MAX_JSON_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -28,7 +28,7 @@ const INVITE_PREFIX: &str = "luma-collab-invite-v1.";
 const SESSION_SECRET_ID: &str = "oidc-session";
 const PRIVATE_KEY_SECRET_ID: &str = "device-private-key";
 #[cfg(any(target_os = "android", target_os = "ios"))]
-const VAULT_OWNER: &str = "collaboration-credential";
+const KEYSTORE_OWNER: &str = "collaboration-credential";
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const KEYCHAIN_SERVICE: &str = "luma.collaboration";
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -497,7 +497,7 @@ pub async fn set_server_url(
 
 pub async fn get_device_identity(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<Option<DeviceIdentity>> {
     let row =
         sqlx::query("SELECT device_id, device_public_key FROM collaboration_state WHERE id = 1")
@@ -513,7 +513,7 @@ pub async fn get_device_identity(
     };
     let public_key = serde_json::from_str(&public_key)
         .map_err(|_| CollaborationError::storage("stored collaboration public key is invalid"))?;
-    let private_key = secret_get(pool, vault_state, PRIVATE_KEY_SECRET_ID)
+    let private_key = secret_get(pool, keystore_state, PRIVATE_KEY_SECRET_ID)
         .await?
         .ok_or_else(|| {
             CollaborationError::storage("stored collaboration private key is unavailable")
@@ -529,7 +529,7 @@ pub async fn get_device_identity(
 
 pub async fn set_device_identity(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: SetDeviceIdentityInput,
 ) -> CollaborationResult<()> {
     let identity = DeviceIdentity {
@@ -543,7 +543,7 @@ pub async fn set_device_identity(
     let private_key = serde_json::to_string(&identity.private_key)
         .map_err(|_| CollaborationError::invalid("device private key is invalid"))?;
 
-    secret_set(pool, vault_state, PRIVATE_KEY_SECRET_ID, &private_key).await?;
+    secret_set(pool, keystore_state, PRIVATE_KEY_SECRET_ID, &private_key).await?;
     sqlx::query(
         "UPDATE collaboration_state
          SET device_id = ?1, device_public_key = ?2, updated_at = unixepoch()
@@ -639,7 +639,7 @@ pub async fn auth_start(
 pub async fn auth_poll(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<AuthPollResponse> {
     let pending = runtime
         .pending_auth
@@ -716,7 +716,7 @@ pub async fn auth_poll(
             refresh_token: token.refresh_token,
             expires_at: now.saturating_add(token.expires_in.min(i64::MAX as u64) as i64),
         };
-        save_session(pool, vault_state, &session).await?;
+        save_session(pool, keystore_state, &session).await?;
         *runtime.pending_auth.lock().unwrap() = None;
         return Ok(AuthPollResponse {
             status: AuthPollStatus::Complete,
@@ -780,7 +780,7 @@ pub async fn auth_poll(
 pub async fn auth_status(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<AuthStatusResponse> {
     let server_url = load_server_url(pool).await?;
     if let Some(pending) = runtime.pending_auth.lock().unwrap().as_ref() {
@@ -792,7 +792,7 @@ pub async fn auth_status(
             });
         }
     }
-    let Some(session) = load_session(pool, vault_state).await? else {
+    let Some(session) = load_session(pool, keystore_state).await? else {
         return Ok(AuthStatusResponse {
             status: AuthStatus::SignedOut,
             server_url,
@@ -821,9 +821,9 @@ pub async fn auth_status(
 pub async fn auth_sign_out(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<()> {
-    secret_delete(pool, vault_state, SESSION_SECRET_ID).await?;
+    secret_delete(pool, keystore_state, SESSION_SECRET_ID).await?;
     *runtime.pending_auth.lock().unwrap() = None;
     Ok(())
 }
@@ -831,26 +831,27 @@ pub async fn auth_sign_out(
 pub async fn register_device(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: RegisterDeviceInput,
 ) -> CollaborationResult<()> {
     validate_uuid(&input.device_id, "deviceId")?;
     validate_device_public_key(&input.public_key)?;
-    let response = authenticated_request(pool, runtime, vault_state, Method::POST, "/v1/devices")
-        .await?
-        .json(&input)
-        .send()
-        .await
-        .map_err(network_error)?;
+    let response =
+        authenticated_request(pool, runtime, keystore_state, Method::POST, "/v1/devices")
+            .await?
+            .json(&input)
+            .send()
+            .await
+            .map_err(network_error)?;
     expect_empty_success(response).await
 }
 
 pub async fn list_devices(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<DevicesResponse> {
-    let response = authenticated_request(pool, runtime, vault_state, Method::GET, "/v1/devices")
+    let response = authenticated_request(pool, runtime, keystore_state, Method::GET, "/v1/devices")
         .await?
         .send()
         .await
@@ -865,12 +866,12 @@ pub async fn list_devices(
 pub async fn create_room(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: CreateRoomInput,
 ) -> CollaborationResult<CreateRoomResponse> {
     validate_uuid(&input.room_id, "roomId")?;
     validate_device_keys(&input.device_keys, &input.room_id, Some(1))?;
-    let response = authenticated_request(pool, runtime, vault_state, Method::POST, "/v1/rooms")
+    let response = authenticated_request(pool, runtime, keystore_state, Method::POST, "/v1/rooms")
         .await?
         .json(&input)
         .send()
@@ -891,14 +892,14 @@ pub async fn create_room(
 pub async fn add_room_member(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: AddRoomMemberInput,
 ) -> CollaborationResult<AddRoomMemberResponse> {
     validate_uuid(&input.room_id, "roomId")?;
     validate_subject(&input.subject)?;
     validate_device_keys(&input.device_keys, &input.room_id, None)?;
     let path = format!("/v1/rooms/{}/members", input.room_id);
-    let response = authenticated_request(pool, runtime, vault_state, Method::POST, &path)
+    let response = authenticated_request(pool, runtime, keystore_state, Method::POST, &path)
         .await?
         .json(&serde_json::json!({
             "subject": input.subject,
@@ -922,7 +923,7 @@ pub async fn add_room_member(
 pub async fn mint_room_capability(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     room_id: &str,
     role: &str,
     ttl_seconds: Option<u32>,
@@ -930,7 +931,7 @@ pub async fn mint_room_capability(
     validate_uuid(room_id, "roomId")?;
     validate_capability_role(role)?;
     let path = format!("/v1/rooms/{room_id}/capabilities");
-    let response = authenticated_request(pool, runtime, vault_state, Method::POST, &path)
+    let response = authenticated_request(pool, runtime, keystore_state, Method::POST, &path)
         .await?
         .json(&MintCapabilityRequest { role, ttl_seconds })
         .send()
@@ -942,7 +943,7 @@ pub async fn mint_room_capability(
 pub async fn join_room_with_capability(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     room_id: &str,
     secret: &str,
     device_id: &str,
@@ -951,7 +952,7 @@ pub async fn join_room_with_capability(
     validate_uuid(room_id, "roomId")?;
     validate_uuid(device_id, "deviceId")?;
     let path = format!("/v1/rooms/{room_id}/join");
-    let response = authenticated_request(pool, runtime, vault_state, Method::POST, &path)
+    let response = authenticated_request(pool, runtime, keystore_state, Method::POST, &path)
         .await?
         .json(&SelfJoinRequest {
             secret,
@@ -967,13 +968,13 @@ pub async fn join_room_with_capability(
 pub async fn get_room(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: RoomDeviceInput,
 ) -> CollaborationResult<RoomDetailsResponse> {
     validate_uuid(&input.room_id, "roomId")?;
     validate_uuid(&input.device_id, "deviceId")?;
     let path = format!("/v1/rooms/{}", input.room_id);
-    let response = authenticated_request(pool, runtime, vault_state, Method::GET, &path)
+    let response = authenticated_request(pool, runtime, keystore_state, Method::GET, &path)
         .await?
         .query(&[("deviceId", &input.device_id)])
         .send()
@@ -1001,13 +1002,13 @@ pub async fn get_room(
 pub async fn issue_realtime_ticket(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: RoomDeviceInput,
 ) -> CollaborationResult<RealtimeTicketResponse> {
     validate_uuid(&input.room_id, "roomId")?;
     validate_uuid(&input.device_id, "deviceId")?;
     let path = format!("/v1/rooms/{}/realtime-ticket", input.room_id);
-    let response = authenticated_request(pool, runtime, vault_state, Method::POST, &path)
+    let response = authenticated_request(pool, runtime, keystore_state, Method::POST, &path)
         .await?
         .json(&serde_json::json!({ "deviceId": input.device_id }))
         .send()
@@ -1033,7 +1034,7 @@ pub async fn issue_realtime_ticket(
 pub async fn rotate_room_key(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: RotateRoomKeyInput,
 ) -> CollaborationResult<()> {
     validate_uuid(&input.room_id, "roomId")?;
@@ -1044,7 +1045,7 @@ pub async fn rotate_room_key(
     }
     validate_device_keys(&input.device_keys, &input.room_id, Some(input.key_epoch))?;
     let path = format!("/v1/rooms/{}/key-epoch", input.room_id);
-    let response = authenticated_request(pool, runtime, vault_state, Method::PUT, &path)
+    let response = authenticated_request(pool, runtime, keystore_state, Method::PUT, &path)
         .await?
         .json(&serde_json::json!({
             "keyEpoch": input.key_epoch,
@@ -1059,12 +1060,12 @@ pub async fn rotate_room_key(
 pub async fn get_snapshot(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: RoomInput,
 ) -> CollaborationResult<SnapshotResponse> {
     validate_uuid(&input.room_id, "roomId")?;
     let path = format!("/v1/rooms/{}/snapshot", input.room_id);
-    let response = authenticated_request(pool, runtime, vault_state, Method::GET, &path)
+    let response = authenticated_request(pool, runtime, keystore_state, Method::GET, &path)
         .await?
         .send()
         .await
@@ -1110,7 +1111,7 @@ pub async fn get_snapshot(
 pub async fn put_snapshot(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     input: PutSnapshotInput,
 ) -> CollaborationResult<PutSnapshotResponse> {
     validate_uuid(&input.room_id, "roomId")?;
@@ -1128,7 +1129,7 @@ pub async fn put_snapshot(
         ));
     }
     let path = format!("/v1/rooms/{}/snapshot", input.room_id);
-    let mut request = authenticated_request(pool, runtime, vault_state, Method::PUT, &path)
+    let mut request = authenticated_request(pool, runtime, keystore_state, Method::PUT, &path)
         .await?
         .header(CONTENT_TYPE, SNAPSHOT_CONTENT_TYPE)
         .body(bytes);
@@ -1155,10 +1156,10 @@ pub async fn put_snapshot(
 pub async fn create_invite(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<CreateInviteResponse> {
     let server_url = load_server_url(pool).await?;
-    let session = ensure_account_session(pool, runtime, vault_state).await?;
+    let session = ensure_account_session(pool, runtime, keystore_state).await?;
     let current_device: Option<String> =
         sqlx::query_scalar("SELECT device_id FROM collaboration_state WHERE id = 1")
             .fetch_one(pool)
@@ -1169,7 +1170,7 @@ pub async fn create_invite(
     let current_device = current_device.ok_or_else(|| {
         CollaborationError::invalid("set a device identity before creating an invite")
     })?;
-    let devices = list_devices(pool, runtime, vault_state).await?.devices;
+    let devices = list_devices(pool, runtime, keystore_state).await?.devices;
     if !devices
         .iter()
         .any(|device| device.device_id == current_device)
@@ -1283,12 +1284,12 @@ async fn fetch_client_config(server_url: &str) -> CollaborationResult<ClientConf
 async fn authenticated_request(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     method: Method,
     path: &str,
 ) -> CollaborationResult<reqwest::RequestBuilder> {
     let server_url = load_server_url(pool).await?;
-    let session = ensure_account_session(pool, runtime, vault_state).await?;
+    let session = ensure_account_session(pool, runtime, keystore_state).await?;
     Ok(http_client()?
         .request(method, format!("{server_url}{path}"))
         .bearer_auth(session.access_token))
@@ -1301,15 +1302,15 @@ async fn authenticated_request(
 pub async fn account_access_token(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<String> {
-    let session = ensure_account_session(pool, runtime, vault_state).await?;
+    let session = ensure_account_session(pool, runtime, keystore_state).await?;
     Ok(session.access_token)
 }
 
 /// Network-free check that a usable account session exists (valid or refreshable).
-pub async fn account_is_signed_in(pool: &SqlitePool, vault_state: &VaultState) -> bool {
-    match load_session(pool, vault_state).await {
+pub async fn account_is_signed_in(pool: &SqlitePool, keystore_state: &KeystoreState) -> bool {
+    match load_session(pool, keystore_state).await {
         Ok(Some(session)) => {
             session.expires_at > Utc::now().timestamp() || session.refresh_token.is_some()
         }
@@ -1320,10 +1321,10 @@ pub async fn account_is_signed_in(pool: &SqlitePool, vault_state: &VaultState) -
 async fn ensure_account_session(
     pool: &SqlitePool,
     runtime: &CollaborationRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<StoredSession> {
     let _guard = runtime.refresh_lock.lock().await;
-    let mut session = load_session(pool, vault_state).await?.ok_or_else(|| {
+    let mut session = load_session(pool, keystore_state).await?.ok_or_else(|| {
         CollaborationError::new(
             CollaborationErrorCode::AuthRequired,
             "sign in to your Luma account before continuing",
@@ -1396,7 +1397,7 @@ async fn ensure_account_session(
     }
     session.token_endpoint = config.token_endpoint;
     session.expires_at = now.saturating_add(token.expires_in.min(i64::MAX as u64) as i64);
-    save_session(pool, vault_state, &session).await?;
+    save_session(pool, keystore_state, &session).await?;
     Ok(session)
 }
 
@@ -1594,19 +1595,19 @@ fn subject_from_access_token(access_token: &str) -> CollaborationResult<String> 
 
 async fn save_session(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     session: &StoredSession,
 ) -> CollaborationResult<()> {
     let encoded = serde_json::to_string(session)
         .map_err(|_| CollaborationError::storage("could not serialize collaboration session"))?;
-    secret_set(pool, vault_state, SESSION_SECRET_ID, &encoded).await
+    secret_set(pool, keystore_state, SESSION_SECRET_ID, &encoded).await
 }
 
 async fn load_session(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> CollaborationResult<Option<StoredSession>> {
-    let Some(encoded) = secret_get(pool, vault_state, SESSION_SECRET_ID).await? else {
+    let Some(encoded) = secret_get(pool, keystore_state, SESSION_SECRET_ID).await? else {
         return Ok(None);
     };
     serde_json::from_str(&encoded)
@@ -1616,18 +1617,18 @@ async fn load_session(
 
 async fn secret_set(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     id: &str,
     secret: &str,
 ) -> CollaborationResult<()> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (pool, vault_state);
+        let _ = (pool, keystore_state);
         keychain_set(id, secret)
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        vault::store(pool, vault_state, VAULT_OWNER, id, "secret", secret)
+        keystore::store(pool, keystore_state, KEYSTORE_OWNER, id, "secret", secret)
             .await
             .map_err(|_| CollaborationError::storage("could not store collaboration secret"))
     }
@@ -1635,17 +1636,17 @@ async fn secret_set(
 
 async fn secret_get(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     id: &str,
 ) -> CollaborationResult<Option<Zeroizing<String>>> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (pool, vault_state);
+        let _ = (pool, keystore_state);
         keychain_get(id)
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        vault::load(pool, vault_state, VAULT_OWNER, id, "secret")
+        keystore::load(pool, keystore_state, KEYSTORE_OWNER, id, "secret")
             .await
             .map(|value| value.map(Zeroizing::new))
             .map_err(|_| CollaborationError::storage("could not load collaboration secret"))
@@ -1654,20 +1655,20 @@ async fn secret_get(
 
 async fn secret_delete(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     id: &str,
 ) -> CollaborationResult<()> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (pool, vault_state);
+        let _ = (pool, keystore_state);
         clear_keychain(id);
         Ok(())
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        let _ = vault_state;
-        sqlx::query("DELETE FROM vault_secrets WHERE owner_type = ?1 AND owner_id = ?2")
-            .bind(VAULT_OWNER)
+        let _ = keystore_state;
+        sqlx::query("DELETE FROM keystore_secrets WHERE owner_type = ?1 AND owner_id = ?2")
+            .bind(KEYSTORE_OWNER)
             .bind(id)
             .execute(pool)
             .await

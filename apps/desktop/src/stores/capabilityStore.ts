@@ -29,7 +29,7 @@ export type PlatformFeatures = {
   portForwarding: boolean;
   /** In-app self-updater. Mobile: false (store-managed updates). */
   updater: boolean;
-  /** Biometric vault unlock. Desktop: false; mobile: (future) true. */
+  /** Biometric keystore unlock. Desktop: false; mobile: (future) true. */
   biometrics: boolean;
   /** Custom window controls / title bar. Mobile: false. */
   windowControls: boolean;

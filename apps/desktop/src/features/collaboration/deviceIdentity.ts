@@ -33,7 +33,7 @@ let loading: Promise<LoadedDeviceIdentity> | null = null;
  * Return this device's collaboration identity, generating and persisting one on
  * first use. On first use a fresh ECDH-P256 keypair is created, exported, and
  * stored via `collab_set_device_identity` (the private key goes to the OS
- * credential store / encrypted vault). The imported private CryptoKey is cached
+ * credential store / encrypted keystore). The imported private CryptoKey is cached
  * for the process lifetime.
  */
 export function loadDeviceIdentity(): Promise<LoadedDeviceIdentity> {

@@ -10,7 +10,7 @@ use crate::collaboration::{
     RoomDeviceInput, RoomInput, RotateRoomKeyInput, SelfJoinResponse, SetDeviceIdentityInput,
     SetServerUrlInput, SnapshotResponse,
 };
-use crate::vault::VaultState;
+use crate::keystore::KeystoreState;
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -58,96 +58,96 @@ pub async fn collab_auth_start(
 pub async fn collab_auth_poll(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
 ) -> CollaborationResult<AuthPollResponse> {
-    collaboration::auth_poll(&state.pool, &runtime, &vault_state).await
+    collaboration::auth_poll(&state.pool, &runtime, &keystore_state).await
 }
 
 #[tauri::command]
 pub async fn collab_auth_status(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
 ) -> CollaborationResult<AuthStatusResponse> {
-    collaboration::auth_status(&state.pool, &runtime, &vault_state).await
+    collaboration::auth_status(&state.pool, &runtime, &keystore_state).await
 }
 
 #[tauri::command]
 pub async fn collab_auth_sign_out(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
 ) -> CollaborationResult<()> {
-    collaboration::auth_sign_out(&state.pool, &runtime, &vault_state).await
+    collaboration::auth_sign_out(&state.pool, &runtime, &keystore_state).await
 }
 
 #[tauri::command]
 pub async fn collab_get_device_identity(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
 ) -> CollaborationResult<Option<DeviceIdentity>> {
-    collaboration::get_device_identity(&state.pool, &vault_state).await
+    collaboration::get_device_identity(&state.pool, &keystore_state).await
 }
 
 #[tauri::command]
 pub async fn collab_set_device_identity(
     state: State<'_, AppState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: SetDeviceIdentityInput,
 ) -> CollaborationResult<()> {
-    collaboration::set_device_identity(&state.pool, &vault_state, input).await
+    collaboration::set_device_identity(&state.pool, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_register_device(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: RegisterDeviceInput,
 ) -> CollaborationResult<()> {
-    collaboration::register_device(&state.pool, &runtime, &vault_state, input).await
+    collaboration::register_device(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_list_devices(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
 ) -> CollaborationResult<DevicesResponse> {
-    collaboration::list_devices(&state.pool, &runtime, &vault_state).await
+    collaboration::list_devices(&state.pool, &runtime, &keystore_state).await
 }
 
 #[tauri::command]
 pub async fn collab_create_room(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: CreateRoomInput,
 ) -> CollaborationResult<CreateRoomResponse> {
-    collaboration::create_room(&state.pool, &runtime, &vault_state, input).await
+    collaboration::create_room(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_add_room_member(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: AddRoomMemberInput,
 ) -> CollaborationResult<AddRoomMemberResponse> {
-    collaboration::add_room_member(&state.pool, &runtime, &vault_state, input).await
+    collaboration::add_room_member(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_mint_room_capability(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: MintRoomCapabilityInput,
 ) -> CollaborationResult<MintCapabilityResponse> {
     collaboration::mint_room_capability(
         &state.pool,
         &runtime,
-        &vault_state,
+        &keystore_state,
         &input.room_id,
         &input.role,
         input.ttl_seconds,
@@ -159,13 +159,13 @@ pub async fn collab_mint_room_capability(
 pub async fn collab_join_room_with_capability(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: JoinRoomWithCapabilityInput,
 ) -> CollaborationResult<SelfJoinResponse> {
     collaboration::join_room_with_capability(
         &state.pool,
         &runtime,
-        &vault_state,
+        &keystore_state,
         &input.room_id,
         &input.secret,
         &input.device_id,
@@ -178,59 +178,59 @@ pub async fn collab_join_room_with_capability(
 pub async fn collab_get_room(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: RoomDeviceInput,
 ) -> CollaborationResult<RoomDetailsResponse> {
-    collaboration::get_room(&state.pool, &runtime, &vault_state, input).await
+    collaboration::get_room(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_issue_realtime_ticket(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: RoomDeviceInput,
 ) -> CollaborationResult<RealtimeTicketResponse> {
-    collaboration::issue_realtime_ticket(&state.pool, &runtime, &vault_state, input).await
+    collaboration::issue_realtime_ticket(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_rotate_room_key(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: RotateRoomKeyInput,
 ) -> CollaborationResult<()> {
-    collaboration::rotate_room_key(&state.pool, &runtime, &vault_state, input).await
+    collaboration::rotate_room_key(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_get_snapshot(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: RoomInput,
 ) -> CollaborationResult<SnapshotResponse> {
-    collaboration::get_snapshot(&state.pool, &runtime, &vault_state, input).await
+    collaboration::get_snapshot(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_put_snapshot(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     input: PutSnapshotInput,
 ) -> CollaborationResult<PutSnapshotResponse> {
-    collaboration::put_snapshot(&state.pool, &runtime, &vault_state, input).await
+    collaboration::put_snapshot(&state.pool, &runtime, &keystore_state, input).await
 }
 
 #[tauri::command]
 pub async fn collab_create_invite(
     state: State<'_, AppState>,
     runtime: State<'_, CollaborationRuntimeState>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
 ) -> CollaborationResult<CreateInviteResponse> {
-    collaboration::create_invite(&state.pool, &runtime, &vault_state).await
+    collaboration::create_invite(&state.pool, &runtime, &keystore_state).await
 }
 
 #[tauri::command]

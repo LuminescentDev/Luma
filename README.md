@@ -7,8 +7,9 @@ A lightweight, cross-platform terminal and SSH client for Windows, macOS,
 Linux, iOS, and Android, built with Tauri instead of Electron.
 
 Luma combines local and serial terminals, saved SSH connections, SFTP, and
-encrypted configuration sync in a modern interface. It requires no Luma
-account or paid cloud service.
+encrypted configuration sync in a modern interface. Local use requires no
+account. You can bring your own sync provider or sign in for optional Luma
+Cloud sync.
 
 > **Status: early development.** Most core workflows are implemented, but the
 > project has not reached a stable release. Expect rough edges and breaking
@@ -40,7 +41,7 @@ account or paid cloud service.
 - ProxyJump, keepalive, startup commands, working directories, and per-host
   environment variables
 - Explicit unknown-host confirmation and changed-host-key warnings
-- Import from OpenSSH config and Termius vault exports
+- Import from OpenSSH config, Tabby, and Electerm
 - Parsed connection errors with reconnect support
 
 ### SFTP and productivity
@@ -197,12 +198,20 @@ The Termius export and benchmark helpers are documented in
 Join the [Luma Discord server](https://discord.gg/ebJVw3pXm6) for help,
 questions, and project discussion.
 
+The source code, issue tracker, and releases are available in the
+[Luma GitHub repository](https://github.com/bwmp-dev/Luma).
+
 ## Releases
 
 Release Please manages versions, changelogs, tags, and draft GitHub releases
 from Conventional Commits. Release workflows build installers for Windows,
 macOS, and Linux, sign updater artifacts, generate checksums, and publish the
 release after verification.
+
+WinGet, AUR, Homebrew, Snap, and direct Flatpak packaging is maintained under
+[`packaging/`](packaging/README.md). Channel manifests are generated from the
+published GitHub release and its checksums, then validated or published through
+the manually dispatched distribution workflow.
 
 The updater values in the checked-in Tauri configuration are CI placeholders.
 A local production bundle must provide its own valid updater endpoint and

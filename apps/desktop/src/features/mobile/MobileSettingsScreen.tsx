@@ -4,8 +4,9 @@ import { useTheme } from "../../hooks/useTheme";
 import { SETTING_KEYS, type ThemeMode } from "../../types";
 import { cn } from "../../lib/utils";
 import { AppearanceSection } from "../settings/AppearanceSection";
-import { SyncSection } from "../sync/SyncSection";
+import { PersonalVaultSyncSection } from "../sync/SyncSection";
 import { BackupSection } from "../sync/BackupSection";
+import { PERSONAL_VAULT_ID } from "../../lib/vaults";
 import { AccountSection } from "../account/AccountSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
 
@@ -108,7 +109,7 @@ export function MobileSettingsScreen() {
         </Section>
 
         <Section title="Sync">
-          <SyncSection />
+          <PersonalVaultSyncSection />
         </Section>
 
         <Section title="Collaboration">
@@ -116,7 +117,7 @@ export function MobileSettingsScreen() {
         </Section>
 
         <Section title="Encrypted backup">
-          <BackupSection />
+          <BackupSection vaultId={PERSONAL_VAULT_ID} />
         </Section>
 
         <Section title="About">

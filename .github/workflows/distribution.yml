@@ -1,0 +1,256 @@
+name: Distribution packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published Luma version without the v prefix
+        required: true
+        type: string
+      build_flatpak:
+        description: Build a directly distributable Flatpak bundle
+        required: true
+        default: true
+        type: boolean
+      build_snap:
+        description: Build a Snap for manual Store upload
+        required: true
+        default: true
+        type: boolean
+      publish_snap:
+        description: Publish the built Snap to the edge channel
+        required: true
+        default: false
+        type: boolean
+      publish_aur:
+        description: Push luma-bin to its existing AUR repository
+        required: true
+        default: false
+        type: boolean
+      publish_homebrew:
+        description: Push the cask to bwmp-dev/homebrew-tap
+        required: true
+        default: false
+        type: boolean
+      publish_winget:
+        description: Submit an update after BWMP.Luma has been accepted
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  manifests:
+    name: Generate and validate manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Generate manifests from the published release
+        run: node scripts/update-distribution-manifests.mjs "${{ inputs.version }}"
+
+      - name: Report manifest drift
+        run: |
+          if test -n "$(git status --porcelain -- packaging)"; then
+            echo "::notice::Generated manifests differ from the committed copies. Download the manifest artifact and commit the update."
+          fi
+
+      - name: Validate metadata formats
+        run: |
+          python - <<'PY'
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          ET.parse("packaging/flatpak/dev.bwmp.luma.metainfo.xml")
+          required = [
+              "packaging/aur/PKGBUILD",
+              "packaging/aur/.SRCINFO",
+              "packaging/homebrew/Casks/luma.rb",
+              "packaging/snap/snapcraft.yaml",
+              "packaging/flatpak/dev.bwmp.luma.yml",
+          ]
+          for path in required:
+              if not pathlib.Path(path).is_file():
+                  raise SystemExit(f"missing {path}")
+          PY
+
+      - name: Upload channel manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: luma-${{ inputs.version }}-distribution-manifests
+          path: packaging
+
+  flatpak:
+    name: Build Flatpak
+    if: inputs.build_flatpak
+    needs: manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: node scripts/update-distribution-manifests.mjs "${{ inputs.version }}"
+
+      - name: Install Flatpak tooling and runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --user flathub org.gnome.Platform//49 org.gnome.Sdk//49
+
+      - name: Build and bundle
+        run: |
+          flatpak-builder --force-clean --repo=flatpak-repo build-flatpak packaging/flatpak/dev.bwmp.luma.yml
+          flatpak build-bundle flatpak-repo "Luma-${{ inputs.version }}.flatpak" dev.bwmp.luma
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luma-${{ inputs.version }}-flatpak
+          path: Luma-${{ inputs.version }}.flatpak
+
+  snap:
+    name: Build Snap
+    if: inputs.build_snap || inputs.publish_snap
+    needs: manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: node scripts/update-distribution-manifests.mjs "${{ inputs.version }}"
+
+      - name: Build Snap
+        uses: snapcore/action-build@v1
+        id: snapcraft
+        with:
+          path: packaging/snap
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luma-${{ inputs.version }}-snap
+          path: ${{ steps.snapcraft.outputs.snap }}
+
+      - name: Publish Snap to edge
+        if: inputs.publish_snap
+        uses: snapcore/action-publish@v1
+        with:
+          store_login: ${{ secrets.SNAPCRAFT_STORE_LOGIN }}
+          snap: ${{ steps.snapcraft.outputs.snap }}
+          release: edge
+
+  aur:
+    name: Publish AUR package
+    if: inputs.publish_aur
+    needs: manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: node scripts/update-distribution-manifests.mjs "${{ inputs.version }}"
+
+      - name: Configure AUR authentication
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -H aur.archlinux.org >> "$HOME/.ssh/known_hosts"
+          cat >> "$HOME/.ssh/config" <<'EOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            IdentitiesOnly yes
+          EOF
+
+      - name: Push luma-bin
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          git clone ssh://aur@aur.archlinux.org/luma-bin.git "$RUNNER_TEMP/luma-bin"
+          cp packaging/aur/PKGBUILD packaging/aur/.SRCINFO "$RUNNER_TEMP/luma-bin/"
+          cd "$RUNNER_TEMP/luma-bin"
+          git config user.name "Luma release automation"
+          git config user.email "luma@bwmp.dev"
+          if test -z "$(git status --porcelain)"; then
+            echo "AUR package is already current"
+            exit 0
+          fi
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to ${PACKAGE_VERSION}"
+          git push
+
+  homebrew:
+    name: Publish Homebrew cask
+    if: inputs.publish_homebrew
+    needs: manifests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: node scripts/update-distribution-manifests.mjs "${{ inputs.version }}"
+
+      - name: Audit cask
+        run: brew audit --cask --strict packaging/homebrew/Casks/luma.rb
+
+      - name: Push cask to the tap
+        env:
+          GH_TOKEN: ${{ secrets.DISTRIBUTION_GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          gh auth setup-git
+          gh repo clone bwmp-dev/homebrew-tap "$RUNNER_TEMP/homebrew-tap"
+          mkdir -p "$RUNNER_TEMP/homebrew-tap/Casks"
+          cp packaging/homebrew/Casks/luma.rb "$RUNNER_TEMP/homebrew-tap/Casks/luma.rb"
+          cd "$RUNNER_TEMP/homebrew-tap"
+          git config user.name "Luma release automation"
+          git config user.email "luma@bwmp.dev"
+          if test -z "$(git status --porcelain)"; then
+            echo "Homebrew cask is already current"
+            exit 0
+          fi
+          git add Casks/luma.rb
+          git commit -m "Update Luma to ${PACKAGE_VERSION}"
+          git push
+
+  winget:
+    name: Submit WinGet update
+    if: inputs.publish_winget
+    needs: manifests
+    runs-on: windows-2025
+    steps:
+      - name: Download WinGetCreate
+        shell: pwsh
+        run: Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Submit update
+        shell: pwsh
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_CREATE_GITHUB_TOKEN }}
+          PACKAGE_VERSION: ${{ inputs.version }}
+        run: |
+          $url = "https://github.com/bwmp-dev/Luma/releases/download/v$env:PACKAGE_VERSION/Luma_$env:PACKAGE_VERSION`_x64-setup.exe"
+          .\wingetcreate.exe update BWMP.Luma `
+            --urls $url `
+            --version $env:PACKAGE_VERSION `
+            --token $env:WINGET_CREATE_GITHUB_TOKEN `
+            --submit

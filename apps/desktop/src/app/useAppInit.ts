@@ -28,6 +28,7 @@ import {
   type JoinLinkPayload,
 } from "../lib/collab";
 import { joinRoomByCapability } from "../features/collaboration/collabClient";
+import { parseVaultJoinLink } from "../lib/vaults";
 import { hasPlatformModifier } from "../lib/platform";
 
 /**
@@ -91,6 +92,26 @@ async function handleJoinDeepLink(url: string): Promise<void> {
 }
 
 /**
+ * Handle a `luma://vault?…` vault-join deep link by opening the join dialog
+ * prefilled with the remote it names. A link is not access on its own: the
+ * passphrase (and any provider credentials) are still typed by hand, so nothing
+ * is joined without a deliberate action.
+ */
+function handleVaultDeepLink(url: string): boolean {
+  const ui = useUiStore.getState();
+  try {
+    const link = parseVaultJoinLink(url);
+    if (!link) return false;
+    ui.openVaultJoin(link);
+  } catch {
+    // Malformed vault link: open the dialog empty rather than silently ignoring
+    // it, so the user can paste a corrected one.
+    ui.openVaultJoin();
+  }
+  return true;
+}
+
+/**
  * Shared application initialization, extracted from Layout so both the desktop
  * and mobile shells run exactly the same startup wiring: terminal config, theme,
  * latency monitor, tunnel/template/keymap/style hydration, workspace restore, the
@@ -129,13 +150,14 @@ export function useAppInit(): void {
     useCollabStore.getState().wire();
   }, []);
 
-  // Subscribe once to `luma://join?t=…` capability deep links delivered as a
-  // window event, cleaning up the listener on unmount.
+  // Subscribe once to `luma://…` deep links delivered as a window event,
+  // cleaning up the listener on unmount.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     void (async () => {
       const un = await getCurrentWindow().listen<string>("deep-link", (event) => {
+        if (handleVaultDeepLink(event.payload)) return;
         void handleJoinDeepLink(event.payload);
       });
       if (cancelled) un();

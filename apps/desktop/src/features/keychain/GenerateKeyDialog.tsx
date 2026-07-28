@@ -3,7 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Check, Copy, Fingerprint, KeyRound, Loader2 } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import {
-  generateVaultSshKey,
+  generateKeystoreSshKey,
   parseLumaError,
   type GeneratedKeyType,
   type KeyReference,
@@ -21,17 +21,19 @@ const KEY_TYPES: { value: GeneratedKeyType; label: string; hint: string }[] = [
 ];
 
 /*
- * Generate a new SSH key pair into the encrypted vault (ssh_key_generate). The
- * whole keychain screen is already gated on an unlocked vault (VaultGate), so
+ * Generate a new SSH key pair into the encrypted keystore (ssh_key_generate). The
+ * whole keychain screen is already gated on an unlocked keystore (KeystoreGate), so
  * generation inherits that gate. On success the derived public key + fingerprint
  * are shown for copying; the key list is invalidated so it appears immediately.
  */
 export function GenerateKeyDialog({
   open,
   onOpenChange,
+  vaultId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  vaultId: string;
 }) {
   const invalidate = useInvalidateHosts();
   const [draft, setDraft] = useState<GenerateKeyDraft>(emptyGenerateKeyDraft);
@@ -39,7 +41,8 @@ export function GenerateKeyDialog({
 
   const generate = useMutation({
     mutationFn: (value: GenerateKeyDraft) =>
-      generateVaultSshKey({
+      generateKeystoreSshKey({
+        vaultId,
         keyType: value.keyType,
         name: value.name.trim(),
         passphrase: value.passphrase || null,
@@ -78,7 +81,7 @@ export function GenerateKeyDialog({
       open={open}
       onOpenChange={close}
       title="Generate SSH key"
-      description="Creates a new key pair stored in your encrypted vault."
+      description="Creates a new key pair stored in your encrypted keystore."
       size="md"
       footer={
         result ? (
@@ -214,7 +217,7 @@ function GeneratedKeyResult({ keyRef }: { keyRef: KeyReference }) {
         <KeyRound size={15} className="shrink-0 text-accent" />
         <span className="min-w-0 truncate">
           <span className="font-medium">{keyRef.name}</span> generated and stored in
-          your vault.
+          your keystore.
         </span>
       </div>
       {keyRef.fingerprint && (

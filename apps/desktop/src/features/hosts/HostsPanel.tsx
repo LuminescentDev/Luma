@@ -14,8 +14,10 @@ import {
   Pencil,
   Plus,
   Server,
+  ShieldAlert,
   Star,
   Trash2,
+  Vault as VaultIcon,
 } from "lucide-react";
 import { useSessionStore } from "../../stores/sessionStore";
 import {
@@ -48,6 +50,9 @@ import { PortForwardsDialog } from "../portForwards/PortForwardsDialog";
 import { useUiStore } from "../../stores/uiStore";
 import { useTunnelStore } from "../../stores/tunnelStore";
 import { useCapabilityStore } from "../../stores/capabilityStore";
+import { useVaultStore } from "../../stores/vaultStore";
+import { useVaults } from "../../hooks/useVaults";
+import { PERSONAL_VAULT_ID, type Vault } from "../../lib/vaults";
 
 function matchesQuery(host: Host, q: string): boolean {
   if (!q) return true;
@@ -92,6 +97,20 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
     [hosts, liveHostOs],
   );
   const allGroups = groups ?? [];
+
+  const { data: vaults } = useVaults();
+  const activeVaultId = useVaultStore((s) => s.activeVaultId);
+  const setActiveVault = useVaultStore((s) => s.setActiveVault);
+  const vaultList = vaults ?? [];
+  // With a single vault there is nothing to choose between, so the vault level is
+  // skipped entirely and browsing starts inside it. Falling back this way also
+  // recovers from an activeVaultId left pointing at a deleted vault.
+  const multiVault = vaultList.length > 1;
+  const activeVault =
+    vaultList.find((vault) => vault.id === activeVaultId) ??
+    (multiVault ? null : vaultList[0] ?? null);
+  const vaultId = activeVault?.id ?? null;
+  const atVaultRoot = multiVault && !activeVault;
 
   const [query, setQuery] = useState("");
   const [currentGroupId, setCurrentGroupId] = useState<string | null>(null);
@@ -178,36 +197,78 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
     setEditorOpen(true);
   };
 
-  const searching = query.trim().length > 0;
-  const filtered = allHosts.filter((h) => matchesQuery(h, query.trim()));
+  // Everything below the vault level is scoped to one vault, so a group tree, a
+  // reference picker and a drag target can never span two of them.
+  const scopedHosts = vaultId ? allHosts.filter((h) => h.vaultId === vaultId) : allHosts;
+  const scopedGroups = vaultId ? allGroups.filter((g) => g.vaultId === vaultId) : allGroups;
+  const scopedKeys = (keyReferences ?? []).filter((k) => !vaultId || k.vaultId === vaultId);
 
+  const searching = query.trim().length > 0;
+  const filtered = scopedHosts.filter((h) => matchesQuery(h, query.trim()));
+
+  // A group id left over from another vault must not survive a vault switch.
   const currentGroup = currentGroupId
-    ? allGroups.find((group) => group.id === currentGroupId) ?? null
+    ? scopedGroups.find((group) => group.id === currentGroupId) ?? null
     : null;
-  const childGroups = allGroups.filter((group) => group.parentId === currentGroupId);
-  const visibleGroupIds = currentGroupId
-    ? descendantGroupIds(currentGroupId, allGroups)
-    : null;
+  const groupId = currentGroup?.id ?? null;
+  const childGroups = scopedGroups.filter((group) => group.parentId === groupId);
+  const visibleGroupIds = groupId ? descendantGroupIds(groupId, scopedGroups) : null;
   const visibleHosts = visibleGroupIds
-    ? allHosts.filter((host) => host.groupId !== null && visibleGroupIds.has(host.groupId))
-    : allHosts;
-  const breadcrumbs = currentGroup ? groupPath(currentGroup, allGroups) : [];
+    ? scopedHosts.filter((host) => host.groupId !== null && visibleGroupIds.has(host.groupId))
+    : scopedHosts;
+  const breadcrumbs = currentGroup ? groupPath(currentGroup, scopedGroups) : [];
+
+  // Editing an existing host is scoped to *its* vault rather than the browsed
+  // one, so a reference can never be picked from a vault the host is not in.
+  // Creating from the vault root has no browsed vault, and an unscoped picker
+  // would let a reference cross vaults — so it falls back to personal.
+  const editorVaultId = editorHost?.vaultId ?? vaultId ?? PERSONAL_VAULT_ID;
+  const inEditorVault = <T extends { vaultId: string }>(items: T[]) =>
+    items.filter((item) => item.vaultId === editorVaultId);
+  const editorVaultHosts = inEditorVault(allHosts);
+  const editorVaultGroups = inEditorVault(allGroups);
+  const editorVaultKeys = inEditorVault(keyReferences ?? []);
+  const editorVaultIdentities = inEditorVault(identities ?? []);
+  const groupDialogVaultId = groupDialogGroup?.vaultId ?? vaultId ?? PERSONAL_VAULT_ID;
+  const vaultNameById = new Map(vaultList.map((vault) => [vault.id, vault.name]));
+  const editorVaultName = vaultNameById.get(editorVaultId);
+
+  const openVault = (id: string | null) => {
+    setActiveVault(id);
+    setCurrentGroupId(null);
+    setSelectedHostIds(new Set());
+  };
 
   const startHostDrag = (event: React.DragEvent, host: Host) => {
-    const ids = selectedHostIds.has(host.id) ? [...selectedHostIds] : [host.id];
+    // A group belongs to exactly one vault, so a drag that started from a
+    // cross-vault selection (only reachable while searching from the vault list)
+    // carries just the hosts that share the dragged host's vault.
+    const byId = new Map(allHosts.map((candidate) => [candidate.id, candidate]));
+    const ids = selectedHostIds.has(host.id)
+      ? [...selectedHostIds].filter((id) => byId.get(id)?.vaultId === host.vaultId)
+      : [host.id];
     if (!selectedHostIds.has(host.id)) setSelectedHostIds(new Set([host.id]));
     setDraggingHostIds(ids);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/x-luma-hosts", JSON.stringify(ids));
     event.dataTransfer.setData("text/plain", `${ids.length} host${ids.length === 1 ? "" : "s"}`);
   };
-  const dropHosts = (event: React.DragEvent, groupId: string | null) => {
+  const dropHosts = (event: React.DragEvent, targetGroupId: string | null) => {
     event.preventDefault();
     const raw = event.dataTransfer.getData("application/x-luma-hosts");
     let ids = draggingHostIds;
     try { if (raw) ids = JSON.parse(raw) as string[]; } catch { /* use in-memory drag */ }
     setDropTargetId(undefined);
-    if (ids.length > 0) moveHosts.mutate({ ids, groupId });
+    // Dropping never changes a host's vault: moving one across vaults would have
+    // to re-key its secrets under the target's key, so it is not a drag gesture.
+    const targetVaultId = targetGroupId
+      ? allGroups.find((group) => group.id === targetGroupId)?.vaultId
+      : null;
+    const byId = new Map(allHosts.map((host) => [host.id, host]));
+    const movable = targetVaultId
+      ? ids.filter((id) => byId.get(id)?.vaultId === targetVaultId)
+      : ids;
+    if (movable.length > 0) moveHosts.mutate({ ids: movable, groupId: targetGroupId });
   };
 
   const rowProps = {
@@ -222,8 +283,14 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
     runningByHost,
     selectedHostIds,
     onSelect: (host: Host, additive: boolean) => setSelectedHostIds((previous) => {
-      const next = additive ? new Set(previous) : new Set<string>();
-      if (additive && next.has(host.id)) next.delete(host.id); else next.add(host.id);
+      // A selection stays within one vault: the actions it feeds (move, and any
+      // future bulk edit) are vault-scoped, so extending across one restarts it.
+      const byId = new Map(allHosts.map((candidate) => [candidate.id, candidate]));
+      const sameVault = additive && [...previous].every(
+        (id) => byId.get(id)?.vaultId === host.vaultId,
+      );
+      const next = sameVault ? new Set(previous) : new Set<string>();
+      if (sameVault && next.has(host.id)) next.delete(host.id); else next.add(host.id);
       return next;
     }),
     onDragStart: startHostDrag,
@@ -245,7 +312,9 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
         <button
           type="button"
           onClick={() => openEditor(null)}
-          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:brightness-110"
+          disabled={atVaultRoot}
+          title={atVaultRoot ? "Open a vault first — a host belongs to exactly one." : undefined}
+          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:brightness-110 disabled:opacity-50 disabled:hover:brightness-100"
         >
           <Plus size={14} /> Add host
         </button>
@@ -273,6 +342,7 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
               </MenuItem>
               <MenuItem
                 icon={<FolderPlus size={14} />}
+                disabled={atVaultRoot}
                 onSelect={() => {
                   setGroupDialogGroup(null);
                   setGroupDialogOpen(true);
@@ -282,6 +352,7 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
               </MenuItem>
               <MenuItem
                 icon={<DownloadCloud size={14} />}
+                disabled={atVaultRoot}
                 onSelect={() => setImportOpen(true)}
               >
                 Import hosts…
@@ -291,7 +362,7 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
         </DropdownMenu.Root>
       </div>
 
-      {allHosts.length === 0 && allGroups.length === 0 ? (
+      {!atVaultRoot && scopedHosts.length === 0 && scopedGroups.length === 0 ? (
         <EmptyHosts
           onAdd={() => openEditor(null)}
           onImport={() => setImportOpen(true)}
@@ -302,18 +373,30 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
             <p className="px-1 py-2 text-xs text-muted">No matching hosts.</p>
           ) : (
             filtered.map((host) => (
-              <HostRow key={host.id} host={host} {...rowProps} />
+              <HostRow
+                key={host.id}
+                host={host}
+                vaultName={atVaultRoot ? vaultNameById.get(host.vaultId) : undefined}
+                {...rowProps}
+              />
             ))
           )}
         </div>
       ) : (
         <div className="space-y-6" onClick={(event) => { if (event.target === event.currentTarget) setSelectedHostIds(new Set()); }}>
-          <nav className="flex items-center gap-1 text-sm text-muted" aria-label="Group path">
-            <button type="button" onClick={() => setCurrentGroupId(null)} onDragOver={(e) => { if (draggingHostIds.length) { e.preventDefault(); setDropTargetId(null); } }} onDrop={(e) => dropHosts(e, null)} className={cn("flex items-center gap-1 rounded-md px-2 py-1 hover:bg-raised hover:text-foreground", dropTargetId === null && "bg-accent/15 text-accent")}><Home size={14} /> Hosts</button>
+          <nav className="flex items-center gap-1 text-sm text-muted" aria-label="Vault and group path">
+            <button type="button" onClick={() => (multiVault ? openVault(null) : setCurrentGroupId(null))} onDragOver={(e) => { if (!multiVault && draggingHostIds.length) { e.preventDefault(); setDropTargetId(null); } }} onDrop={(e) => { if (!multiVault) dropHosts(e, null); }} className={cn("flex items-center gap-1 rounded-md px-2 py-1 hover:bg-raised hover:text-foreground", !multiVault && dropTargetId === null && "bg-accent/15 text-accent")}><Home size={14} /> Hosts</button>
+            {multiVault && activeVault && <span className="flex items-center gap-1"><ChevronRight size={13} /><button type="button" onClick={() => setCurrentGroupId(null)} onDragOver={(e) => { if (draggingHostIds.length) { e.preventDefault(); setDropTargetId(null); } }} onDrop={(e) => dropHosts(e, null)} className={cn("rounded-md px-2 py-1 hover:bg-raised hover:text-foreground", dropTargetId === null && "bg-accent/15 text-accent")}>{activeVault.name}</button></span>}
             {breadcrumbs.map((group) => <span key={group.id} className="flex items-center gap-1"><ChevronRight size={13} /><button type="button" onClick={() => setCurrentGroupId(group.id)} className="rounded-md px-2 py-1 hover:bg-raised hover:text-foreground">{group.name}</button></span>)}
           </nav>
-          {childGroups.length > 0 && <section><h2 className="mb-3 text-sm font-semibold">Folders</h2><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{childGroups.map((group) => <FolderCard key={group.id} group={group} groups={allGroups} hosts={allHosts} active={dropTargetId === group.id} onOpen={() => { setCurrentGroupId(group.id); setSelectedHostIds(new Set()); }} onDragOver={(e) => { if (draggingHostIds.length) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDropTargetId(group.id); } }} onDragLeave={() => setDropTargetId(undefined)} onDrop={(e) => dropHosts(e, group.id)} onRename={() => { setGroupDialogGroup(group); setGroupDialogOpen(true); }} onDelete={() => setDeletingGroup(group)} />)}</div></section>}
-          <Section title={currentGroup ? "Hosts in this folder and subfolders" : "All hosts"}>{visibleHosts.length ? visibleHosts.map((host) => <HostRow key={host.id} host={host} {...rowProps} />) : <p className="col-span-full rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">This folder is empty. Drag hosts here to add them.</p>}</Section>
+          {atVaultRoot ? (
+            <Section title="Vaults">{vaultList.map((vault) => <VaultCard key={vault.id} vault={vault} hosts={allHosts} groups={allGroups} onOpen={() => openVault(vault.id)} />)}</Section>
+          ) : (
+            <>
+              {childGroups.length > 0 && <section><h2 className="mb-3 text-sm font-semibold">Folders</h2><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{childGroups.map((group) => <FolderCard key={group.id} group={group} groups={scopedGroups} hosts={scopedHosts} active={dropTargetId === group.id} onOpen={() => { setCurrentGroupId(group.id); setSelectedHostIds(new Set()); }} onDragOver={(e) => { if (draggingHostIds.length) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDropTargetId(group.id); } }} onDragLeave={() => setDropTargetId(undefined)} onDrop={(e) => dropHosts(e, group.id)} onRename={() => { setGroupDialogGroup(group); setGroupDialogOpen(true); }} onDelete={() => setDeletingGroup(group)} />)}</div></section>}
+              <Section title={currentGroup ? "Hosts in this folder and subfolders" : "All hosts"}>{visibleHosts.length ? visibleHosts.map((host) => <HostRow key={host.id} host={host} {...rowProps} />) : <p className="col-span-full rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">This folder is empty. Drag hosts here to add them.</p>}</Section>
+            </>
+          )}
         </div>
       )}
 
@@ -321,16 +404,22 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
         open={editorOpen}
         onOpenChange={setEditorOpen}
         host={editorHost}
-        groups={allGroups}
-        initialGroupId={currentGroupId}
-        keyReferences={keyReferences ?? []}
-        identities={identities ?? []}
-        hosts={allHosts}
+        groups={editorVaultGroups}
+        initialGroupId={groupId}
+        keyReferences={editorVaultKeys}
+        identities={editorVaultIdentities}
+        hosts={editorVaultHosts}
         onManageKeys={() => onOpenKeychain ? onOpenKeychain() : setKeysOpen(true)}
+        vaultId={editorVaultId}
+        vaultName={multiVault ? editorVaultName : undefined}
       />
       {!onOpenKeychain && <KeyReferencesDialog open={keysOpen} onOpenChange={setKeysOpen} />}
-      {!onOpenKeychain && <IdentitiesDialog open={identitiesOpen} onOpenChange={setIdentitiesOpen} keys={keyReferences ?? []} onManageKeys={() => { setIdentitiesOpen(false); setKeysOpen(true); }} />}
-      <ImportDialog open={importOpen} onOpenChange={setImportOpen} />
+      {!onOpenKeychain && <IdentitiesDialog open={identitiesOpen} onOpenChange={setIdentitiesOpen} keys={scopedKeys} onManageKeys={() => { setIdentitiesOpen(false); setKeysOpen(true); }} />}
+      <ImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        vaultId={vaultId ?? PERSONAL_VAULT_ID}
+      />
       <PortForwardsDialog
         open={portForwardsHost !== null}
         onOpenChange={(o) => !o && setPortForwardsHost(null)}
@@ -340,8 +429,11 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
         open={groupDialogOpen}
         onOpenChange={setGroupDialogOpen}
         group={groupDialogGroup}
-        groups={allGroups}
-        initialParentId={currentGroupId}
+        groups={groupDialogVaultId
+          ? allGroups.filter((group) => group.vaultId === groupDialogVaultId)
+          : allGroups}
+        initialParentId={groupId}
+        vaultId={groupDialogVaultId}
       />
       <ConfirmDialog
         open={deletingHost !== null}
@@ -458,6 +550,49 @@ function descendantGroupIds(rootId: string, groups: HostGroup[]): Set<string> {
   return result;
 }
 
+/**
+ * A vault at the root of the hosts view. Not a drop target: a host cannot be
+ * dragged between vaults, because moving it would mean re-keying its secrets
+ * under the target vault's key.
+ */
+function VaultCard({ vault, hosts, groups, onOpen }: {
+  vault: Vault;
+  hosts: Host[];
+  groups: HostGroup[];
+  onOpen: () => void;
+}) {
+  const hostCount = hosts.filter((host) => host.vaultId === vault.id).length;
+  const groupCount = groups.filter((group) => group.vaultId === vault.id).length;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex items-center gap-3 rounded-xl bg-raised px-4 py-3 text-left transition-all hover:ring-1 hover:ring-accent"
+    >
+      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/20 text-accent">
+        <VaultIcon size={19} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          <span className="truncate text-sm font-semibold text-foreground">{vault.name}</span>
+          {vault.kind === "shared" && vault.shareSecrets && (
+            <span
+              title="Shares private keys and passwords with every member"
+              className="flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-400"
+            >
+              <ShieldAlert size={10} /> Secrets shared
+            </span>
+          )}
+        </span>
+        <span className="block text-xs text-muted">
+          {hostCount} host{hostCount === 1 ? "" : "s"}
+          {groupCount > 0 ? ` · ${groupCount} folder${groupCount === 1 ? "" : "s"}` : ""}
+        </span>
+      </span>
+    </button>
+  );
+}
+
 function FolderCard({ group, groups, hosts, active, onOpen, onRename, onDelete, ...dropProps }: {
   group: HostGroup;
   groups: HostGroup[];
@@ -505,6 +640,7 @@ function FolderCard({ group, groups, hosts, active, onOpen, onRename, onDelete, 
 
 function HostRow({
   host,
+  vaultName,
   onConnect,
   onEdit,
   onDuplicate,
@@ -518,6 +654,8 @@ function HostRow({
   onDragEnd,
 }: {
   host: Host;
+  /** Set only when the list spans vaults (searching from the vault root). */
+  vaultName?: string;
   onConnect: (host: Host) => void;
   onEdit: (host: Host) => void;
   onDuplicate: (host: Host) => void;
@@ -583,7 +721,7 @@ function HostRow({
             <Server size={18} />
           )}
         </span>
-        <span className="min-w-0 flex-1"><span className="block truncate font-semibold text-foreground">{host.name}</span><span className="block truncate text-xs text-muted">ssh, {host.username || host.hostname}</span></span>
+        <span className="min-w-0 flex-1"><span className="block truncate font-semibold text-foreground">{host.name}</span><span className="block truncate text-xs text-muted">ssh, {host.username || host.hostname}{vaultName ? ` · ${vaultName}` : ""}</span></span>
       </button>
 
       {runningTunnels > 0 && (
@@ -640,17 +778,20 @@ function MenuItem({
   children,
   onSelect,
   destructive,
+  disabled,
 }: {
   icon: React.ReactNode;
   children: React.ReactNode;
   onSelect: () => void;
   destructive?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <DropdownMenu.Item
       onSelect={onSelect}
+      disabled={disabled}
       className={cn(
-        "flex cursor-default items-center gap-2 rounded-md px-2.5 py-1.5 outline-none data-highlighted:bg-surface",
+        "flex cursor-default items-center gap-2 rounded-md px-2.5 py-1.5 outline-none data-highlighted:bg-surface data-disabled:opacity-50",
         destructive
           ? "text-danger data-highlighted:text-danger"
           : "data-highlighted:text-accent",

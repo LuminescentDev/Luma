@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Luma
+Comment=Free open-source terminal and SSH client
+Exec=luma
+Icon=dev.bwmp.luma
+Terminal=false
+Categories=Development;System;TerminalEmulator;
+MimeType=x-scheme-handler/luma;
+StartupWMClass=luma

@@ -13,10 +13,23 @@ export const HOST_GROUPS_KEY = ["host-groups"];
 export const KEY_REFERENCES_KEY = ["key-references"];
 export const IDENTITIES_KEY = ["identities"];
 
-export function useHosts() {
-  return useQuery({ queryKey: HOSTS_KEY, queryFn: listHosts, staleTime: 30_000 });
+/* Omitting vaultId lists across every vault; passing one *appends* it to the
+ * query key, so the bare-prefix invalidations below still match both. The query
+ * functions take an optional vaultId, so they are wrapped rather than passed
+ * directly: react-query would otherwise hand the query context to that
+ * parameter. */
+
+const scoped = (key: string[], vaultId?: string) => (vaultId ? [...key, vaultId] : key);
+
+export function useHosts(vaultId?: string) {
+  return useQuery({
+    queryKey: scoped(HOSTS_KEY, vaultId),
+    queryFn: () => listHosts(vaultId),
+    staleTime: 30_000,
+  });
 }
 
+/** Recents are per-device connection history, not vault-scoped. */
 export function useRecentHosts() {
   return useQuery({
     queryKey: RECENT_HOSTS_KEY,
@@ -25,22 +38,22 @@ export function useRecentHosts() {
   });
 }
 
-export function useHostGroups() {
+export function useHostGroups(vaultId?: string) {
   return useQuery({
-    queryKey: HOST_GROUPS_KEY,
-    queryFn: listHostGroups,
+    queryKey: scoped(HOST_GROUPS_KEY, vaultId),
+    queryFn: () => listHostGroups(vaultId),
     staleTime: 30_000,
   });
 }
 
-export function useKeyReferences() {
+export function useKeyReferences(vaultId?: string) {
   return useQuery({
-    queryKey: KEY_REFERENCES_KEY,
-    queryFn: listKeyReferences,
+    queryKey: scoped(KEY_REFERENCES_KEY, vaultId),
+    queryFn: () => listKeyReferences(vaultId),
     staleTime: 30_000,
   });
 }
-export function useIdentities() { return useQuery({ queryKey: IDENTITIES_KEY, queryFn: listIdentities, staleTime: 30_000 }); }
+export function useIdentities(vaultId?: string) { return useQuery({ queryKey: scoped(IDENTITIES_KEY, vaultId), queryFn: () => listIdentities(vaultId), staleTime: 30_000 }); }
 
 /** Invalidate every host-related query. Host mutations can touch groups
  * (unparenting), key references (clearing keyId), and recents. */

@@ -2,6 +2,7 @@ mod collaboration;
 mod commands;
 mod errors;
 mod import;
+mod keystore;
 mod logging;
 mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -15,7 +16,6 @@ mod storage;
 mod sync;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod terminal;
-mod vault;
 
 use std::path::PathBuf;
 
@@ -91,18 +91,18 @@ pub fn run() {
         if removed_ephemeral > 0 {
             tracing::info!(removed_ephemeral, "removed stale quick-connect hosts");
         }
-        let vault_state = vault::VaultState::new(&app_data_dir);
+        let keystore_state = keystore::KeystoreState::new(&app_data_dir);
         app.manage(AppState { pool, app_data_dir });
-        tauri::async_runtime::block_on(vault::try_device_unlock(
+        tauri::async_runtime::block_on(keystore::try_device_unlock(
             &app.state::<AppState>().pool,
-            &vault_state,
+            &keystore_state,
         ));
-        app.manage(vault_state);
+        app.manage(keystore_state);
         let sync_state = sync::SyncRuntimeState::default();
         tauri::async_runtime::block_on(sync::initialize(
             &app.state::<AppState>().pool,
             &sync_state,
-            &app.state::<vault::VaultState>(),
+            &app.state::<keystore::KeystoreState>(),
         ))?;
         app.manage(sync_state);
         app.manage(collaboration::CollaborationRuntimeState::default());
@@ -133,6 +133,11 @@ pub fn run() {
         commands::profile_create,
         commands::profile_update,
         commands::profile_delete,
+        commands::vaults_list,
+        commands::vault_get,
+        commands::vault_create,
+        commands::vault_update,
+        commands::vault_delete,
         commands::hosts_list,
         commands::host_get,
         commands::host_create,
@@ -211,11 +216,11 @@ pub fn run() {
         commands::serial_spawn,
         commands::serial_write,
         commands::serial_kill,
-        commands::vault_status,
-        commands::vault_setup,
-        commands::vault_unlock,
-        commands::vault_lock,
-        commands::vault_set_policy,
+        commands::keystore_status,
+        commands::keystore_setup,
+        commands::keystore_unlock,
+        commands::keystore_lock,
+        commands::keystore_set_policy,
         commands::export_encrypted,
         commands::import_preview,
         commands::import_apply,
@@ -241,6 +246,7 @@ pub fn run() {
         commands::collab_create_invite,
         commands::collab_parse_invite,
         commands::sync_get_config,
+        commands::sync_list_configs,
         commands::sync_configure,
         commands::sync_set_passphrase,
         commands::sync_disable,
@@ -254,6 +260,11 @@ pub fn run() {
         commands::settings_get_all,
         commands::settings_set,
         commands::settings_delete,
+        commands::vaults_list,
+        commands::vault_get,
+        commands::vault_create,
+        commands::vault_update,
+        commands::vault_delete,
         commands::hosts_list,
         commands::host_get,
         commands::host_create,
@@ -308,11 +319,11 @@ pub fn run() {
         commands::sftp_download,
         commands::sftp_cancel,
         commands::sftp_retry,
-        commands::vault_status,
-        commands::vault_setup,
-        commands::vault_unlock,
-        commands::vault_lock,
-        commands::vault_set_policy,
+        commands::keystore_status,
+        commands::keystore_setup,
+        commands::keystore_unlock,
+        commands::keystore_lock,
+        commands::keystore_set_policy,
         commands::export_encrypted,
         commands::import_preview,
         commands::import_apply,
@@ -338,6 +349,7 @@ pub fn run() {
         commands::collab_create_invite,
         commands::collab_parse_invite,
         commands::sync_get_config,
+        commands::sync_list_configs,
         commands::sync_configure,
         commands::sync_set_passphrase,
         commands::sync_disable,

@@ -3,6 +3,8 @@ import { useMutation } from "@tanstack/react-query";
 import { Modal } from "../../components/Modal";
 import { parseLumaError, quickConnectSave } from "../../lib/hosts";
 import { useInvalidateHosts } from "../../hooks/useHosts";
+import { useVaultLabel } from "../../hooks/useVaults";
+import { useCreationVaultId } from "../../stores/vaultStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import type { TerminalSession } from "../../types";
 
@@ -20,6 +22,8 @@ export function SaveHostDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const invalidate = useInvalidateHosts();
+  const vaultId = useCreationVaultId();
+  const vaultName = useVaultLabel(vaultId);
   const markHostSaved = useSessionStore((s) => s.markHostSaved);
   const [name, setName] = useState("");
 
@@ -30,7 +34,7 @@ export function SaveHostDialog({
 
   const save = useMutation({
     mutationFn: (input: { hostId: string; name: string }) =>
-      quickConnectSave(input.hostId, input.name.trim() || null),
+      quickConnectSave(input.hostId, input.name.trim() || null, vaultId),
     onSuccess: (host) => {
       invalidate();
       markHostSaved(host.id);
@@ -53,7 +57,7 @@ export function SaveHostDialog({
         onOpenChange(open);
       }}
       title="Save host"
-      description="Add this quick-connect target to your saved hosts."
+      description={`Add this quick-connect target to your saved hosts${vaultName ? ` in ${vaultName}` : ""}.`}
       size="sm"
       footer={
         <>

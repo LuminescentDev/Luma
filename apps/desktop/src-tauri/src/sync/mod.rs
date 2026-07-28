@@ -46,8 +46,9 @@ use sqlx::{Row, SqlitePool};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::errors::{LumaError, Result};
-use crate::storage::{host_groups, hosts, identities, key_references, settings, snippets};
-use crate::vault::{self, VaultState};
+use crate::keystore::{self, KeystoreState};
+use crate::storage::vaults::PERSONAL_VAULT_ID;
+use crate::storage::{host_groups, hosts, identities, key_references, settings, snippets, vaults};
 
 use providers::{
     GitHubGistProvider, LocalFolderProvider, LumaCloudProvider, SyncProvider, UploadResult,
@@ -78,23 +79,31 @@ const KEYCHAIN_LUMA_CLOUD_SESSION: &str = "luma-cloud-session";
 const MAX_OBJECTS_PER_TYPE: usize = 10_000;
 const MAX_ENCRYPTED_KEY_SECRETS: usize = MAX_OBJECTS_PER_TYPE * 2;
 const MAX_SYNC_SECRET_BYTES: usize = 1024 * 1024;
-const VAULT_KEY_OWNER_TYPE: &str = "key";
+const KEYSTORE_KEY_OWNER_TYPE: &str = "key";
 const PRIVATE_KEY_SECRET_TYPE: &str = "private-key";
 const PASSPHRASE_SECRET_TYPE: &str = "passphrase";
 const IDENTITY_PASSWORD_SECRET_TYPE: &str = "password";
 pub(crate) const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
 
+/// Per-vault sync runtime. Each vault has its own passphrase and its own
+/// pending-conflict set, so one vault stalling on a conflict never blocks
+/// another. Nothing here is persisted: the passphrase lives in memory (and, if
+/// the user asked for it, the OS keychain) and never in SQLite.
+#[derive(Default)]
 pub struct SyncRuntimeState {
-    passphrase: Mutex<Option<Zeroizing<String>>>,
-    pending: Mutex<Option<PendingSync>>,
+    passphrase: Mutex<HashMap<String, Zeroizing<String>>>,
+    pending: Mutex<HashMap<String, PendingSync>>,
 }
 
-impl Default for SyncRuntimeState {
-    fn default() -> Self {
-        Self {
-            passphrase: Mutex::new(None),
-            pending: Mutex::new(None),
-        }
+/// Keychain account for a vault's credential. The personal vault keeps the bare
+/// account names so credentials stored before vaults existed are still found.
+/// `@` cannot appear in the base names or in the `:chunk:{n}` suffix that
+/// `split_keychain_secret` appends, so the namespaces cannot alias.
+fn vault_account(account: &str, vault_id: &str) -> String {
+    if vault_id == PERSONAL_VAULT_ID {
+        account.to_string()
+    } else {
+        format!("{account}@{vault_id}")
     }
 }
 
@@ -309,6 +318,7 @@ pub struct SyncConfigureInput {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncConfig {
+    pub vault_id: String,
     pub enabled: bool,
     pub provider: Option<String>,
     pub folder_path: Option<String>,
@@ -405,32 +415,40 @@ struct PreparedRemoteSecrets {
 pub async fn initialize(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO sync_state (id, device_id, provider, last_synced_at, state)
-         VALUES (1, ?1, NULL, NULL, NULL)
+        "INSERT INTO device_state (id, device_id) VALUES (1, ?1)
          ON CONFLICT(id) DO NOTHING",
     )
     .bind(uuid::Uuid::new_v4().to_string())
     .execute(pool)
     .await?;
 
-    if let Ok(passphrase) = credential_get(pool, vault_state, KEYCHAIN_PASSPHRASE).await {
-        *runtime.passphrase.lock().unwrap() = Some(Zeroizing::new(passphrase));
+    for vault in vaults::list(pool).await? {
+        let account = vault_account(KEYCHAIN_PASSPHRASE, &vault.id);
+        if let Ok(passphrase) = credential_get(pool, keystore_state, &account).await {
+            runtime
+                .passphrase
+                .lock()
+                .unwrap()
+                .insert(vault.id, Zeroizing::new(passphrase));
+        }
     }
     Ok(())
 }
 
 pub async fn export_encrypted(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     app_data_dir: &Path,
+    vault_id: &str,
     path: &str,
     passphrase: &str,
 ) -> Result<ExportSummary> {
+    vaults::require(pool, vault_id).await?;
     let path_buf = validate_file_path(path, app_data_dir, false)?;
-    let bundle = assemble_bundle(pool, vault_state, passphrase).await?;
+    let bundle = assemble_bundle(pool, keystore_state, passphrase, vault_id).await?;
     let counts = bundle.counts();
     let blob = encrypt_bundle(&bundle, passphrase)?;
     fs::write(&path_buf, blob).map_err(|error| {
@@ -448,12 +466,14 @@ pub async fn export_encrypted(
 pub async fn import_preview(
     pool: &SqlitePool,
     app_data_dir: &Path,
+    vault_id: &str,
     path: &str,
     passphrase: &str,
 ) -> Result<ImportPreview> {
+    vaults::require(pool, vault_id).await?;
     let bundle = read_encrypted_bundle(path, app_data_dir, passphrase)?;
     validate_bundle(&bundle)?;
-    let local = assemble_bundle_without_private_keys(pool).await?;
+    let local = assemble_bundle_without_private_keys(pool, vault_id).await?;
     let outcome = merge_bundles(&local, &bundle, None, &[])?;
     Ok(ImportPreview {
         object_counts: bundle.counts(),
@@ -463,34 +483,36 @@ pub async fn import_preview(
 
 pub async fn import_apply(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     app_data_dir: &Path,
+    vault_id: &str,
     path: &str,
     passphrase: &str,
     resolutions: &[ConflictResolution],
 ) -> Result<ImportSummary> {
+    vaults::require(pool, vault_id).await?;
     let bundle = read_encrypted_bundle(path, app_data_dir, passphrase)?;
     validate_bundle(&bundle)?;
-    let local = assemble_bundle(pool, vault_state, passphrase).await?;
+    let local = assemble_bundle(pool, keystore_state, passphrase, vault_id).await?;
     let outcome = merge_bundles(&local, &bundle, None, resolutions)?;
     validate_states(&outcome.states)?;
     let prepared = prepare_remote_secrets(
-        vault_state,
+        keystore_state,
         passphrase,
         &bundle.encrypted_key_secrets,
         &outcome.states,
         &outcome.remote_key_references,
     )?;
     let prepared_identities = prepare_remote_identity_secrets(
-        vault_state,
+        keystore_state,
         passphrase,
         &bundle.encrypted_identity_secrets,
         &outcome.states,
         &outcome.remote_identities,
     )?;
-    apply_states(pool, &outcome.states).await?;
-    let private_keys = apply_prepared_secrets(pool, vault_state, passphrase, prepared).await?;
-    apply_prepared_identity_secrets(pool, vault_state, passphrase, prepared_identities).await?;
+    apply_states(pool, &outcome.states, vault_id).await?;
+    let private_keys = apply_prepared_secrets(pool, keystore_state, passphrase, prepared).await?;
+    apply_prepared_identity_secrets(pool, keystore_state, passphrase, prepared_identities).await?;
     Ok(ImportSummary {
         applied: outcome.applied_remote,
         kept_local: outcome.kept_local,
@@ -503,15 +525,50 @@ pub async fn import_apply(
 pub async fn get_config(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
+    vault_id: &str,
 ) -> Result<SyncConfig> {
-    let row = sqlx::query("SELECT provider, last_synced_at, state FROM sync_state WHERE id = 1")
-        .fetch_one(pool)
-        .await?;
-    let provider: Option<String> = row.get("provider");
-    let passphrase_set = runtime.passphrase.lock().unwrap().is_some() || provider.is_some();
-    let stored = parse_stored_state(row.get("state"))?;
+    vaults::require(pool, vault_id).await?;
+    let cloud_signed_in = crate::collaboration::account_is_signed_in(pool, keystore_state).await;
+    config_for_vault(pool, runtime, keystore_state, vault_id, cloud_signed_in).await
+}
+
+/// Every vault's sync configuration, in the vault list's order. The title bar
+/// aggregates these into one status, so it needs them all in one round trip.
+pub async fn list_configs(
+    pool: &SqlitePool,
+    runtime: &SyncRuntimeState,
+    keystore_state: &KeystoreState,
+) -> Result<Vec<SyncConfig>> {
+    let cloud_signed_in = crate::collaboration::account_is_signed_in(pool, keystore_state).await;
+    let mut configs = Vec::new();
+    for vault in vaults::list(pool).await? {
+        configs.push(
+            config_for_vault(pool, runtime, keystore_state, &vault.id, cloud_signed_in).await?,
+        );
+    }
+    Ok(configs)
+}
+
+async fn config_for_vault(
+    pool: &SqlitePool,
+    runtime: &SyncRuntimeState,
+    keystore_state: &KeystoreState,
+    vault_id: &str,
+    cloud_signed_in: bool,
+) -> Result<SyncConfig> {
+    let row =
+        sqlx::query("SELECT provider, last_synced_at, state FROM sync_state WHERE vault_id = ?1")
+            .bind(vault_id)
+            .fetch_optional(pool)
+            .await?;
+    let provider: Option<String> = row.as_ref().and_then(|row| row.get("provider"));
+    let passphrase_set =
+        runtime.passphrase.lock().unwrap().contains_key(vault_id) || provider.is_some();
+    let stored = parse_stored_state(row.as_ref().and_then(|row| row.get("state")))?;
+    let passphrase_account = vault_account(KEYCHAIN_PASSPHRASE, vault_id);
     Ok(SyncConfig {
+        vault_id: vault_id.to_string(),
         enabled: provider.is_some(),
         provider,
         folder_path: stored.folder_path,
@@ -519,11 +576,11 @@ pub async fn get_config(
         username: stored.username,
         gist_id: stored.gist_id,
         cloud_url: stored.cloud_url,
-        cloud_signed_in: crate::collaboration::account_is_signed_in(pool, vault_state).await,
-        last_sync_at: row.get("last_synced_at"),
+        cloud_signed_in,
+        last_sync_at: row.as_ref().and_then(|row| row.get("last_synced_at")),
         last_remote_version: stored.last_remote_version,
         passphrase_set,
-        passphrase_remembered: credential_get(pool, vault_state, KEYCHAIN_PASSPHRASE)
+        passphrase_remembered: credential_get(pool, keystore_state, &passphrase_account)
             .await
             .is_ok(),
     })
@@ -532,12 +589,16 @@ pub async fn get_config(
 pub async fn configure(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     app_data_dir: &Path,
+    vault_id: &str,
     mut input: SyncConfigureInput,
 ) -> Result<()> {
+    vaults::require(pool, vault_id).await?;
     let provider = input.provider.trim();
     let mut stored = StoredSyncState::default();
+    // Only this vault's credentials for the providers it is no longer using are
+    // cleared; other vaults keep theirs.
     match provider {
         "local-folder" => {
             let folder = required_trimmed(input.folder_path.take(), "folderPath")?;
@@ -545,39 +606,37 @@ pub async fn configure(
             providers::validate_local_folder(&folder_path)?;
             reject_app_data_path(&folder_path, app_data_dir)?;
             stored.folder_path = Some(folder);
-            clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
+            clear_provider_credentials(pool, keystore_state, vault_id, &[]).await?;
         }
         "webdav" => {
             let url = required_trimmed(input.url.take(), "url")?;
             providers::validate_https_url(&url)?;
             let username = required_trimmed(input.username.take(), "username")?;
             let password = required_secret(input.password.take(), "password")?;
-            credential_set(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD, &password).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
+            let account = vault_account(KEYCHAIN_WEBDAV_PASSWORD, vault_id);
+            credential_set(pool, keystore_state, &account, &password).await?;
+            clear_provider_credentials(pool, keystore_state, vault_id, &[KEYCHAIN_WEBDAV_PASSWORD])
+                .await?;
             stored.url = Some(url);
             stored.username = Some(username);
         }
         "github-gist" => {
             let token = required_secret(input.token.take(), "token")?;
-            credential_set(pool, vault_state, KEYCHAIN_GIST_TOKEN, &token).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
+            let account = vault_account(KEYCHAIN_GIST_TOKEN, vault_id);
+            credential_set(pool, keystore_state, &account, &token).await?;
+            clear_provider_credentials(pool, keystore_state, vault_id, &[KEYCHAIN_GIST_TOKEN])
+                .await?;
             stored.gist_id = optional_identifier(input.gist_id.take(), "gistId")?;
         }
         "luma-cloud" => {
             let cloud_url = required_trimmed(input.cloud_url.take(), "cloudUrl")?;
             providers::validate_cloud_api_url(&cloud_url)?;
-            if !crate::collaboration::account_is_signed_in(pool, vault_state).await {
+            if !crate::collaboration::account_is_signed_in(pool, keystore_state).await {
                 return Err(LumaError::SyncAuthFailed(
                     "sign in to your Luma account before enabling Luma Cloud sync".into(),
                 ));
             }
-            clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
-            clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
+            clear_provider_credentials(pool, keystore_state, vault_id, &[]).await?;
             stored.cloud_url = Some(cloud_url.trim_end_matches('/').to_string());
         }
         _ => {
@@ -590,78 +649,125 @@ pub async fn configure(
     let state_json = serde_json::to_string(&stored)
         .map_err(|_| LumaError::InvalidInput("sync configuration is invalid".into()))?;
     sqlx::query(
-        "UPDATE sync_state SET provider = ?1, last_synced_at = NULL, state = ?2 WHERE id = 1",
+        "INSERT INTO sync_state (vault_id, provider, last_synced_at, state)
+         VALUES (?1, ?2, NULL, ?3)
+         ON CONFLICT(vault_id) DO UPDATE SET provider = excluded.provider,
+             last_synced_at = NULL, state = excluded.state",
     )
+    .bind(vault_id)
     .bind(provider)
     .bind(state_json)
     .execute(pool)
     .await?;
-    *runtime.pending.lock().unwrap() = None;
+    runtime.pending.lock().unwrap().remove(vault_id);
+    Ok(())
+}
+
+/// Drop this vault's stored credentials for every provider except those in
+/// `keep`, which the caller has just written.
+async fn clear_provider_credentials(
+    pool: &SqlitePool,
+    keystore_state: &KeystoreState,
+    vault_id: &str,
+    keep: &[&str],
+) -> Result<()> {
+    for account in [
+        KEYCHAIN_WEBDAV_PASSWORD,
+        KEYCHAIN_GIST_TOKEN,
+        KEYCHAIN_LUMA_CLOUD_SESSION,
+    ] {
+        if keep.contains(&account) {
+            continue;
+        }
+        clear_credential(pool, keystore_state, &vault_account(account, vault_id)).await?;
+    }
     Ok(())
 }
 
 pub async fn set_passphrase(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
+    vault_id: &str,
     passphrase: String,
     remember: bool,
 ) -> Result<()> {
+    vaults::require(pool, vault_id).await?;
     validate_passphrase(&passphrase)?;
+    let account = vault_account(KEYCHAIN_PASSPHRASE, vault_id);
     if remember {
-        credential_set(pool, vault_state, KEYCHAIN_PASSPHRASE, &passphrase).await?;
+        credential_set(pool, keystore_state, &account, &passphrase).await?;
     } else {
-        clear_credential(pool, vault_state, KEYCHAIN_PASSPHRASE).await?;
+        clear_credential(pool, keystore_state, &account).await?;
     }
-    *runtime.passphrase.lock().unwrap() = Some(Zeroizing::new(passphrase));
+    runtime
+        .passphrase
+        .lock()
+        .unwrap()
+        .insert(vault_id.to_string(), Zeroizing::new(passphrase));
     Ok(())
 }
 
 pub async fn disable(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
+    vault_id: &str,
 ) -> Result<()> {
-    sqlx::query(
-        "UPDATE sync_state SET provider = NULL, last_synced_at = NULL, state = NULL WHERE id = 1",
+    vaults::require(pool, vault_id).await?;
+    sqlx::query("DELETE FROM sync_state WHERE vault_id = ?1")
+        .bind(vault_id)
+        .execute(pool)
+        .await?;
+    clear_provider_credentials(pool, keystore_state, vault_id, &[]).await?;
+    clear_credential(
+        pool,
+        keystore_state,
+        &vault_account(KEYCHAIN_PASSPHRASE, vault_id),
     )
-    .execute(pool)
     .await?;
-    clear_credential(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?;
-    clear_credential(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?;
-    clear_credential(pool, vault_state, KEYCHAIN_LUMA_CLOUD_SESSION).await?;
-    clear_credential(pool, vault_state, KEYCHAIN_PASSPHRASE).await?;
-    *runtime.passphrase.lock().unwrap() = None;
-    *runtime.pending.lock().unwrap() = None;
+    runtime.passphrase.lock().unwrap().remove(vault_id);
+    runtime.pending.lock().unwrap().remove(vault_id);
     Ok(())
 }
 
 pub async fn sync_now(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     collab_runtime: &crate::collaboration::CollaborationRuntimeState,
     app_data_dir: &Path,
+    vault_id: &str,
 ) -> Result<SyncReport> {
-    let (provider_name, mut stored) = load_enabled_config(pool).await?;
-    let passphrase = current_passphrase(runtime)?;
+    vaults::require(pool, vault_id).await?;
+    let (provider_name, mut stored) = load_enabled_config(pool, vault_id).await?;
+    let passphrase = current_passphrase(runtime, vault_id)?;
     let provider = create_provider(
         pool,
-        vault_state,
+        keystore_state,
         collab_runtime,
         &provider_name,
         &stored,
         app_data_dir,
+        vault_id,
     )
     .await?;
     let remote = provider.download().await?;
-    let local = assemble_bundle(pool, vault_state, &passphrase).await?;
+    let local = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
 
     let Some(remote) = remote else {
         let blob = encrypt_bundle(&local, &passphrase)?;
         let uploaded = provider.upload(&blob, None).await?;
-        update_after_upload(pool, &provider_name, &mut stored, &local, uploaded).await?;
-        *runtime.pending.lock().unwrap() = None;
+        update_after_upload(
+            pool,
+            &provider_name,
+            &mut stored,
+            &local,
+            uploaded,
+            vault_id,
+        )
+        .await?;
+        runtime.pending.lock().unwrap().remove(vault_id);
         return Ok(SyncReport {
             pulled: false,
             pushed: true,
@@ -677,36 +783,39 @@ pub async fn sync_now(
     let outcome = merge_bundles(&local, &remote_bundle, Some(&stored.baseline), &[])?;
     validate_states(&outcome.states)?;
     let prepared = prepare_remote_secrets(
-        vault_state,
+        keystore_state,
         &passphrase,
         &remote_bundle.encrypted_key_secrets,
         &outcome.states,
         &outcome.remote_key_references,
     )?;
     let prepared_identities = prepare_remote_identity_secrets(
-        vault_state,
+        keystore_state,
         &passphrase,
         &remote_bundle.encrypted_identity_secrets,
         &outcome.states,
         &outcome.remote_identities,
     )?;
-    apply_states(pool, &outcome.states).await?;
-    let private_keys = apply_prepared_secrets(pool, vault_state, &passphrase, prepared).await?;
+    apply_states(pool, &outcome.states, vault_id).await?;
+    let private_keys = apply_prepared_secrets(pool, keystore_state, &passphrase, prepared).await?;
     let identity_passwords =
-        apply_prepared_identity_secrets(pool, vault_state, &passphrase, prepared_identities)
+        apply_prepared_identity_secrets(pool, keystore_state, &passphrase, prepared_identities)
             .await?;
     let pulled =
         !outcome.applied_remote.is_empty() || private_keys.applied > 0 || identity_passwords > 0;
 
     if !outcome.conflicts.is_empty() {
-        *runtime.pending.lock().unwrap() = Some(PendingSync {
-            provider: provider_name,
-            remote_version: remote.version,
-            remote_states: remote_bundle.states()?,
-            remote_encrypted_key_secrets: remote_bundle.encrypted_key_secrets.clone(),
-            remote_encrypted_identity_secrets: remote_bundle.encrypted_identity_secrets.clone(),
-            conflicts: outcome.conflicts.clone(),
-        });
+        runtime.pending.lock().unwrap().insert(
+            vault_id.to_string(),
+            PendingSync {
+                provider: provider_name,
+                remote_version: remote.version,
+                remote_states: remote_bundle.states()?,
+                remote_encrypted_key_secrets: remote_bundle.encrypted_key_secrets.clone(),
+                remote_encrypted_identity_secrets: remote_bundle.encrypted_identity_secrets.clone(),
+                conflicts: outcome.conflicts.clone(),
+            },
+        );
         return Ok(SyncReport {
             pulled,
             pushed: false,
@@ -717,22 +826,30 @@ pub async fn sync_now(
         });
     }
 
-    let merged = assemble_bundle(pool, vault_state, &passphrase).await?;
-    let compare_private_keys = private_key_sync_active(pool, vault_state).await?;
+    let merged = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
+    let compare_private_keys = private_key_sync_active(pool, keystore_state, vault_id).await?;
     let needs_push =
         !bundles_have_same_content(&merged, &remote_bundle, &passphrase, compare_private_keys)?;
     let pushed = if needs_push {
         let blob = encrypt_bundle(&merged, &passphrase)?;
         let uploaded = provider.upload(&blob, Some(&remote.version)).await?;
-        update_after_upload(pool, &provider_name, &mut stored, &merged, uploaded).await?;
+        update_after_upload(
+            pool,
+            &provider_name,
+            &mut stored,
+            &merged,
+            uploaded,
+            vault_id,
+        )
+        .await?;
         true
     } else {
         stored.last_remote_version = Some(remote.version);
         stored.baseline = baseline_for_bundle(&merged)?;
-        save_stored_state(pool, &stored, true).await?;
+        save_stored_state(pool, &stored, true, vault_id).await?;
         false
     };
-    *runtime.pending.lock().unwrap() = None;
+    runtime.pending.lock().unwrap().remove(vault_id);
     Ok(SyncReport {
         pulled,
         pushed,
@@ -746,18 +863,21 @@ pub async fn sync_now(
 pub async fn sync_resolve(
     pool: &SqlitePool,
     runtime: &SyncRuntimeState,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     collab_runtime: &crate::collaboration::CollaborationRuntimeState,
     app_data_dir: &Path,
+    vault_id: &str,
     resolutions: &[ConflictResolution],
 ) -> Result<SyncReport> {
+    vaults::require(pool, vault_id).await?;
     let pending = runtime
         .pending
         .lock()
         .unwrap()
-        .clone()
+        .get(vault_id)
+        .cloned()
         .ok_or_else(|| LumaError::InvalidInput("there are no pending sync conflicts".into()))?;
-    let (provider_name, mut stored) = load_enabled_config(pool).await?;
+    let (provider_name, mut stored) = load_enabled_config(pool, vault_id).await?;
     if provider_name != pending.provider {
         return Err(LumaError::SyncConflict(
             "sync provider changed while conflicts were pending".into(),
@@ -783,8 +903,8 @@ pub async fn sync_resolve(
         });
     }
 
-    let passphrase = current_passphrase(runtime)?;
-    let local = assemble_bundle(pool, vault_state, &passphrase).await?;
+    let passphrase = current_passphrase(runtime, vault_id)?;
+    let local = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
     let mut states = local.states()?;
     let mut pulled = false;
     let mut remote_key_references = HashSet::new();
@@ -811,42 +931,51 @@ pub async fn sync_resolve(
     }
     validate_states(&states)?;
     let prepared = prepare_remote_secrets(
-        vault_state,
+        keystore_state,
         &passphrase,
         &pending.remote_encrypted_key_secrets,
         &states,
         &remote_key_references,
     )?;
     let prepared_identities = prepare_remote_identity_secrets(
-        vault_state,
+        keystore_state,
         &passphrase,
         &pending.remote_encrypted_identity_secrets,
         &states,
         &remote_identities,
     )?;
-    apply_states(pool, &states).await?;
-    let private_keys = apply_prepared_secrets(pool, vault_state, &passphrase, prepared).await?;
+    apply_states(pool, &states, vault_id).await?;
+    let private_keys = apply_prepared_secrets(pool, keystore_state, &passphrase, prepared).await?;
     let identity_passwords =
-        apply_prepared_identity_secrets(pool, vault_state, &passphrase, prepared_identities)
+        apply_prepared_identity_secrets(pool, keystore_state, &passphrase, prepared_identities)
             .await?;
     pulled |= private_keys.applied > 0 || identity_passwords > 0;
 
     let provider = create_provider(
         pool,
-        vault_state,
+        keystore_state,
         collab_runtime,
         &provider_name,
         &stored,
         app_data_dir,
+        vault_id,
     )
     .await?;
-    let merged = assemble_bundle(pool, vault_state, &passphrase).await?;
+    let merged = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
     let blob = encrypt_bundle(&merged, &passphrase)?;
     let uploaded = provider
         .upload(&blob, Some(&pending.remote_version))
         .await?;
-    update_after_upload(pool, &provider_name, &mut stored, &merged, uploaded).await?;
-    *runtime.pending.lock().unwrap() = None;
+    update_after_upload(
+        pool,
+        &provider_name,
+        &mut stored,
+        &merged,
+        uploaded,
+        vault_id,
+    )
+    .await?;
+    runtime.pending.lock().unwrap().remove(vault_id);
     Ok(SyncReport {
         pulled,
         pushed: true,
@@ -1148,35 +1277,52 @@ fn decrypt_sync_secret(
     }
 }
 
-async fn private_key_sync_active(pool: &SqlitePool, vault_state: &VaultState) -> Result<bool> {
-    Ok(settings::sync_include_private_keys(pool).await? && vault::is_unlocked(vault_state))
+async fn private_key_sync_active(
+    pool: &SqlitePool,
+    keystore_state: &KeystoreState,
+    vault_id: &str,
+) -> Result<bool> {
+    let share_secrets = vaults::get(pool, vault_id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown vault".into()))?
+        .share_secrets;
+    Ok(share_secrets && keystore::is_unlocked(keystore_state))
 }
 
 async fn assemble_bundle(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     passphrase: &str,
+    vault_id: &str,
 ) -> Result<SyncBundle> {
-    assemble_bundle_inner(pool, Some((vault_state, passphrase))).await
+    assemble_bundle_inner(pool, Some((keystore_state, passphrase)), vault_id).await
 }
 
-async fn assemble_bundle_without_private_keys(pool: &SqlitePool) -> Result<SyncBundle> {
-    assemble_bundle_inner(pool, None).await
+async fn assemble_bundle_without_private_keys(
+    pool: &SqlitePool,
+    vault_id: &str,
+) -> Result<SyncBundle> {
+    assemble_bundle_inner(pool, None, vault_id).await
 }
 
 async fn assemble_bundle_inner(
     pool: &SqlitePool,
-    private_key_sync: Option<(&VaultState, &str)>,
+    private_key_sync: Option<(&KeystoreState, &str)>,
+    vault_id: &str,
 ) -> Result<SyncBundle> {
-    let device_id: String = sqlx::query_scalar("SELECT device_id FROM sync_state WHERE id = 1")
+    // Device-scoped preferences belong to the person, not the team: a teammate's
+    // font size must never land on someone else's machine.
+    let device_scoped = vault_id == PERSONAL_VAULT_ID;
+    let device_id: String = sqlx::query_scalar("SELECT device_id FROM device_state WHERE id = 1")
         .fetch_one(pool)
         .await?;
 
     let hosts = sqlx::query(
         "SELECT id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,proxy_jump_host_id,
                 startup_command,working_directory,environment,tags,favorite,tab_color,updated_at FROM hosts
-         WHERE is_ephemeral = 0",
+         WHERE is_ephemeral = 0 AND vault_id = ?1",
     )
+    .bind(vault_id)
     .fetch_all(pool)
     .await?
     .into_iter()
@@ -1212,26 +1358,29 @@ async fn assemble_bundle_inner(
     })
     .collect::<Result<Vec<_>>>()?;
 
-    let host_groups =
-        sqlx::query("SELECT id,name,parent_id,sort_order,updated_at FROM host_groups")
-            .fetch_all(pool)
-            .await?
-            .into_iter()
-            .map(|row| SyncHostGroup {
-                id: row.get("id"),
-                name: row.get("name"),
-                parent_id: row.get("parent_id"),
-                sort_order: row.get("sort_order"),
-                updated_at: row.get("updated_at"),
-            })
-            .collect();
+    let host_groups = sqlx::query(
+        "SELECT id,name,parent_id,sort_order,updated_at FROM host_groups WHERE vault_id = ?1",
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(|row| SyncHostGroup {
+        id: row.get("id"),
+        name: row.get("name"),
+        parent_id: row.get("parent_id"),
+        sort_order: row.get("sort_order"),
+        updated_at: row.get("updated_at"),
+    })
+    .collect();
 
     let mut key_references = Vec::new();
     let mut private_key_reference_timestamps = Vec::new();
     for row in sqlx::query(
         "SELECT id,name,public_key,storage_mode,local_path,fingerprint,certificate,
-                has_private_key,updated_at FROM key_references",
+                has_private_key,updated_at FROM key_references WHERE vault_id = ?1",
     )
+    .bind(vault_id)
     .fetch_all(pool)
     .await?
     {
@@ -1252,15 +1401,20 @@ async fn assemble_bundle_inner(
         });
     }
 
+    let mut share_secrets = false;
+    if let Some((keystore_state, _)) = private_key_sync {
+        share_secrets = private_key_sync_active(pool, keystore_state, vault_id).await?;
+    }
+
     let mut encrypted_key_secrets = Vec::new();
-    if let Some((vault_state, passphrase)) = private_key_sync {
-        if private_key_sync_active(pool, vault_state).await? {
+    if let Some((keystore_state, passphrase)) = private_key_sync {
+        if share_secrets {
             for (key_reference_id, updated_at) in private_key_reference_timestamps {
                 for secret_type in [PRIVATE_KEY_SECRET_TYPE, PASSPHRASE_SECRET_TYPE] {
-                    match vault::load(
+                    match keystore::load(
                         pool,
-                        vault_state,
-                        VAULT_KEY_OWNER_TYPE,
+                        keystore_state,
+                        KEYSTORE_KEY_OWNER_TYPE,
                         &key_reference_id,
                         secret_type,
                     )
@@ -1277,14 +1431,14 @@ async fn assemble_bundle_inner(
                             )?);
                         }
                         Ok(None) => {}
-                        Err(_error) if !vault::is_unlocked(vault_state) => {
+                        Err(_error) if !keystore::is_unlocked(keystore_state) => {
                             encrypted_key_secrets.clear();
                             break;
                         }
                         Err(error) => return Err(error),
                     }
                 }
-                if !vault::is_unlocked(vault_state) {
+                if !keystore::is_unlocked(keystore_state) {
                     encrypted_key_secrets.clear();
                     break;
                 }
@@ -1294,9 +1448,12 @@ async fn assemble_bundle_inner(
 
     let mut identities_sync = Vec::new();
     let mut encrypted_identity_secrets = Vec::new();
-    for row in sqlx::query("SELECT id,name,username,key_id,has_password,updated_at FROM identities")
-        .fetch_all(pool)
-        .await?
+    for row in sqlx::query(
+        "SELECT id,name,username,key_id,has_password,updated_at FROM identities WHERE vault_id = ?1",
+    )
+    .bind(vault_id)
+    .fetch_all(pool)
+    .await?
     {
         let id: String = row.get("id");
         let has_password = row.get::<i64, _>("has_password") != 0;
@@ -1309,9 +1466,12 @@ async fn assemble_bundle_inner(
             has_password,
             updated_at,
         });
-        if has_password {
-            if let Some((vault_state, passphrase)) = private_key_sync {
-                match identities::password(pool, vault_state, &id).await {
+        // The personal vault reaches only your own devices, so identity passwords
+        // keep travelling with it as they always have. A shared vault reaches other
+        // people, so nothing secret leaves it until sharing is explicitly enabled.
+        if has_password && (device_scoped || share_secrets) {
+            if let Some((keystore_state, passphrase)) = private_key_sync {
+                match identities::password(pool, keystore_state, &id).await {
                     Ok(Some(password)) => encrypted_identity_secrets.push(encrypt_sync_secret(
                         &id,
                         IDENTITY_PASSWORD_SECRET_TYPE,
@@ -1320,19 +1480,23 @@ async fn assemble_bundle_inner(
                         passphrase,
                     )?),
                     Ok(None) => {}
-                    Err(_error) if !vault::is_unlocked(vault_state) => {}
+                    Err(_error) if !keystore::is_unlocked(keystore_state) => {}
                     Err(error) => return Err(error),
                 }
             }
         }
     }
 
-    let terminal_profiles = sqlx::query(
-        "SELECT id,name,shell_path,args,working_directory,environment,platform,updated_at
-         FROM terminal_profiles",
-    )
-    .fetch_all(pool)
-    .await?
+    let terminal_profiles = if device_scoped {
+        sqlx::query(
+            "SELECT id,name,shell_path,args,working_directory,environment,platform,updated_at
+             FROM terminal_profiles",
+        )
+        .fetch_all(pool)
+        .await?
+    } else {
+        Vec::new()
+    }
     .into_iter()
     .map(|row| {
         let args: String = row.get("args");
@@ -1358,8 +1522,10 @@ async fn assemble_bundle_inner(
     .collect::<Result<Vec<_>>>()?;
 
     let snippets = sqlx::query(
-        "SELECT id,name,command,description,tags,variables,host_id,updated_at FROM snippets",
+        "SELECT id,name,command,description,tags,variables,host_id,updated_at FROM snippets
+         WHERE vault_id = ?1",
     )
+    .bind(vault_id)
     .fetch_all(pool)
     .await?
     .into_iter()
@@ -1383,10 +1549,14 @@ async fn assemble_bundle_inner(
     .collect::<Result<Vec<_>>>()?;
 
     let mut settings_map = BTreeMap::new();
-    for row in sqlx::query("SELECT key,value,updated_at FROM settings")
-        .fetch_all(pool)
-        .await?
-    {
+    let setting_rows = if device_scoped {
+        sqlx::query("SELECT key,value,updated_at FROM settings")
+            .fetch_all(pool)
+            .await?
+    } else {
+        Vec::new()
+    };
+    for row in setting_rows {
         let key: String = row.get("key");
         if is_safe_setting_key(&key) {
             let raw: String = row.get("value");
@@ -1402,20 +1572,27 @@ async fn assemble_bundle_inner(
         }
     }
 
-    let tombstones = sqlx::query("SELECT object_type,object_id,deleted_at FROM tombstones")
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .filter_map(|row| {
-            let object_type: String = row.get("object_type");
-            let object_id: String = row.get("object_id");
-            (object_type != "setting" || is_safe_setting_key(&object_id)).then_some(SyncTombstone {
-                object_type,
-                object_id,
-                deleted_at: row.get("deleted_at"),
+    let tombstones =
+        sqlx::query("SELECT object_type,object_id,deleted_at FROM tombstones WHERE vault_id = ?1")
+            .bind(vault_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .filter_map(|row| {
+                let object_type: String = row.get("object_type");
+                let object_id: String = row.get("object_id");
+                let carried = match object_type.as_str() {
+                    "setting" => device_scoped && is_safe_setting_key(&object_id),
+                    "terminal_profile" => device_scoped,
+                    _ => true,
+                };
+                carried.then_some(SyncTombstone {
+                    object_type,
+                    object_id,
+                    deleted_at: row.get("deleted_at"),
+                })
             })
-        })
-        .collect();
+            .collect();
 
     let bundle = SyncBundle {
         format_version: FORMAT_VERSION,
@@ -1902,6 +2079,7 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
             "key_reference" => {
                 let key: SyncKeyReference = payload_as(item)?;
                 key_references::validate(&key_references::KeyReferenceInput {
+                    vault_id: crate::storage::vaults::default_id(),
                     name: key.name,
                     public_key: key.public_key,
                     storage_mode: key.storage_mode,
@@ -1916,6 +2094,7 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
             "host" => {
                 let host: SyncHost = payload_as(item)?;
                 hosts::validate_fields(&hosts::HostInput {
+                    vault_id: crate::storage::vaults::default_id(),
                     name: host.name,
                     hostname: host.hostname,
                     port: i64::from(host.port),
@@ -1962,6 +2141,7 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
             "snippet" => {
                 let snippet: SyncSnippet = payload_as(item)?;
                 snippets::validate_fields(&snippets::SnippetInput {
+                    vault_id: crate::storage::vaults::default_id(),
                     name: snippet.name,
                     command: snippet.command,
                     description: snippet.description,
@@ -2135,7 +2315,7 @@ fn validate_sync_profile(profile: &SyncTerminalProfile) -> Result<()> {
 }
 
 fn prepare_remote_secrets(
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     passphrase: &str,
     incoming: &[SyncEncryptedSecret],
     merged_states: &BTreeMap<String, MergeItem>,
@@ -2151,7 +2331,7 @@ fn prepare_remote_secrets(
         })
         .cloned()
         .collect();
-    if !vault::is_unlocked(vault_state) {
+    if !keystore::is_unlocked(keystore_state) {
         return Ok(PreparedRemoteSecrets {
             skipped_locked: entries
                 .iter()
@@ -2175,13 +2355,13 @@ fn prepare_remote_secrets(
 }
 
 fn prepare_remote_identity_secrets(
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     passphrase: &str,
     incoming: &[SyncEncryptedSecret],
     merged_states: &BTreeMap<String, MergeItem>,
     remote_identities: &HashSet<String>,
 ) -> Result<Vec<SyncEncryptedSecret>> {
-    if !identity_secret_store_available(vault_state) {
+    if !identity_secret_store_available(keystore_state) {
         return Ok(Vec::new());
     }
     let entries: Vec<_> = incoming
@@ -2201,18 +2381,18 @@ fn prepare_remote_identity_secrets(
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn identity_secret_store_available(_vault_state: &VaultState) -> bool {
+fn identity_secret_store_available(_keystore_state: &KeystoreState) -> bool {
     true
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
-fn identity_secret_store_available(vault_state: &VaultState) -> bool {
-    vault::is_unlocked(vault_state)
+fn identity_secret_store_available(keystore_state: &KeystoreState) -> bool {
+    keystore::is_unlocked(keystore_state)
 }
 
 async fn apply_prepared_secrets(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     passphrase: &str,
     prepared: PreparedRemoteSecrets,
 ) -> Result<PrivateKeyApplySummary> {
@@ -2222,7 +2402,7 @@ async fn apply_prepared_secrets(
     };
     let mut applied_private_key_ids = HashSet::new();
     for (index, secret) in prepared.entries.iter().enumerate() {
-        if !vault::is_unlocked(vault_state) {
+        if !keystore::is_unlocked(keystore_state) {
             summary.skipped_locked += prepared.entries[index..]
                 .iter()
                 .filter(|remaining| remaining.secret_type == PRIVATE_KEY_SECRET_TYPE)
@@ -2233,10 +2413,10 @@ async fn apply_prepared_secrets(
             break;
         }
         let plaintext = decrypt_sync_secret(secret, passphrase)?;
-        match vault::store(
+        match keystore::store(
             pool,
-            vault_state,
-            VAULT_KEY_OWNER_TYPE,
+            keystore_state,
+            KEYSTORE_KEY_OWNER_TYPE,
             &secret.key_reference_id,
             &secret.secret_type,
             &plaintext,
@@ -2244,7 +2424,7 @@ async fn apply_prepared_secrets(
         .await
         {
             Ok(()) => {}
-            Err(_error) if !vault::is_unlocked(vault_state) => {
+            Err(_error) if !keystore::is_unlocked(keystore_state) => {
                 summary.skipped_locked += prepared.entries[index..]
                     .iter()
                     .filter(|remaining| remaining.secret_type == PRIVATE_KEY_SECRET_TYPE)
@@ -2272,24 +2452,28 @@ async fn apply_prepared_secrets(
 
 async fn apply_prepared_identity_secrets(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     passphrase: &str,
     prepared: Vec<SyncEncryptedSecret>,
 ) -> Result<usize> {
     let mut applied = 0;
     for secret in prepared {
-        if !identity_secret_store_available(vault_state) {
+        if !identity_secret_store_available(keystore_state) {
             break;
         }
         let plaintext = decrypt_sync_secret(&secret, passphrase)?;
-        identities::set_synced_password(pool, vault_state, &secret.key_reference_id, &plaintext)
+        identities::set_synced_password(pool, keystore_state, &secret.key_reference_id, &plaintext)
             .await?;
         applied += 1;
     }
     Ok(applied)
 }
 
-async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -> Result<()> {
+async fn apply_states(
+    pool: &SqlitePool,
+    states: &BTreeMap<String, MergeItem>,
+    vault_id: &str,
+) -> Result<()> {
     let mut deleted_key_references = Vec::new();
     let mut deleted_identities = Vec::new();
     let mut transaction = pool.begin().await?;
@@ -2299,36 +2483,45 @@ async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -
     for item in states.values() {
         match &item.payload {
             None => {
-                if item.object_type == "key_reference" {
+                // Scoped by vault so a deletion arriving for one vault can never
+                // reach a same-id row another vault owns. terminal_profiles and
+                // settings have no vault column and only ever reach the personal
+                // bundle, so they stay keyed on their own primary key.
+                let query = match item.object_type.as_str() {
+                    "host" => "DELETE FROM hosts WHERE id = ?1 AND vault_id = ?2",
+                    "host_group" => "DELETE FROM host_groups WHERE id = ?1 AND vault_id = ?2",
+                    "key_reference" => "DELETE FROM key_references WHERE id = ?1 AND vault_id = ?2",
+                    "identity" => "DELETE FROM identities WHERE id = ?1 AND vault_id = ?2",
+                    "snippet" => "DELETE FROM snippets WHERE id = ?1 AND vault_id = ?2",
+                    "terminal_profile" => "DELETE FROM terminal_profiles WHERE id = ?1",
+                    "setting" => "DELETE FROM settings WHERE key = ?1",
+                    _ => return Err(LumaError::InvalidInput("unknown sync object type".into())),
+                };
+                let mut delete = sqlx::query(query).bind(&item.object_id);
+                if !matches!(item.object_type.as_str(), "terminal_profile" | "setting") {
+                    delete = delete.bind(vault_id);
+                }
+                let removed = delete.execute(&mut *transaction).await?.rows_affected() > 0;
+                // Only drop the secrets once the row they belong to is gone: a
+                // deletion aimed at another vault's object must not take this
+                // vault's key material with it.
+                if removed && item.object_type == "key_reference" {
                     deleted_key_references.push(item.object_id.clone());
                 }
-                if item.object_type == "identity" {
+                if removed && item.object_type == "identity" {
                     deleted_identities.push(item.object_id.clone());
                     sqlx::query(
-                        "DELETE FROM vault_secrets WHERE owner_type='identity' AND owner_id=?1",
+                        "DELETE FROM keystore_secrets WHERE owner_type='identity' AND owner_id=?1",
                     )
                     .bind(&item.object_id)
                     .execute(&mut *transaction)
                     .await?;
                 }
-                let query = match item.object_type.as_str() {
-                    "host" => "DELETE FROM hosts WHERE id = ?1",
-                    "host_group" => "DELETE FROM host_groups WHERE id = ?1",
-                    "key_reference" => "DELETE FROM key_references WHERE id = ?1",
-                    "identity" => "DELETE FROM identities WHERE id = ?1",
-                    "terminal_profile" => "DELETE FROM terminal_profiles WHERE id = ?1",
-                    "snippet" => "DELETE FROM snippets WHERE id = ?1",
-                    "setting" => "DELETE FROM settings WHERE key = ?1",
-                    _ => return Err(LumaError::InvalidInput("unknown sync object type".into())),
-                };
-                sqlx::query(query)
-                    .bind(&item.object_id)
-                    .execute(&mut *transaction)
-                    .await?;
                 sqlx::query(
-                    "INSERT INTO tombstones(object_type,object_id,deleted_at) VALUES(?1,?2,?3)
-                     ON CONFLICT(object_type,object_id) DO UPDATE SET deleted_at=excluded.deleted_at",
+                    "INSERT INTO tombstones(vault_id,object_type,object_id,deleted_at) VALUES(?1,?2,?3,?4)
+                     ON CONFLICT(vault_id,object_type,object_id) DO UPDATE SET deleted_at=excluded.deleted_at",
                 )
+                .bind(vault_id)
                 .bind(&item.object_type)
                 .bind(&item.object_id)
                 .bind(item.updated_at)
@@ -2336,12 +2529,15 @@ async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -
                 .await?;
             }
             Some(_) => {
-                apply_object(&mut transaction, item).await?;
-                sqlx::query("DELETE FROM tombstones WHERE object_type=?1 AND object_id=?2")
-                    .bind(&item.object_type)
-                    .bind(&item.object_id)
-                    .execute(&mut *transaction)
-                    .await?;
+                apply_object(&mut transaction, item, vault_id).await?;
+                sqlx::query(
+                    "DELETE FROM tombstones WHERE vault_id=?1 AND object_type=?2 AND object_id=?3",
+                )
+                .bind(vault_id)
+                .bind(&item.object_type)
+                .bind(&item.object_id)
+                .execute(&mut *transaction)
+                .await?;
             }
         }
     }
@@ -2355,23 +2551,31 @@ async fn apply_states(pool: &SqlitePool, states: &BTreeMap<String, MergeItem>) -
     Ok(())
 }
 
+/// A shared vault's bundle is authored by other people, so an object arriving in
+/// it must never be able to rewrite a row that belongs to a different vault —
+/// otherwise a member of one shared vault could repoint a host in your personal
+/// vault at their own server. Every upsert therefore only updates a row whose
+/// vault matches, and leaves other vaults' rows untouched.
 async fn apply_object(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     item: &MergeItem,
+    vault_id: &str,
 ) -> Result<()> {
     match item.object_type.as_str() {
         "host_group" => {
             let value: SyncHostGroup = payload_as(item)?;
             sqlx::query(
-                "INSERT INTO host_groups(id,name,parent_id,sort_order,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?5)
+                "INSERT INTO host_groups(id,name,parent_id,sort_order,vault_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?6)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,parent_id=excluded.parent_id,
-                 sort_order=excluded.sort_order,updated_at=excluded.updated_at",
+                 sort_order=excluded.sort_order,updated_at=excluded.updated_at
+                 WHERE host_groups.vault_id=excluded.vault_id",
             )
             .bind(value.id)
             .bind(value.name)
             .bind(value.parent_id)
             .bind(value.sort_order)
+            .bind(vault_id)
             .bind(value.updated_at)
             .execute(&mut **transaction)
             .await?;
@@ -2380,12 +2584,13 @@ async fn apply_object(
             let value: SyncKeyReference = payload_as(item)?;
             sqlx::query(
                 "INSERT INTO key_references(id,name,public_key,storage_mode,local_path,fingerprint,
-                 certificate,has_private_key,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,0,?8,?8)
+                 certificate,has_private_key,vault_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,0,?8,?9,?9)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,public_key=excluded.public_key,
                  storage_mode=excluded.storage_mode,local_path=excluded.local_path,
                  fingerprint=excluded.fingerprint,certificate=excluded.certificate,
-                 updated_at=excluded.updated_at",
+                 updated_at=excluded.updated_at
+                 WHERE key_references.vault_id=excluded.vault_id",
             )
             .bind(value.id)
             .bind(value.name)
@@ -2394,6 +2599,7 @@ async fn apply_object(
             .bind(value.local_path)
             .bind(value.fingerprint)
             .bind(value.certificate)
+            .bind(vault_id)
             .bind(value.updated_at)
             .execute(&mut **transaction)
             .await?;
@@ -2401,15 +2607,17 @@ async fn apply_object(
         "identity" => {
             let value: SyncIdentity = payload_as(item)?;
             sqlx::query(
-                "INSERT INTO identities(id,name,username,key_id,has_password,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,0,?5,?5)
+                "INSERT INTO identities(id,name,username,key_id,has_password,vault_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,0,?5,?6,?6)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,username=excluded.username,
-                 key_id=excluded.key_id,updated_at=excluded.updated_at",
+                 key_id=excluded.key_id,updated_at=excluded.updated_at
+                 WHERE identities.vault_id=excluded.vault_id",
             )
             .bind(value.id)
             .bind(value.name)
             .bind(value.username)
             .bind(value.key_id)
+            .bind(vault_id)
             .bind(value.updated_at)
             .execute(&mut **transaction)
             .await?;
@@ -2419,15 +2627,16 @@ async fn apply_object(
             sqlx::query(
                 "INSERT INTO hosts(id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,
                  proxy_jump_host_id,startup_command,working_directory,environment,tags,favorite,tab_color,
-                 created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17)
+                 vault_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,hostname=excluded.hostname,
                  port=excluded.port,username=excluded.username,group_id=excluded.group_id,
                  auth_type=excluded.auth_type,key_id=excluded.key_id,identity_id=excluded.identity_id,
                  proxy_jump_host_id=excluded.proxy_jump_host_id,startup_command=excluded.startup_command,
                  working_directory=excluded.working_directory,environment=excluded.environment,
                  tags=excluded.tags,favorite=excluded.favorite,tab_color=excluded.tab_color,
-                 updated_at=excluded.updated_at",
+                 updated_at=excluded.updated_at
+                 WHERE hosts.vault_id=excluded.vault_id",
             )
             .bind(value.id)
             .bind(value.name)
@@ -2445,6 +2654,7 @@ async fn apply_object(
             .bind(serde_json::to_string(&value.tags).map_err(|_| LumaError::InvalidInput("host tags are invalid".into()))?)
             .bind(value.favorite)
             .bind(value.tab_color)
+            .bind(vault_id)
             .bind(value.updated_at)
             .execute(&mut **transaction)
             .await?;
@@ -2473,11 +2683,12 @@ async fn apply_object(
         "snippet" => {
             let value: SyncSnippet = payload_as(item)?;
             sqlx::query(
-                "INSERT INTO snippets(id,name,command,description,tags,variables,host_id,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?8)
+                "INSERT INTO snippets(id,name,command,description,tags,variables,host_id,vault_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,command=excluded.command,
                  description=excluded.description,tags=excluded.tags,variables=excluded.variables,
-                 host_id=excluded.host_id,updated_at=excluded.updated_at",
+                 host_id=excluded.host_id,updated_at=excluded.updated_at
+                 WHERE snippets.vault_id=excluded.vault_id",
             )
             .bind(value.id)
             .bind(value.name)
@@ -2486,6 +2697,7 @@ async fn apply_object(
             .bind(serde_json::to_string(&value.tags).map_err(|_| LumaError::InvalidInput("snippet tags are invalid".into()))?)
             .bind(serde_json::to_string(&value.variables).map_err(|_| LumaError::InvalidInput("snippet variables are invalid".into()))?)
             .bind(value.host_id)
+            .bind(vault_id)
             .bind(value.updated_at)
             .execute(&mut **transaction)
             .await?;
@@ -2598,6 +2810,7 @@ fn is_safe_setting_key(key: &str) -> bool {
         "credential",
         "api-key",
         "authorization",
+        "keystore",
         "vault",
         "sync.",
         "sync-",
@@ -2905,20 +3118,20 @@ fn clear_keychain_entry(account: &str) {
 
 async fn credential_set(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     account: &str,
     secret: &str,
 ) -> Result<()> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (pool, vault_state);
+        let _ = (pool, keystore_state);
         keychain_set(account, secret)
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        vault::store(
+        keystore::store(
             pool,
-            vault_state,
+            keystore_state,
             "sync-credential",
             account,
             "secret",
@@ -2930,17 +3143,17 @@ async fn credential_set(
 
 async fn credential_get(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     account: &str,
 ) -> Result<String> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (pool, vault_state);
+        let _ = (pool, keystore_state);
         keychain_get(account)
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        vault::load(pool, vault_state, "sync-credential", account, "secret")
+        keystore::load(pool, keystore_state, "sync-credential", account, "secret")
             .await?
             .ok_or_else(|| {
                 LumaError::SyncAuthFailed("required sync credential is not available".into())
@@ -2950,44 +3163,53 @@ async fn credential_get(
 
 async fn clear_credential(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     account: &str,
 ) -> Result<()> {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let _ = (pool, vault_state);
+        let _ = (pool, keystore_state);
         clear_keychain(account);
         Ok(())
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        let _ = vault_state;
-        sqlx::query("DELETE FROM vault_secrets WHERE owner_type='sync-credential' AND owner_id=?1")
-            .bind(account)
-            .execute(pool)
-            .await?;
+        let _ = keystore_state;
+        sqlx::query(
+            "DELETE FROM keystore_secrets WHERE owner_type='sync-credential' AND owner_id=?1",
+        )
+        .bind(account)
+        .execute(pool)
+        .await?;
         Ok(())
     }
 }
 
-fn current_passphrase(runtime: &SyncRuntimeState) -> Result<Zeroizing<String>> {
+fn current_passphrase(runtime: &SyncRuntimeState, vault_id: &str) -> Result<Zeroizing<String>> {
     runtime
         .passphrase
         .lock()
         .unwrap()
-        .as_ref()
+        .get(vault_id)
         .cloned()
         .ok_or_else(|| {
-            LumaError::VaultLocked(
+            LumaError::SyncPassphraseRequired(
                 "sync passphrase is not set; enter it before synchronizing".into(),
             )
         })
 }
 
-async fn load_enabled_config(pool: &SqlitePool) -> Result<(String, StoredSyncState)> {
-    let row = sqlx::query("SELECT provider,state FROM sync_state WHERE id=1")
-        .fetch_one(pool)
-        .await?;
+async fn load_enabled_config(
+    pool: &SqlitePool,
+    vault_id: &str,
+) -> Result<(String, StoredSyncState)> {
+    let row = sqlx::query("SELECT provider,state FROM sync_state WHERE vault_id=?1")
+        .bind(vault_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| {
+            LumaError::SyncUnavailable("sync is disabled or has not been configured".into())
+        })?;
     let provider: Option<String> = row.get("provider");
     let provider = provider.ok_or_else(|| {
         LumaError::SyncUnavailable("sync is disabled or has not been configured".into())
@@ -3006,12 +3228,17 @@ fn parse_stored_state(raw: Option<String>) -> Result<StoredSyncState> {
 
 async fn create_provider(
     pool: &SqlitePool,
-    vault_state: &VaultState,
+    keystore_state: &KeystoreState,
     collab_runtime: &crate::collaboration::CollaborationRuntimeState,
     provider: &str,
     stored: &StoredSyncState,
     app_data_dir: &Path,
+    vault_id: &str,
 ) -> Result<Box<dyn SyncProvider>> {
+    // Two vaults may legitimately point at the same folder or the same cloud
+    // account, so everything but the personal vault gets its own remote slot.
+    // The personal vault keeps the bare name, leaving existing remotes readable.
+    let slot = (vault_id != PERSONAL_VAULT_ID).then(|| vault_id.to_string());
     match provider {
         "local-folder" => {
             let folder = stored.folder_path.as_ref().ok_or_else(|| {
@@ -3020,7 +3247,7 @@ async fn create_provider(
             let path = PathBuf::from(folder);
             providers::validate_local_folder(&path)?;
             reject_app_data_path(&path, app_data_dir)?;
-            Ok(Box::new(LocalFolderProvider::new(path)))
+            Ok(Box::new(LocalFolderProvider::new(path, slot)))
         }
         "webdav" => Ok(Box::new(WebDavProvider::new(
             stored
@@ -3030,21 +3257,37 @@ async fn create_provider(
             stored.username.clone().ok_or_else(|| {
                 LumaError::SyncUnavailable("WebDAV username is not configured".into())
             })?,
-            credential_get(pool, vault_state, KEYCHAIN_WEBDAV_PASSWORD).await?,
+            credential_get(
+                pool,
+                keystore_state,
+                &vault_account(KEYCHAIN_WEBDAV_PASSWORD, vault_id),
+            )
+            .await?,
+            slot,
         )?)),
         "github-gist" => Ok(Box::new(GitHubGistProvider::new(
-            credential_get(pool, vault_state, KEYCHAIN_GIST_TOKEN).await?,
+            credential_get(
+                pool,
+                keystore_state,
+                &vault_account(KEYCHAIN_GIST_TOKEN, vault_id),
+            )
+            .await?,
             stored.gist_id.clone(),
+            slot,
         )?)),
         "luma-cloud" => {
             let api_url = stored.cloud_url.clone().ok_or_else(|| {
                 LumaError::SyncUnavailable("Luma Cloud URL is not configured".into())
             })?;
             let access_token =
-                crate::collaboration::account_access_token(pool, collab_runtime, vault_state)
+                crate::collaboration::account_access_token(pool, collab_runtime, keystore_state)
                     .await
                     .map_err(|e| LumaError::SyncAuthFailed(e.message))?;
-            Ok(Box::new(LumaCloudProvider::new(api_url, access_token)?))
+            Ok(Box::new(LumaCloudProvider::new(
+                api_url,
+                access_token,
+                slot,
+            )?))
         }
         _ => Err(LumaError::SyncUnavailable(
             "stored sync provider is unsupported".into(),
@@ -3058,6 +3301,7 @@ async fn update_after_upload(
     stored: &mut StoredSyncState,
     bundle: &SyncBundle,
     uploaded: UploadResult,
+    vault_id: &str,
 ) -> Result<()> {
     stored.last_remote_version = Some(uploaded.version);
     stored.baseline = baseline_for_bundle(bundle)?;
@@ -3066,24 +3310,27 @@ async fn update_after_upload(
             stored.gist_id = Some(gist_id);
         }
     }
-    save_stored_state(pool, stored, true).await
+    save_stored_state(pool, stored, true, vault_id).await
 }
 
 async fn save_stored_state(
     pool: &SqlitePool,
     stored: &StoredSyncState,
     mark_synced: bool,
+    vault_id: &str,
 ) -> Result<()> {
     let state = serde_json::to_string(stored)
         .map_err(|_| LumaError::SyncUnavailable("could not save sync state".into()))?;
     if mark_synced {
-        sqlx::query("UPDATE sync_state SET state=?1,last_synced_at=unixepoch() WHERE id=1")
+        sqlx::query("UPDATE sync_state SET state=?1,last_synced_at=unixepoch() WHERE vault_id=?2")
             .bind(state)
+            .bind(vault_id)
             .execute(pool)
             .await?;
     } else {
-        sqlx::query("UPDATE sync_state SET state=?1 WHERE id=1")
+        sqlx::query("UPDATE sync_state SET state=?1 WHERE vault_id=?2")
             .bind(state)
+            .bind(vault_id)
             .execute(pool)
             .await?;
     }
@@ -3377,21 +3624,21 @@ mod tests {
     async fn private_key_sync_opt_in_off_assembles_no_encrypted_secrets() {
         let pool = crate::storage::init_in_memory().await.unwrap();
         let runtime = SyncRuntimeState::default();
-        let vault_state = VaultState::default();
-        initialize(&pool, &runtime, &vault_state).await.unwrap();
+        let keystore_state = KeystoreState::default();
+        initialize(&pool, &runtime, &keystore_state).await.unwrap();
         sqlx::query(
             "INSERT INTO key_references(id,name,storage_mode,has_private_key,updated_at)\n             VALUES('key-1','Local key','encrypted-vault',1,42)",
         )
         .execute(&pool)
         .await
         .unwrap();
-        vault::setup(&pool, &vault_state, "vault password", false)
+        keystore::setup(&pool, &keystore_state, "keystore password", false)
             .await
             .unwrap();
-        vault::store(
+        keystore::store(
             &pool,
-            &vault_state,
-            VAULT_KEY_OWNER_TYPE,
+            &keystore_state,
+            KEYSTORE_KEY_OWNER_TYPE,
             "key-1",
             PRIVATE_KEY_SECRET_TYPE,
             "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
@@ -3406,9 +3653,14 @@ mod tests {
         .await
         .unwrap();
 
-        let bundle = assemble_bundle(&pool, &vault_state, "correct horse battery staple")
-            .await
-            .unwrap();
+        let bundle = assemble_bundle(
+            &pool,
+            &keystore_state,
+            "correct horse battery staple",
+            PERSONAL_VAULT_ID,
+        )
+        .await
+        .unwrap();
         assert!(bundle.encrypted_key_secrets.is_empty());
         assert!(!serde_json::to_string(&bundle)
             .unwrap()
@@ -3416,9 +3668,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vault_locked_apply_skips_private_keys_and_counts_them() {
+    async fn keystore_locked_apply_skips_private_keys_and_counts_them() {
         let pool = crate::storage::init_in_memory().await.unwrap();
-        let vault_state = VaultState::default();
+        let keystore_state = KeystoreState::default();
         let passphrase = "correct horse battery staple";
         let mut remote = empty_bundle("22222222-2222-4222-8222-222222222222");
         remote.key_references.push(SyncKeyReference {
@@ -3444,15 +3696,17 @@ mod tests {
         let local = empty_bundle("11111111-1111-4111-8111-111111111111");
         let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
         let prepared = prepare_remote_secrets(
-            &vault_state,
+            &keystore_state,
             passphrase,
             &remote.encrypted_key_secrets,
             &outcome.states,
             &outcome.remote_key_references,
         )
         .unwrap();
-        apply_states(&pool, &outcome.states).await.unwrap();
-        let summary = apply_prepared_secrets(&pool, &vault_state, passphrase, prepared)
+        apply_states(&pool, &outcome.states, PERSONAL_VAULT_ID)
+            .await
+            .unwrap();
+        let summary = apply_prepared_secrets(&pool, &keystore_state, passphrase, prepared)
             .await
             .unwrap();
         assert_eq!(summary.applied, 0);
@@ -3466,10 +3720,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unlocked_apply_reencrypts_private_key_into_local_vault() {
+    async fn unlocked_apply_reencrypts_private_key_into_local_keystore() {
         let pool = crate::storage::init_in_memory().await.unwrap();
-        let vault_state = VaultState::default();
-        vault::setup(&pool, &vault_state, "vault password", false)
+        let keystore_state = KeystoreState::default();
+        keystore::setup(&pool, &keystore_state, "keystore password", false)
             .await
             .unwrap();
         let passphrase = "correct horse battery staple";
@@ -3499,24 +3753,26 @@ mod tests {
         let local = empty_bundle("11111111-1111-4111-8111-111111111111");
         let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
         let prepared = prepare_remote_secrets(
-            &vault_state,
+            &keystore_state,
             passphrase,
             &remote.encrypted_key_secrets,
             &outcome.states,
             &outcome.remote_key_references,
         )
         .unwrap();
-        apply_states(&pool, &outcome.states).await.unwrap();
-        let summary = apply_prepared_secrets(&pool, &vault_state, passphrase, prepared)
+        apply_states(&pool, &outcome.states, PERSONAL_VAULT_ID)
+            .await
+            .unwrap();
+        let summary = apply_prepared_secrets(&pool, &keystore_state, passphrase, prepared)
             .await
             .unwrap();
 
         assert_eq!(summary.applied, 1);
         assert_eq!(summary.skipped_locked, 0);
-        let stored = vault::load(
+        let stored = keystore::load(
             &pool,
-            &vault_state,
-            VAULT_KEY_OWNER_TYPE,
+            &keystore_state,
+            KEYSTORE_KEY_OWNER_TYPE,
             "key-1",
             PRIVATE_KEY_SECRET_TYPE,
         )
@@ -3535,16 +3791,16 @@ mod tests {
     #[tokio::test]
     async fn kept_local_key_never_has_its_secret_overwritten() {
         let pool = crate::storage::init_in_memory().await.unwrap();
-        let vault_state = VaultState::default();
-        vault::setup(&pool, &vault_state, "vault password", false)
+        let keystore_state = KeystoreState::default();
+        keystore::setup(&pool, &keystore_state, "keystore password", false)
             .await
             .unwrap();
         let local_private_key =
             "-----BEGIN OPENSSH PRIVATE KEY-----\nLOCALKEY\n-----END OPENSSH PRIVATE KEY-----\n";
-        vault::store(
+        keystore::store(
             &pool,
-            &vault_state,
-            VAULT_KEY_OWNER_TYPE,
+            &keystore_state,
+            KEYSTORE_KEY_OWNER_TYPE,
             "key-1",
             PRIVATE_KEY_SECRET_TYPE,
             local_private_key,
@@ -3594,17 +3850,19 @@ mod tests {
         assert_eq!(outcome.conflicts.len(), 1);
         assert!(outcome.remote_key_references.is_empty());
         let prepared = prepare_remote_secrets(
-            &vault_state,
+            &keystore_state,
             "correct horse battery staple",
             &remote.encrypted_key_secrets,
             &outcome.states,
             &outcome.remote_key_references,
         )
         .unwrap();
-        apply_states(&pool, &outcome.states).await.unwrap();
+        apply_states(&pool, &outcome.states, PERSONAL_VAULT_ID)
+            .await
+            .unwrap();
         let summary = apply_prepared_secrets(
             &pool,
-            &vault_state,
+            &keystore_state,
             "correct horse battery staple",
             prepared,
         )
@@ -3612,10 +3870,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(summary.applied, 0);
-        let stored = vault::load(
+        let stored = keystore::load(
             &pool,
-            &vault_state,
-            VAULT_KEY_OWNER_TYPE,
+            &keystore_state,
+            KEYSTORE_KEY_OWNER_TYPE,
             "key-1",
             PRIVATE_KEY_SECRET_TYPE,
         )
@@ -3784,7 +4042,9 @@ mod tests {
         let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
         assert!(outcome.remote_identities.contains("identity-1"));
         validate_states(&outcome.states).unwrap();
-        apply_states(&pool, &outcome.states).await.unwrap();
+        apply_states(&pool, &outcome.states, PERSONAL_VAULT_ID)
+            .await
+            .unwrap();
 
         let identity: (String, String, i64) = sqlx::query_as(
             "SELECT name,username,has_password FROM identities WHERE id='identity-1'",
@@ -3850,5 +4110,375 @@ mod tests {
         let error = encrypt_bundle(&bundle, "correct passphrase").unwrap_err();
         assert_eq!(error.category(), "invalid-input");
         assert!(!error.to_string().contains("do-not-sync"));
+    }
+
+    fn temporary_directory() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("luma-vault-sync-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn local_folder_input(folder: &Path) -> SyncConfigureInput {
+        SyncConfigureInput {
+            provider: "local-folder".into(),
+            folder_path: Some(folder.to_string_lossy().into_owned()),
+            url: None,
+            username: None,
+            password: None,
+            gist_id: None,
+            token: None,
+            cloud_url: None,
+        }
+    }
+
+    async fn shared_vault(pool: &SqlitePool, name: &str, share_secrets: bool) -> String {
+        vaults::create(
+            pool,
+            vaults::VaultInput {
+                name: name.into(),
+                share_secrets,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    async fn seed_host(pool: &SqlitePool, vault_id: &str, name: &str) -> String {
+        hosts::create(
+            pool,
+            hosts::HostInput {
+                vault_id: vault_id.into(),
+                name: name.into(),
+                hostname: "server.example.com".into(),
+                port: 22,
+                username: None,
+                group_id: None,
+                authentication_type: "interactive".into(),
+                key_id: None,
+                identity_id: None,
+                proxy_jump_host_id: None,
+                startup_command: None,
+                working_directory: None,
+                environment: None,
+                tags: vec![],
+                favorite: false,
+                tab_color: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    #[tokio::test]
+    async fn a_shared_vault_bundle_carries_no_settings_or_terminal_profiles() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let runtime = SyncRuntimeState::default();
+        let keystore_state = KeystoreState::default();
+        initialize(&pool, &runtime, &keystore_state).await.unwrap();
+
+        settings::set(&pool, "appearance.theme", &json!("dark"))
+            .await
+            .unwrap();
+        // Inserted directly: profiles::create resolves the shell against the real
+        // filesystem, which differs per platform.
+        sqlx::query(
+            "INSERT INTO terminal_profiles(id,name,shell_path,args) VALUES('profile-1','Shell','shell',  '[]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        settings::delete(&pool, "appearance.theme").await.unwrap();
+        settings::set(&pool, "appearance.theme", &json!("light"))
+            .await
+            .unwrap();
+
+        let shared = shared_vault(&pool, "Infra", false).await;
+        seed_host(&pool, &shared, "Bastion").await;
+
+        let personal = assemble_bundle_without_private_keys(&pool, PERSONAL_VAULT_ID)
+            .await
+            .unwrap();
+        assert!(!personal.settings.is_empty());
+        assert_eq!(personal.terminal_profiles.len(), 1);
+
+        let bundle = assemble_bundle_without_private_keys(&pool, &shared)
+            .await
+            .unwrap();
+        assert_eq!(bundle.hosts.len(), 1);
+        assert!(bundle.settings.is_empty());
+        assert!(bundle.terminal_profiles.is_empty());
+        assert!(!bundle
+            .tombstones
+            .iter()
+            .any(|tombstone| tombstone.object_type == "setting"
+                || tombstone.object_type == "terminal_profile"));
+    }
+
+    #[tokio::test]
+    async fn secret_sharing_off_assembles_a_shared_bundle_with_no_key_secrets() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let runtime = SyncRuntimeState::default();
+        let keystore_state = KeystoreState::default();
+        initialize(&pool, &runtime, &keystore_state).await.unwrap();
+        keystore::setup(&pool, &keystore_state, "keystore password", false)
+            .await
+            .unwrap();
+
+        let private = shared_vault(&pool, "Client X", false).await;
+        let sharing = shared_vault(&pool, "Infra", true).await;
+        for vault_id in [&private, &sharing] {
+            let key_id = format!("key-{vault_id}");
+            sqlx::query(
+                "INSERT INTO key_references(id,vault_id,name,storage_mode,has_private_key,updated_at)
+                 VALUES(?1,?2,'Shared key','encrypted-vault',1,42)",
+            )
+            .bind(&key_id)
+            .bind(vault_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            keystore::store(
+                &pool,
+                &keystore_state,
+                KEYSTORE_KEY_OWNER_TYPE,
+                &key_id,
+                PRIVATE_KEY_SECRET_TYPE,
+                "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+            )
+            .await
+            .unwrap();
+        }
+
+        let passphrase = "correct horse battery staple";
+        let withheld = assemble_bundle(&pool, &keystore_state, passphrase, &private)
+            .await
+            .unwrap();
+        assert_eq!(withheld.key_references.len(), 1);
+        assert!(withheld.encrypted_key_secrets.is_empty());
+
+        let shared = assemble_bundle(&pool, &keystore_state, passphrase, &sharing)
+            .await
+            .unwrap();
+        assert_eq!(shared.key_references.len(), 1);
+        assert_eq!(shared.encrypted_key_secrets.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn two_vaults_sync_independently_and_one_conflict_does_not_stall_the_other() {
+        let root = temporary_directory();
+        let app_data_dir = root.join("app-data");
+        let folder = root.join("remote");
+        fs::create_dir_all(&app_data_dir).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let runtime = SyncRuntimeState::default();
+        let keystore_state = KeystoreState::default();
+        let collab = crate::collaboration::CollaborationRuntimeState::default();
+        initialize(&pool, &runtime, &keystore_state).await.unwrap();
+
+        let first = shared_vault(&pool, "Infra", false).await;
+        let second = shared_vault(&pool, "Client X", false).await;
+        // Both vaults point at the same folder on purpose: the remote slot is what
+        // keeps their blobs apart.
+        for vault_id in [&first, &second] {
+            configure(
+                &pool,
+                &runtime,
+                &keystore_state,
+                &app_data_dir,
+                vault_id,
+                local_folder_input(&folder),
+            )
+            .await
+            .unwrap();
+        }
+        set_passphrase(
+            &pool,
+            &runtime,
+            &keystore_state,
+            &first,
+            "first vault passphrase".into(),
+            false,
+        )
+        .await
+        .unwrap();
+        set_passphrase(
+            &pool,
+            &runtime,
+            &keystore_state,
+            &second,
+            "second vault passphrase".into(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let first_host = seed_host(&pool, &first, "Bastion").await;
+        seed_host(&pool, &second, "Client gateway").await;
+        for vault_id in [&first, &second] {
+            let report = sync_now(
+                &pool,
+                &runtime,
+                &keystore_state,
+                &collab,
+                &app_data_dir,
+                vault_id,
+            )
+            .await
+            .unwrap();
+            assert!(report.pushed, "{vault_id} did not push");
+        }
+
+        // Two blobs, one per vault: neither overwrote the other.
+        let blobs: Vec<String> = fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".bin"))
+            .collect();
+        assert_eq!(blobs.len(), 2, "{blobs:?}");
+
+        // Force a conflict in the first vault only: rewrite its remote blob behind
+        // its back, then change the same host locally.
+        let passphrase = "first vault passphrase";
+        let blob_path = folder.join(
+            blobs
+                .iter()
+                .find(|name| {
+                    let bytes = fs::read(folder.join(name)).unwrap();
+                    decrypt_bundle(&bytes, passphrase).is_ok()
+                })
+                .unwrap(),
+        );
+        let mut remote_bundle = decrypt_bundle(&fs::read(&blob_path).unwrap(), passphrase).unwrap();
+        remote_bundle.hosts[0].hostname = "remote-edit.example.com".into();
+        remote_bundle.hosts[0].updated_at += 60;
+        fs::write(
+            &blob_path,
+            encrypt_bundle(&remote_bundle, passphrase).unwrap(),
+        )
+        .unwrap();
+
+        sqlx::query("UPDATE hosts SET hostname='local-edit.example.com', updated_at=updated_at+60 WHERE id=?1")
+            .bind(&first_host)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let stalled = sync_now(
+            &pool,
+            &runtime,
+            &keystore_state,
+            &collab,
+            &app_data_dir,
+            &first,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stalled.conflicts.len(), 1);
+        assert!(!stalled.pushed);
+
+        // The second vault syncs cleanly while the first is still holding a conflict.
+        let unaffected = sync_now(
+            &pool,
+            &runtime,
+            &keystore_state,
+            &collab,
+            &app_data_dir,
+            &second,
+        )
+        .await
+        .unwrap();
+        assert!(unaffected.conflicts.is_empty());
+        assert!(unaffected.up_to_date);
+        assert!(runtime.pending.lock().unwrap().contains_key(&first));
+        assert!(!runtime.pending.lock().unwrap().contains_key(&second));
+
+        // Resolving the first vault's conflict touches only the first vault.
+        let resolved = sync_resolve(
+            &pool,
+            &runtime,
+            &keystore_state,
+            &collab,
+            &app_data_dir,
+            &first,
+            &[ConflictResolution {
+                object_type: "host".into(),
+                object_id: first_host.clone(),
+                resolution: ResolutionChoice::TakeRemote,
+            }],
+        )
+        .await
+        .unwrap();
+        assert!(resolved.pushed);
+        assert!(runtime.pending.lock().unwrap().is_empty());
+        let hostname: String = sqlx::query_scalar("SELECT hostname FROM hosts WHERE id=?1")
+            .bind(&first_host)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(hostname, "remote-edit.example.com");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_shared_vault_bundle_cannot_rewrite_another_vaults_row() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let runtime = SyncRuntimeState::default();
+        let keystore_state = KeystoreState::default();
+        initialize(&pool, &runtime, &keystore_state).await.unwrap();
+
+        let shared = shared_vault(&pool, "Infra", false).await;
+        let victim = seed_host(&pool, PERSONAL_VAULT_ID, "My server").await;
+
+        // A member of the shared vault authors an object with the same id.
+        let mut hostile = empty_bundle("22222222-2222-4222-8222-222222222222");
+        hostile.hosts.push(SyncHost {
+            id: victim.clone(),
+            name: "My server".into(),
+            hostname: "attacker.example.com".into(),
+            port: 22,
+            username: None,
+            group_id: None,
+            authentication_type: "interactive".into(),
+            key_id: None,
+            identity_id: None,
+            proxy_jump_host_id: None,
+            startup_command: None,
+            working_directory: None,
+            environment: None,
+            tags: vec![],
+            favorite: false,
+            tab_color: None,
+            updated_at: 9_999_999,
+        });
+        apply_states(&pool, &hostile.states().unwrap(), &shared)
+            .await
+            .unwrap();
+
+        let row = sqlx::query("SELECT hostname, vault_id FROM hosts WHERE id=?1")
+            .bind(&victim)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("hostname"), "server.example.com");
+        assert_eq!(row.get::<String, _>("vault_id"), PERSONAL_VAULT_ID);
+
+        // The same reasoning for deletes: the shared vault's tombstone must not
+        // remove the personal vault's row.
+        let mut deleting = empty_bundle("22222222-2222-4222-8222-222222222222");
+        deleting.tombstones.push(SyncTombstone {
+            object_type: "host".into(),
+            object_id: victim.clone(),
+            deleted_at: 9_999_999,
+        });
+        apply_states(&pool, &deleting.states().unwrap(), &shared)
+            .await
+            .unwrap();
+        assert!(hosts::get(&pool, &victim).await.unwrap().is_some());
     }
 }

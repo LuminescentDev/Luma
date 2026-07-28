@@ -2,21 +2,23 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::errors::Result;
+use crate::keystore::KeystoreState;
 use crate::sftp::{
     self, DirectoryListing, SftpConnectResponse, SftpManager, SftpSessionInfo, TransferProgress,
     TransferStartResponse,
 };
-use crate::vault::VaultState;
 use crate::AppState;
 
 #[tauri::command]
 pub async fn sftp_connect(
     state: State<'_, AppState>,
     manager: State<'_, SftpManager>,
-    vault_state: State<'_, VaultState>,
+    keystore_state: State<'_, KeystoreState>,
     host_id: String,
 ) -> Result<SftpConnectResponse> {
-    manager.connect(&state.pool, &vault_state, &host_id).await
+    manager
+        .connect(&state.pool, &keystore_state, &host_id)
+        .await
 }
 
 #[tauri::command]

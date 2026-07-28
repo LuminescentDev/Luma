@@ -1,0 +1,21 @@
+PackageIdentifier: BWMP.Luma
+PackageVersion: 0.14.2
+PackageLocale: en-US
+Publisher: BWMP
+PublisherUrl: https://github.com/bwmp-dev
+PublisherSupportUrl: https://github.com/bwmp-dev/Luma/issues
+PackageName: Luma
+PackageUrl: https://luma.bwmp.dev/
+License: MIT
+LicenseUrl: https://github.com/bwmp-dev/Luma/blob/v0.14.2/LICENSE
+ShortDescription: Free open-source terminal and SSH client
+Description: Luma combines local and serial terminals, saved SSH connections, SFTP, port forwarding, snippets, and optional end-to-end encrypted configuration sync.
+Tags:
+- ssh
+- sftp
+- terminal
+- serial
+- developer-tools
+ReleaseNotesUrl: https://github.com/bwmp-dev/Luma/releases/tag/v0.14.2
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

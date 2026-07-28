@@ -1,0 +1,29 @@
+# Maintainer: Luma contributors <luma@bwmp.dev>
+pkgname=luma-bin
+pkgver=0.14.2
+pkgrel=1
+pkgdesc="Free open-source terminal and SSH client"
+arch=('x86_64')
+url="https://luma.bwmp.dev"
+license=('MIT')
+depends=('gtk3' 'webkit2gtk-4.1' 'systemd-libs')
+provides=('luma')
+conflicts=('luma')
+options=('!strip')
+source=(
+  "luma-${pkgver}.deb::https://github.com/bwmp-dev/Luma/releases/download/v0.14.2/Luma_0.14.2_amd64.deb"
+  "LICENSE-${pkgver}::https://raw.githubusercontent.com/bwmp-dev/Luma/v0.14.2/LICENSE"
+)
+sha256sums=(
+  '01b14e3241d830f2612a30e93962daf2a79abbde1a0001394087d75a10c1b752'
+  '85837564856e5ddd827ad015da328b847d4b8bbbd4e218a3e95e6f0d2d3db7ae'
+)
+
+package() {
+  cd "$pkgdir"
+  bsdtar -xf "$srcdir/luma-${pkgver}.deb"
+  bsdtar -xf data.tar.*
+  rm control.tar.* data.tar.* debian-binary
+
+  install -Dm644 "$srcdir/LICENSE-${pkgver}"     "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

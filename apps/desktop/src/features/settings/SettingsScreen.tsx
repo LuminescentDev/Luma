@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Archive,
   Download,
   Info,
   Keyboard,
@@ -10,6 +9,7 @@ import {
   Sun,
   Terminal as TerminalIcon,
   UserRound,
+  Vault as VaultIcon,
   type LucideIcon,
 } from "lucide-react";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
@@ -22,9 +22,8 @@ import { ProfilesSection } from "./ProfilesSection";
 import { AppearanceSection } from "./AppearanceSection";
 import { KeymapSection } from "./KeymapSection";
 import { AccountSection } from "../account/AccountSection";
-import { SyncSection } from "../sync/SyncSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
-import { BackupSection } from "../sync/BackupSection";
+import { VaultsSection } from "../vaults/VaultsSection";
 import { UpdatesSection } from "../updater/UpdatesSection";
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
@@ -38,7 +37,7 @@ type CategoryId =
   | "terminal"
   | "shortcuts"
   | "account"
-  | "backup"
+  | "vaults"
   | "updates"
   | "about";
 
@@ -46,8 +45,8 @@ const CATEGORIES: { id: CategoryId; label: string; icon: LucideIcon }[] = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "terminal", label: "Terminal & SSH", icon: TerminalIcon },
   { id: "shortcuts", label: "Keyboard shortcuts", icon: Keyboard },
-  { id: "account", label: "Account & Sync", icon: UserRound },
-  { id: "backup", label: "Encrypted backup", icon: Archive },
+  { id: "account", label: "Account", icon: UserRound },
+  { id: "vaults", label: "Vaults & Sync", icon: VaultIcon },
   { id: "updates", label: "Updates", icon: Download },
   { id: "about", label: "About", icon: Info },
 ];
@@ -183,16 +182,13 @@ export function SettingsScreen() {
         return (
           <div className="space-y-8">
             <AccountSection />
-            <Subsection title="Sync">
-              <SyncSection />
-            </Subsection>
             <Subsection title="Collaboration">
               <CollaborationSection />
             </Subsection>
           </div>
         );
-      case "backup":
-        return <BackupSection />;
+      case "vaults":
+        return <VaultsSection />;
       case "updates":
         return <UpdatesSection />;
       case "about":

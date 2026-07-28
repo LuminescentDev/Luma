@@ -10,8 +10,8 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::{watch, Semaphore};
 
 use crate::errors::{LumaError, Result};
+use crate::keystore::KeystoreState;
 use crate::ssh;
-use crate::vault::VaultState;
 use crate::AppState;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -257,8 +257,8 @@ async fn run_host(
 ) {
     let operation = async {
         let state = app.state::<AppState>();
-        let vault = app.state::<VaultState>();
-        let (mut config, _) = ssh::connection_config(&state.pool, &vault, host_id).await?;
+        let keystore_state = app.state::<KeystoreState>();
+        let (mut config, _) = ssh::connection_config(&state.pool, &keystore_state, host_id).await?;
         config.startup_command = None;
         let handle = ssh::authenticated_handle(&config).await?;
         let mut channel =
@@ -359,7 +359,7 @@ fn timeout_error(timeout: Duration) -> LumaError {
 
 fn event_error(error: &LumaError) -> (&'static str, String) {
     let category = match error.category() {
-        "auth-failed" | "authentication" | "key-unavailable" | "vault-locked" => "auth-failed",
+        "auth-failed" | "authentication" | "key-unavailable" | "keystore-locked" => "auth-failed",
         "dns-failed" | "host-unreachable" => "host-unreachable",
         "timeout" => "timeout",
         "unsupported" | "ssh-unavailable" => "unsupported",

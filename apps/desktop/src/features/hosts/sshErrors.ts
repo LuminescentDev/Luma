@@ -24,6 +24,10 @@ const MESSAGES: Record<string, string> = {
     "The private key file is missing. Update the key reference to point to a valid key file.",
   "key-passphrase-invalid":
     "The saved passphrase could not decrypt the configured private key. Re-enter the passphrase or import the matching key again.",
+  // Reached when a restored session's key or identity password lives in the
+  // keystore and it is still locked — common right after launch.
+  "keystore-locked":
+    "This host's key is in the encrypted keystore, which is locked. Unlock it from the Keys screen, then reconnect.",
   "host-key-scan-failed":
     "Luma could not scan the server's host key. Check the address, port, jump-host credentials, and network, then try again.",
   "host-key-file-invalid":
@@ -55,6 +59,8 @@ export function sshCategoryLabel(category: string): string {
       return "Key unavailable";
     case "key-passphrase-invalid":
       return "Passphrase rejected";
+    case "keystore-locked":
+      return "Keystore locked";
     case "host-key-scan-failed":
       return "Host key scan failed";
     case "host-key-file-invalid":
