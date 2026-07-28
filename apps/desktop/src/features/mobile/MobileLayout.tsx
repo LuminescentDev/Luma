@@ -9,6 +9,7 @@ import { KeychainScreen } from "../keychain/KeychainScreen";
 import { SnippetsScreen } from "../snippets/SnippetsScreen";
 import { SnippetRunner } from "../snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../snippets/MultiHostRunDialog";
+import { MobileFontSizeSetup } from "./MobileFontSizeSetup";
 
 /*
  * Mobile application shell. A bottom-navigation container (Hosts, Sessions,
@@ -103,6 +104,7 @@ export function MobileLayout() {
       <Suspense fallback={null}>
         <SyncDialogs />
       </Suspense>
+      <MobileFontSizeSetup />
     </div>
   );
 }

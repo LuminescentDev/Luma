@@ -13,6 +13,7 @@ import {
   type CustomTheme,
 } from "../features/terminal/themes";
 import { setAppScheme } from "../lib/appTheme";
+import { isMobilePlatform } from "./capabilityStore";
 
 /*
  * Terminal Appearance styling: color scheme (bundled/custom/AUTO), font family,
@@ -23,8 +24,14 @@ import { setAppScheme } from "../lib/appTheme";
  */
 
 const DEFAULT_FONT_SIZE = 14;
+const DEFAULT_MOBILE_FONT_SIZE = 12;
 export const MIN_FONT_SIZE = 8;
 export const MAX_FONT_SIZE = 24;
+
+/** Use a denser grid on a phone until the user explicitly chooses a size. */
+function defaultFontSize(): number {
+  return isMobilePlatform() ? DEFAULT_MOBILE_FONT_SIZE : DEFAULT_FONT_SIZE;
+}
 
 type TerminalStyleState = {
   /** Selected scheme id: a bundled/custom id, or AUTO_SCHEME_ID for app mode. */
@@ -82,7 +89,9 @@ export const useTerminalStyleStore = create<TerminalStyleState>((set, get) => ({
       const schemeId = typeof rawScheme === "string" && rawScheme ? rawScheme : AUTO_SCHEME_ID;
       const rawFamily = settings[SETTING_KEYS.terminalFontFamily];
       const fontFamily = typeof rawFamily === "string" ? rawFamily : "";
-      const fontSize = clampFontSize(Number(settings[SETTING_KEYS.fontSize] ?? DEFAULT_FONT_SIZE));
+      const fontSize = clampFontSize(
+        Number(settings[SETTING_KEYS.fontSize] ?? defaultFontSize()),
+      );
       set({ schemeId, customThemes, fontFamily, fontSize, loaded: true });
       terminalManager.applyTerminalStyle({
         scheme: resolveScheme(schemeId, customThemes),

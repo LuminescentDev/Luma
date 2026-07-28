@@ -41,7 +41,6 @@ import {
   writeSerial,
   type SerialConfig,
 } from "../../lib/serial";
-import { isMobilePlatform } from "../../stores/capabilityStore";
 
 /** What a managed session should launch. Local shells resolve a ShellRef;
  * SSH sessions send only a hostId (the backend owns the connection details);
@@ -1318,11 +1317,10 @@ export const terminalManager = {
     const reattaching = existing !== undefined;
     if (!existing) {
       session.term.open(host);
-      // Skip WebGL on mobile: mobile WebViews frequently lose/park the GL
-      // context (backgrounding, low-memory), which blanks the terminal. The
-      // DOM/canvas renderer is the reliable default there. loadWebgl itself also
-      // try/catches into the canvas fallback on desktop if the addon fails.
-      if (!isMobilePlatform()) void loadWebgl(session.term);
+      // Prefer the same renderer on every platform. loadWebgl catches
+      // initialization failures and disposes itself on context loss, leaving
+      // xterm's built-in renderer as the automatic fallback.
+      void loadWebgl(session.term);
 
       void bundledTerminalFontReady.then(() => {
         if (session.disposed || !session.term.element?.isConnected) return;

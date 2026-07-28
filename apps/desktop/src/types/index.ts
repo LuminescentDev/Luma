@@ -145,6 +145,8 @@ export type WorkspaceTab = {
 export const SETTING_KEYS = {
   theme: "appearance.theme",
   fontSize: "terminal.fontSize",
+  /** Device-local acknowledgement of the initial mobile font-size picker. */
+  mobileFontSizeSetup: "terminal.mobileFontSizeSetup",
   scrollback: "terminal.scrollback",
   defaultShell: "terminal.defaultShell",
   /** Device-local serialized workspace snapshot (tabs + layout + restore

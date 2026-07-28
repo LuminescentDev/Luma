@@ -4,6 +4,10 @@ import { AUTO_SCHEME_ID, type CustomTheme } from "../features/terminal/themes";
 import { useTerminalStyleStore } from "./terminalStyleStore";
 import { APP_TOKEN_KEYS } from "../lib/appTheme";
 import { SETTING_KEYS } from "../types";
+import {
+  DESKTOP_CAPABILITIES,
+  useCapabilityStore,
+} from "./capabilityStore";
 
 const custom: CustomTheme = {
   id: "custom:1",
@@ -24,6 +28,10 @@ function tokenValue(name: string): string {
 }
 
 beforeEach(() => {
+  useCapabilityStore.setState({
+    capabilities: DESKTOP_CAPABILITIES,
+    loaded: true,
+  });
   writes = [];
   stored = {};
   setInvoke((cmd, args) => {
@@ -96,6 +104,24 @@ describe("terminalStyleStore", () => {
     expect(useTerminalStyleStore.getState().fontSize).toBe(8);
     const all = lastSet();
     expect(all[all.length - 1]).toEqual({ key: SETTING_KEYS.fontSize, value: 8 });
+  });
+
+  it("uses a smaller default on mobile without overriding an explicit size", async () => {
+    useCapabilityStore.setState({
+      capabilities: {
+        ...DESKTOP_CAPABILITIES,
+        os: "ios",
+        isMobile: true,
+      },
+      loaded: true,
+    });
+
+    await useTerminalStyleStore.getState().load();
+    expect(useTerminalStyleStore.getState().fontSize).toBe(12);
+
+    stored[SETTING_KEYS.fontSize] = 15;
+    await useTerminalStyleStore.getState().load();
+    expect(useTerminalStyleStore.getState().fontSize).toBe(15);
   });
 
   it("adds and de-duplicates custom themes", async () => {
