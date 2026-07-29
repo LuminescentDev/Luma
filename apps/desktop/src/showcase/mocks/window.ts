@@ -46,3 +46,29 @@ export function getCurrentWindow(): typeof fakeWindow {
 }
 
 export const appWindow = fakeWindow;
+
+/* The detached-terminal surfaces (features/terminal/detachedTabs.ts and
+ * DetachedTerminalWindow.tsx) import these from @tauri-apps/api/window, which
+ * this module stands in for. Without them the showcase bundle fails to resolve
+ * the module at all. Tearing a tab out into its own window is not a showcase
+ * scenario, so they only need to be inert and correctly shaped. */
+
+export async function cursorPosition(): Promise<{ x: number; y: number }> {
+  return { x: 0, y: 0 };
+}
+
+export async function monitorFromPoint(): Promise<null> {
+  return null;
+}
+
+export class Window {
+  label: string;
+  constructor(label: string) {
+    this.label = label;
+  }
+  static getByLabel(_label: string): null {
+    return null;
+  }
+  async close(): Promise<void> {}
+  async setFocus(): Promise<void> {}
+}

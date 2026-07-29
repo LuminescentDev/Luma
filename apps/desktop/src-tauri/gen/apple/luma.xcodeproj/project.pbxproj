@@ -10,6 +10,7 @@
 		04F2BCE9931EFF8753C87313 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F1DD5E0C948BA5E2EF13AA6 /* libapp.a */; };
 		06025A5C93AA390DF5AA4C92 /* LumaLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9293C4C41FDE45F29583EAE0 /* LumaLiveActivityBundle.swift */; };
 		06B83BAEC5A77DE0CCBD7650 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 80352B1B3FDF6ABE60A1CBF1 /* Metal.framework */; };
+		16AC03F5D7EE158D8A76D84B /* LumaTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1084D0403F3D7A518DD6A7BA /* LumaTabBar.swift */; };
 		16C2E65FDF6CB31E7F6F3A41 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 245900759016140715B3A77D /* Assets.xcassets */; };
 		28211C846355396664231DDC /* LumaLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED9FCA2F5B4A65E4A826E04 /* LumaLiveActivity.swift */; };
 		2AE3561D42A51C2EC1BDE8E6 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 5DFD11FC39BC71335638D0FC /* assets */; };
@@ -20,6 +21,7 @@
 		67058740C320BE6986A03103 /* star.icon in Resources */ = {isa = PBXBuildFile; fileRef = 858C9D329E54B589E585026F /* star.icon */; };
 		6AF7F3B9CC665C1DDB660E8B /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59C792A4726AFADEADC5480A /* WebKit.framework */; };
 		7836BB4E6F0DE9F82B3B3666 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 889148FB83A5C407848F791A /* MetalKit.framework */; };
+		8F19FAEDA8CF44C2875B6E56 /* LumaMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = F98284A9CA9DBC522D8E6AC6 /* LumaMenu.swift */; };
 		954C39342B9959FC86315259 /* LumaActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D189241E06B18B604105677B /* LumaActivityAttributes.swift */; };
 		AA5CFE8E43ACEE19139E668B /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 65E72A2666234CEE92BDEEAD /* UIKit.framework */; };
 		AC6782F939FE100A4270BD0E /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 34AF16A79E64DA76B1FD01E7 /* SwiftUI.framework */; };
@@ -61,10 +63,12 @@
 		08FE2A7D402384CEC2D7DAB2 /* sftp.rs */ = {isa = PBXFileReference; path = sftp.rs; sourceTree = "<group>"; };
 		0B284D21F2E50E0524FB876C /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		0BF887A74951F8B32E4763D2 /* keystore.rs */ = {isa = PBXFileReference; path = keystore.rs; sourceTree = "<group>"; };
+		1084D0403F3D7A518DD6A7BA /* LumaTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaTabBar.swift; sourceTree = "<group>"; };
 		12CCA1671102D3F34278224E /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 		14ADD4B9A0C70E62BAEFF9B9 /* hosts.rs */ = {isa = PBXFileReference; path = hosts.rs; sourceTree = "<group>"; };
 		1AD918BA1DF54A03DE1E1F88 /* serial.rs */ = {isa = PBXFileReference; path = serial.rs; sourceTree = "<group>"; };
 		1CCE33872168FFD41FCE49BE /* providers.rs */ = {isa = PBXFileReference; path = providers.rs; sourceTree = "<group>"; };
+		1D0E0AB6CCE940C984731FF7 /* tab_bar.rs */ = {isa = PBXFileReference; path = tab_bar.rs; sourceTree = "<group>"; };
 		1EA04AE61C04C90E9C1A62B0 /* key_references.rs */ = {isa = PBXFileReference; path = key_references.rs; sourceTree = "<group>"; };
 		245900759016140715B3A77D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		259280BC474FC66036066A27 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
@@ -120,9 +124,12 @@
 		C856922043AF4C4B8BD98B9C /* session_logging.rs */ = {isa = PBXFileReference; path = session_logging.rs; sourceTree = "<group>"; };
 		CBA00DA775D691387A14D4B6 /* port_forwards.rs */ = {isa = PBXFileReference; path = port_forwards.rs; sourceTree = "<group>"; };
 		D189241E06B18B604105677B /* LumaActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaActivityAttributes.swift; sourceTree = "<group>"; };
+		D2A2C051D86CA69B6CEF115C /* vault_key.rs */ = {isa = PBXFileReference; path = vault_key.rs; sourceTree = "<group>"; };
 		D3232EB2F12FFE72DD82B655 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		D6604E9A52809320BFE3006C /* snippet_runs.rs */ = {isa = PBXFileReference; path = snippet_runs.rs; sourceTree = "<group>"; };
+		D674A2837A6C3F4559E9F1D3 /* menu.rs */ = {isa = PBXFileReference; path = menu.rs; sourceTree = "<group>"; };
 		D879FDFADDCE980E09CFE344 /* import.rs */ = {isa = PBXFileReference; path = import.rs; sourceTree = "<group>"; };
+		DD82DA0F43D0EAF13C9F55B7 /* managed.rs */ = {isa = PBXFileReference; path = managed.rs; sourceTree = "<group>"; };
 		DF08D8EC0FDC47F124D80D00 /* tunnels.rs */ = {isa = PBXFileReference; path = tunnels.rs; sourceTree = "<group>"; };
 		DF0C5E54A408C1532531F718 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		DFF08331AB6AB04BEFA5A363 /* embedded.rs */ = {isa = PBXFileReference; path = embedded.rs; sourceTree = "<group>"; };
@@ -130,6 +137,7 @@
 		E431669ECA84CF0FDDECA92B /* remote_os.rs */ = {isa = PBXFileReference; path = remote_os.rs; sourceTree = "<group>"; };
 		EC304183740023A97AAB1B55 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		EE1727BF9A46BA753DD5E23F /* known_hosts.rs */ = {isa = PBXFileReference; path = known_hosts.rs; sourceTree = "<group>"; };
+		F98284A9CA9DBC522D8E6AC6 /* LumaMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaMenu.swift; sourceTree = "<group>"; };
 		FB1938D5364450F4DCBD4E9D /* ssh.rs */ = {isa = PBXFileReference; path = ssh.rs; sourceTree = "<group>"; };
 		FBB227EFAC4C3CBAB3871F8C /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 		FC2D0037E158120B836B83D2 /* collaboration.rs */ = {isa = PBXFileReference; path = collaboration.rs; sourceTree = "<group>"; };
@@ -262,8 +270,10 @@
 		57B45594772D700FF4D12ED1 /* sync */ = {
 			isa = PBXGroup;
 			children = (
+				DD82DA0F43D0EAF13C9F55B7 /* managed.rs */,
 				A1AC3D789E064927B06B97C1 /* mod.rs */,
 				1CCE33872168FFD41FCE49BE /* providers.rs */,
+				D2A2C051D86CA69B6CEF115C /* vault_key.rs */,
 			);
 			path = sync;
 			sourceTree = "<group>";
@@ -288,6 +298,8 @@
 			isa = PBXGroup;
 			children = (
 				4ED9FCA2F5B4A65E4A826E04 /* LumaLiveActivity.swift */,
+				F98284A9CA9DBC522D8E6AC6 /* LumaMenu.swift */,
+				1084D0403F3D7A518DD6A7BA /* LumaTabBar.swift */,
 				82C981E0D49899869B47A137 /* main.mm */,
 				71D60BDEE985F2EC51A21DF2 /* bindings */,
 			);
@@ -345,6 +357,7 @@
 				0BF887A74951F8B32E4763D2 /* keystore.rs */,
 				E1F07DEB8F59826959B743BE /* known_hosts.rs */,
 				50C89ABD083F6CEA50313795 /* live_activity.rs */,
+				D674A2837A6C3F4559E9F1D3 /* menu.rs */,
 				12CCA1671102D3F34278224E /* mod.rs */,
 				A79A0ACD12609EB0FEB88518 /* platform.rs */,
 				BE15412CB18FB0631732C64A /* port_forwards.rs */,
@@ -353,6 +366,7 @@
 				9B899CBD09BDE44CE2F2445B /* snippets.rs */,
 				FB1938D5364450F4DCBD4E9D /* ssh.rs */,
 				BFB238064440DC8740E2EF47 /* sync.rs */,
+				1D0E0AB6CCE940C984731FF7 /* tab_bar.rs */,
 				5BF7ED7D6F1B1BD35E6F22C2 /* vaults.rs */,
 			);
 			path = commands;
@@ -425,18 +439,18 @@
 			path = luma_iOS;
 			sourceTree = "<group>";
 		};
-		"TEMP_4B31E49E-6850-4A6A-A217-48FAD0B5AB3F" /* arm64 */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = arm64;
-			sourceTree = "<group>";
-		};
-		"TEMP_687E5D30-EC8B-4BDC-9BB3-839F0EBFB5FD" /* x86_64 */ = {
+		"TEMP_B029329B-AAA2-49E9-AA54-D5F6DDD33BED" /* x86_64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			path = x86_64;
+			sourceTree = "<group>";
+		};
+		"TEMP_DEB9EAFE-F3F7-498E-A37C-9F5028A04F77" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -566,6 +580,8 @@
 			files = (
 				35E9DEA33C5AB5F4894B62CF /* LumaActivityAttributes.swift in Sources */,
 				28211C846355396664231DDC /* LumaLiveActivity.swift in Sources */,
+				8F19FAEDA8CF44C2875B6E56 /* LumaMenu.swift in Sources */,
+				16AC03F5D7EE158D8A76D84B /* LumaTabBar.swift in Sources */,
 				DA3C42591DA5AF2C2B015FC3 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -750,7 +766,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 828MX392ZN;
+				DEVELOPMENT_TEAM = "828MX392ZN";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -767,7 +783,7 @@
 				MARKETING_VERSION = 0.14.2;
 				OTHER_LDFLAGS = "$(inherited) -weak_framework ActivityKit";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bwmp.luma;
-				PRODUCT_NAME = Luma;
+				PRODUCT_NAME = "Luma";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -787,7 +803,7 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 828MX392ZN;
+				DEVELOPMENT_TEAM = "828MX392ZN";
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -804,7 +820,7 @@
 				MARKETING_VERSION = 0.14.2;
 				OTHER_LDFLAGS = "$(inherited) -weak_framework ActivityKit";
 				PRODUCT_BUNDLE_IDENTIFIER = dev.bwmp.luma;
-				PRODUCT_NAME = Luma;
+				PRODUCT_NAME = "Luma";
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";

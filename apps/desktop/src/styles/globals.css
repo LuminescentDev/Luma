@@ -223,6 +223,23 @@ select,
 }
 
 /*
+ * The mobile tab bar floats OVER scrolling content (web pill or, on iOS, a
+ * native Liquid Glass bar owned by the tab-bar plugin), so it occupies no layout
+ * box. Scrollable screens reserve room for it with .pb-tabbar or the last rows
+ * would sit underneath. The height is a variable because the native bar measures
+ * itself in Swift and reports its real height back — see mobile/tabBar.ts.
+ */
+:root {
+  --mobile-tabbar-height: 68px;
+}
+.pb-tabbar {
+  padding-bottom: calc(
+    var(--mobile-tabbar-height) + env(safe-area-inset-bottom) +
+      var(--emulated-safe-area-bottom, 0px) + 1rem
+  );
+}
+
+/*
  * Touch devices have no hover, so Luma's hover-revealed row/folder controls
  * (kebab menus, favorite stars) would be unreachable. On a coarse pointer make
  * them permanently visible. Scoped to (pointer: coarse) so desktop is untouched.

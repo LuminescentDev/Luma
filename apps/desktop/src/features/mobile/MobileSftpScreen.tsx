@@ -217,8 +217,10 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-background">
-      {/* Header */}
-      <div className="shrink-0 border-b border-border bg-surface px-3 py-2 pt-safe">
+      {/* Path/action bar. The safe-area inset and screen title belong to the
+          MobileScreen chrome this is pushed into, so this row does not repeat
+          either. */}
+      <div className="shrink-0 border-b border-border bg-surface px-3 py-2">
         <div className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-semibold">{hostLabel}</span>
           <button

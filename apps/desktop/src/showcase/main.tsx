@@ -27,7 +27,7 @@ const IOS_CAPABILITIES: PlatformCapabilities = {
     serial: false,
     sshConfigImport: false,
     sftp: true,
-    portForwarding: false,
+    portForwarding: true,
     updater: false,
     biometrics: true,
     windowControls: false,

@@ -62,7 +62,7 @@ export function KnownHostsScreen() {
 
   return (
     <div className="h-full overflow-y-auto bg-background">
-      <div className="mx-auto max-w-4xl px-8 py-8">
+      <div className="mx-auto max-w-4xl px-4 py-5 md:px-8 md:py-8">
         <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/15 text-accent">
           <ShieldCheck size={22} />
         </div>

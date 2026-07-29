@@ -1,23 +1,47 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef } from "react";
 import { useSessionStore } from "../../stores/sessionStore";
-import { MobileNav, type MobileTab } from "./MobileNav";
-import { MobileHostsScreen } from "./MobileHostsScreen";
-import { MobileSessionsList } from "./MobileSessionsList";
+import {
+  useActiveRoute,
+  useMobileNavStore,
+  type MobileRoute,
+} from "../../stores/mobileNavStore";
+import { MobileTabBar } from "./MobileTabBar";
+import { useNativeTabBar } from "./useNativeTabBar";
+import { MobileVaultsHub } from "./MobileVaultsHub";
+import { MobileConnectionsScreen } from "./MobileConnectionsScreen";
+import { MobileProfileHub } from "./MobileProfileHub";
 import { MobileTerminalView } from "./MobileTerminalView";
-import { MobileSettingsScreen } from "./MobileSettingsScreen";
+import { MobileHostsScreen } from "./MobileHostsScreen";
+import { MobileSftpScreen } from "./MobileSftpScreen";
+import { MobileLogsScreen } from "./MobileLogsScreen";
+import { MobilePortForwardsScreen } from "./MobilePortForwardsScreen";
+import { MobileScreen } from "./MobileScreen";
 import { KeychainScreen } from "../keychain/KeychainScreen";
 import { SnippetsScreen } from "../snippets/SnippetsScreen";
+import { KnownHostsScreen } from "../knownHosts/KnownHostsScreen";
 import { SnippetRunner } from "../snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../snippets/MultiHostRunDialog";
 import { MobileFontSizeSetup } from "./MobileFontSizeSetup";
+import {
+  MobileAboutScreen,
+  MobileAccountScreen,
+  MobileAppearanceScreen,
+  MobileBackupScreen,
+  MobileCollaborationScreen,
+  MobileSshSettingsScreen,
+  MobileSyncScreen,
+  MobileTerminalSettingsScreen,
+} from "./MobileSettingsScreens";
 
 /*
- * Mobile application shell. A bottom-navigation container (Hosts, Sessions,
- * Keys, Snippets, Settings) with no title bar, sidebar, or window controls.
- * Opening a terminal session shows it full-screen over the nav. Navigation is
- * driven by local state (not the desktop uiStore.mainView), so the desktop
- * layout is untouched; new sessions auto-open full-screen by watching the shared
- * session store's tab count.
+ * Mobile application shell: three tabs (Vaults, Connections, Profile), each with
+ * its own route stack, over a floating tab bar. Navigation lives in
+ * mobileNavStore rather than local state so the native iOS tab bar can drive it
+ * and deep links can jump straight to a screen; the desktop layout still runs on
+ * uiStore.mainView and is untouched.
+ *
+ * Opening a terminal session takes over the whole viewport, hiding the tab bar
+ * (natively too — the plugin's view is hidden, not just covered).
  */
 
 const SyncDialogs = lazy(() =>
@@ -25,38 +49,38 @@ const SyncDialogs = lazy(() =>
 );
 
 export function MobileLayout() {
-  const [tab, setTab] = useState<MobileTab>("hosts");
-  // Whether the Sessions tab is showing a session full-screen (vs the list).
-  const [fullscreen, setFullscreen] = useState(false);
+  const tab = useMobileNavStore((s) => s.tab);
+  const route = useActiveRoute();
+  const pop = useMobileNavStore((s) => s.pop);
+  const navigate = useMobileNavStore((s) => s.navigate);
+  const fullscreen = useMobileNavStore((s) => s.fullscreen);
+  const setFullscreen = useMobileNavStore((s) => s.setFullscreen);
 
   const tabCount = useSessionStore((s) => s.tabs.length);
   const setActiveTab = useSessionStore((s) => s.setActiveTab);
   const prevCount = useRef(tabCount);
 
-  // A newly opened session (tab count rose) jumps to the Sessions tab and opens
+  const showingSession = fullscreen && tabCount > 0;
+  const { native } = useNativeTabBar({
+    sessionCount: tabCount,
+    hidden: showingSession,
+  });
+
+  // A newly opened session (tab count rose) jumps to Connections and opens
   // full-screen. Covers connecting from Hosts and any other open path.
   useEffect(() => {
     if (tabCount > prevCount.current) {
-      setTab("sessions");
+      navigate("connections");
       setFullscreen(true);
     } else if (tabCount === 0) {
       setFullscreen(false);
     }
     prevCount.current = tabCount;
-  }, [tabCount]);
+  }, [tabCount, navigate, setFullscreen]);
 
-  const goToHosts = () => {
-    setFullscreen(false);
-    setTab("hosts");
-  };
+  const goToHosts = () => navigate("vaults", "hosts");
 
-  const onSelectTab = (next: MobileTab) => {
-    setFullscreen(false);
-    setTab(next);
-  };
-
-  // Full-screen terminal takes over the whole viewport (nav hidden).
-  if (tab === "sessions" && fullscreen && tabCount > 0) {
+  if (showingSession) {
     return (
       <>
         <MobileTerminalView
@@ -78,27 +102,25 @@ export function MobileLayout() {
         Skip to content
       </a>
       <main id="main-content" tabIndex={-1} className="min-h-0 flex-1">
-        {tab === "hosts" && (
-          <MobileHostsScreen onOpenKeychain={() => setTab("keychain")} />
-        )}
-        {tab === "sessions" && (
-          <MobileSessionsList
+        {route ? (
+          <RouteScreen route={route} onBack={pop} />
+        ) : tab === "vaults" ? (
+          <MobileVaultsHub />
+        ) : tab === "connections" ? (
+          <MobileConnectionsScreen
             onGoHosts={goToHosts}
             onOpen={(tabId) => {
               setActiveTab(tabId);
               setFullscreen(true);
             }}
           />
+        ) : (
+          <MobileProfileHub />
         )}
-        {tab === "keychain" && <KeychainScreen />}
-        {tab === "snippets" && (
-          <div className="h-full overflow-y-auto pt-safe">
-            <SnippetsScreen />
-          </div>
-        )}
-        {tab === "settings" && <MobileSettingsScreen />}
       </main>
-      <MobileNav active={tab} onSelect={onSelectTab} sessionCount={tabCount} />
+      {/* The native bar owns the chrome when it attached; otherwise the web
+          capsule renders. Never both. */}
+      {!native && <MobileTabBar sessionCount={tabCount} />}
       <SnippetRunner />
       <MultiHostRunDialog />
       <Suspense fallback={null}>
@@ -107,4 +129,64 @@ export function MobileLayout() {
       <MobileFontSizeSetup />
     </div>
   );
+}
+
+/** Renders the screen for a pushed route. Screens that predate the mobile shell
+ * (keychain, snippets, known hosts) are desktop components, so they are wrapped
+ * in MobileScreen chrome for the back button and safe-area header. */
+function RouteScreen({
+  route,
+  onBack,
+}: {
+  route: MobileRoute;
+  onBack: () => void;
+}) {
+  switch (route) {
+    case "hosts":
+      return <MobileHostsScreen onBack={onBack} />;
+    case "keychain":
+      return (
+        <MobileScreen onBack={onBack} scroll={false} padded={false}>
+          <KeychainScreen />
+        </MobileScreen>
+      );
+    case "port-forwards":
+      return <MobilePortForwardsScreen onBack={onBack} />;
+    case "snippets":
+      return (
+        <MobileScreen onBack={onBack} scroll={false} padded={false}>
+          <SnippetsScreen />
+        </MobileScreen>
+      );
+    case "known-hosts":
+      return (
+        <MobileScreen onBack={onBack} scroll={false} padded={false}>
+          <KnownHostsScreen />
+        </MobileScreen>
+      );
+    case "sftp":
+      return (
+        <MobileScreen title="Files" onBack={onBack} scroll={false} padded={false}>
+          <MobileSftpScreen />
+        </MobileScreen>
+      );
+    case "logs":
+      return <MobileLogsScreen onBack={onBack} />;
+    case "settings-account":
+      return <MobileAccountScreen onBack={onBack} />;
+    case "settings-appearance":
+      return <MobileAppearanceScreen onBack={onBack} />;
+    case "settings-terminal":
+      return <MobileTerminalSettingsScreen onBack={onBack} />;
+    case "settings-ssh":
+      return <MobileSshSettingsScreen onBack={onBack} />;
+    case "settings-sync":
+      return <MobileSyncScreen onBack={onBack} />;
+    case "settings-collaboration":
+      return <MobileCollaborationScreen onBack={onBack} />;
+    case "settings-backup":
+      return <MobileBackupScreen onBack={onBack} />;
+    case "settings-about":
+      return <MobileAboutScreen onBack={onBack} />;
+  }
 }

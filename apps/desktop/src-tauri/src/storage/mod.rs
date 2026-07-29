@@ -12,7 +12,6 @@ pub mod identities;
 #[path = "identities_mobile.rs"]
 pub mod identities_mobile;
 pub mod key_references;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod port_forwards;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod profiles;

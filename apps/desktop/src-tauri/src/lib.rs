@@ -31,7 +31,6 @@ use serial::SerialManager;
 use sftp::SftpManager;
 use snippet_runs::SnippetRunManager;
 use ssh::EmbeddedSshManager;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use ssh::TunnelManager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use terminal::PtyManager;
@@ -111,10 +110,18 @@ pub fn run() {
         app.manage(EmbeddedSshManager::default());
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         app.manage(SerialManager::default());
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        // Tunnels run on every platform: ssh/tunnels.rs is plain tokio over the
+        // russh session, so mobile forwards work too (see platform.rs).
         app.manage(TunnelManager::default());
         app.manage(SftpManager::default());
         app.manage(SnippetRunManager::default());
+
+        // Lets the native tab bar and menu Swift callbacks emit into the frontend.
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            commands::register_tab_bar(app.handle());
+            commands::register_menu(app.handle());
+        }
 
         Ok(())
     });
@@ -316,6 +323,17 @@ pub fn run() {
         commands::snippet_delete,
         commands::snippet_run_hosts,
         commands::snippet_run_cancel,
+        commands::port_forwards_list,
+        commands::port_forward_create,
+        commands::port_forward_update,
+        commands::port_forward_delete,
+        commands::tunnel_start,
+        commands::tunnel_stop,
+        commands::tunnels_list,
+        commands::tab_bar_attach,
+        commands::tab_bar_update,
+        commands::tab_bar_set_visible,
+        commands::menu_present,
         commands::sftp_connect,
         commands::sftp_disconnect,
         commands::sftp_sessions,
@@ -378,11 +396,9 @@ pub fn run() {
             app_handle.state::<SftpManager>().kill_all();
             app_handle.state::<SnippetRunManager>().kill_all();
             app_handle.state::<EmbeddedSshManager>().kill_all();
+            app_handle.state::<TunnelManager>().kill_all();
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            {
-                app_handle.state::<TunnelManager>().kill_all();
-                app_handle.state::<PtyManager>().kill_all();
-            }
+            app_handle.state::<PtyManager>().kill_all();
         }
     });
 }

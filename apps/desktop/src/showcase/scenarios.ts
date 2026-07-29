@@ -1,5 +1,6 @@
 import { useUiStore } from "../stores/uiStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { useMobileNavStore } from "../stores/mobileNavStore";
 
 export type ShowcaseView =
   | "terminal"
@@ -27,16 +28,16 @@ export function settleMs(view: ShowcaseView): number {
 const frame = () =>
   new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 
-async function waitForMobileNavButton(label: string): Promise<HTMLButtonElement> {
-  const selector = `nav[aria-label="Primary"] button[aria-label="${label}"]`;
+/** Wait for the mobile shell to mount. Navigation itself is driven through
+ * mobileNavStore rather than by clicking the tab bar, because on iOS the bar can
+ * be a native view with no DOM to query. */
+async function waitForMobileShell(): Promise<void> {
   const deadline = performance.now() + 10_000;
-  let button: HTMLButtonElement | null = null;
-  while (!button && performance.now() < deadline) {
-    button = document.querySelector<HTMLButtonElement>(selector);
-    if (!button) await frame();
+  while (performance.now() < deadline) {
+    if (document.querySelector("#main-content")) return;
+    await frame();
   }
-  if (!button) throw new Error(`[showcase] mobile navigation did not render: ${label}`);
-  return button;
+  throw new Error("[showcase] mobile shell did not render");
 }
 
 async function setupTerminal(singleSession = false): Promise<void> {
@@ -68,17 +69,18 @@ export async function applyScenario(
   platform: "desktop" | "ios" = "desktop",
 ): Promise<void> {
   if (platform === "ios") {
-    await waitForMobileNavButton("Hosts");
+    await waitForMobileShell();
+    const nav = useMobileNavStore.getState();
     if (view === "terminal") {
       await setupTerminal(true);
       return;
     }
-    if (view === "snippets" || view === "settings") {
-      const label = view === "snippets" ? "Snippets" : "Settings";
-      const button = await waitForMobileNavButton(label);
-      button.click();
-      await frame();
-    }
+    // Hosts and Snippets are now screens pushed from the Vaults tab; Settings
+    // lives under Profile.
+    if (view === "hosts") nav.navigate("vaults", "hosts");
+    else if (view === "snippets") nav.navigate("vaults", "snippets");
+    else if (view === "settings") nav.navigate("profile");
+    await frame();
     return;
   }
   const ui = useUiStore.getState();

@@ -22,6 +22,17 @@ export function usePortForwards(hostId: string | undefined) {
   });
 }
 
+/** Every stored port forward, across all hosts. Backs the mobile vault-level
+ * Port Forwarding screen, where forwards are grouped by host rather than being
+ * reached through one host's editor. */
+export function useAllPortForwards() {
+  return useQuery({
+    queryKey: [...PORT_FORWARDS_KEY, "all"],
+    queryFn: () => listPortForwards(undefined),
+    staleTime: 30_000,
+  });
+}
+
 export function usePortForwardMutations() {
   const queryClient = useQueryClient();
   const invalidate = () =>

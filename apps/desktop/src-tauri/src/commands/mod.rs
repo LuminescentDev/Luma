@@ -28,8 +28,9 @@ mod keystore;
 mod known_hosts;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod live_activity;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod menu;
 mod platform;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod port_forwards;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
@@ -37,6 +38,8 @@ mod sftp;
 mod snippets;
 mod ssh;
 mod sync;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod tab_bar;
 mod vaults;
 
 pub use collaboration::*;
@@ -46,8 +49,9 @@ pub use keystore::*;
 pub use known_hosts::*;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use live_activity::*;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub use menu::*;
 pub use platform::*;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use port_forwards::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use serial::*;
@@ -55,6 +59,8 @@ pub use sftp::*;
 pub use snippets::*;
 pub use ssh::*;
 pub use sync::*;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub use tab_bar::*;
 pub use vaults::*;
 
 // --- Settings ---

@@ -48,7 +48,7 @@ export function KeychainScreen() {
   if (keystoreStatus && !keystoreStatus.unlocked) return <KeystoreGate status={keystoreStatus} onReady={() => void getKeystoreStatus().then(setKeystoreStatus)} />;
   return <div className="keychain-screen flex h-full bg-background">
   <div className="min-w-0 flex-1 overflow-y-auto">
-    <div className="px-4 py-4 pt-safe md:mx-auto md:max-w-375 md:px-7 md:mt-5 md:pb-0">
+    <div className="px-4 py-4 md:mx-auto md:max-w-375 md:px-7 md:mt-5 md:pb-0">
       <h1 className="mb-4 text-lg font-semibold md:hidden">Keys</h1>
       <div className="keychain-mobile-search mb-5 flex h-11 items-center gap-2 rounded-xl border border-border bg-raised px-4 md:hidden">
         <Search size={15} className="shrink-0 text-muted" />

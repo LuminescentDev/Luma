@@ -4,9 +4,9 @@ mod embedded;
 mod embedded_auth;
 mod known_hosts;
 mod remote_os;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+// Tunnels (and the SOCKS proxy that backs dynamic forwards) are plain tokio
+// over the russh session, so they build and run on mobile too.
 mod socks5;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tunnels;
 
 use std::collections::HashSet;
@@ -40,7 +40,6 @@ pub use known_hosts::{
     SshHostKeyStatus,
 };
 pub use remote_os::SshRemoteOs;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use tunnels::{
     tunnel_connection_config, TunnelExit, TunnelInfo, TunnelManager, TunnelStartResponse,
 };

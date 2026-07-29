@@ -3,9 +3,10 @@ import { useSessionStore } from "../../stores/sessionStore";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import type { PaneNode } from "../../types";
 import { cn } from "../../lib/utils";
+import { MobileScreen } from "./MobileScreen";
 
 /*
- * The Sessions tab in the non-full-screen state: a list of open terminal
+ * The Connections tab in the non-full-screen state: a list of open terminal
  * sessions. Tapping one opens it full-screen (onOpen); the list also offers a
  * shortcut to the Hosts screen to start a new connection. Reads session metadata
  * only — the terminal bytes live in terminalManager.
@@ -18,7 +19,7 @@ const DOT: Record<string, string> = {
   error: "bg-danger",
 };
 
-export function MobileSessionsList({
+export function MobileConnectionsScreen({
   onOpen,
   onGoHosts,
 }: {
@@ -30,44 +31,45 @@ export function MobileSessionsList({
   const closeTab = useSessionStore((s) => s.closeTab);
   const restartSession = useSessionStore((s) => s.restartSession);
 
+  const newButton = (
+    <button
+      type="button"
+      onClick={onGoHosts}
+      aria-label="New connection"
+      className="flex min-h-11 items-center gap-1.5 rounded-full border border-border bg-surface px-3 text-sm text-muted active:bg-raised"
+    >
+      <Plus size={16} /> New
+    </button>
+  );
+
   if (tabs.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 bg-background px-8 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-surface">
-          <SquareTerminal size={26} className="text-accent" />
+      <MobileScreen title="Connections" large action={newButton}>
+        <div className="flex flex-col items-center gap-4 px-8 py-20 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-surface">
+            <SquareTerminal size={26} className="text-accent" />
+          </div>
+          <div>
+            <p className="text-base font-semibold">No open sessions</p>
+            <p className="mt-1 text-sm text-muted">
+              Connect to a saved host to start an SSH session.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onGoHosts}
+            className="flex min-h-11 items-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-accent-foreground"
+          >
+            <Server size={16} /> Go to Hosts
+          </button>
         </div>
-        <div>
-          <p className="text-base font-semibold">No open sessions</p>
-          <p className="mt-1 text-sm text-muted">
-            Connect to a saved host to start an SSH session.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onGoHosts}
-          className="flex min-h-11 items-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-accent-foreground"
-        >
-          <Server size={16} /> Go to Hosts
-        </button>
-      </div>
+      </MobileScreen>
     );
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-background">
-      <div className="px-4 py-4 pt-safe">
-        <div className="mb-4 flex items-center justify-between">
-          <h1 className="text-lg font-semibold">Sessions</h1>
-          <button
-            type="button"
-            onClick={onGoHosts}
-            aria-label="New connection"
-            className="flex min-h-11 items-center gap-1.5 rounded-lg border border-border px-3 text-sm text-muted active:bg-raised"
-          >
-            <Plus size={16} /> New
-          </button>
-        </div>
-        <ul className="space-y-2">
+    <MobileScreen title="Connections" large action={newButton}>
+      <ul className="space-y-2 pt-1">
           {tabs.map((tab) => {
             const sessionId = firstSessionId(tab.root);
             const session = sessions.find((s) => s.id === sessionId);
@@ -131,9 +133,8 @@ export function MobileSessionsList({
               </ContextMenu>
             );
           })}
-        </ul>
-      </div>
-    </div>
+      </ul>
+    </MobileScreen>
   );
 }
 

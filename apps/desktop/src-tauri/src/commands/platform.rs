@@ -42,7 +42,11 @@ pub fn capabilities_for(os: Os) -> PlatformCapabilities {
             serial: false,
             ssh_config_import: false,
             sftp: true,
-            port_forwarding: false,
+            // Tunnels are pure tokio listeners over the russh session (see
+            // ssh/tunnels.rs) with no desktop-only surface, so local, dynamic
+            // and remote forwards all work on a phone. Only privileged ports
+            // are out of reach, which is equally true of an unelevated desktop.
+            port_forwarding: true,
             updater: false,
             biometrics: false,
             window_controls: false,
@@ -127,7 +131,7 @@ mod tests {
                     serial: false,
                     ssh_config_import: false,
                     sftp: true,
-                    port_forwarding: false,
+                    port_forwarding: true,
                     updater: false,
                     biometrics: false,
                     window_controls: false,
@@ -145,7 +149,7 @@ mod tests {
         assert_eq!(value["isMobile"], true);
         assert_eq!(value["features"]["localTerminal"], false);
         assert_eq!(value["features"]["sshConfigImport"], false);
-        assert_eq!(value["features"]["portForwarding"], false);
+        assert_eq!(value["features"]["portForwarding"], true);
         assert_eq!(value["features"]["dragAndDrop"], false);
         assert!(value.get("is_mobile").is_none());
     }
