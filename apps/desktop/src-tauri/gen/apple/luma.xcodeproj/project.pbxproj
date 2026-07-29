@@ -18,6 +18,7 @@
 		397306E1407CBF89C54DC45A /* LumaLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 711B8392153AA0B9F467DFA4 /* LumaLiveActivityWidget.swift */; };
 		4424DD56818229A32D0E29DE /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3232EB2F12FFE72DD82B655 /* QuartzCore.framework */; };
 		5A968DF1478ADA2E83AE6218 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F0E06B8110700E7628D1B1B /* Security.framework */; };
+		5F1E3BB5D6F70BA165BB9F1C /* LumaTabBarLab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 955B611099566567F87DDF71 /* LumaTabBarLab.swift */; };
 		67058740C320BE6986A03103 /* star.icon in Resources */ = {isa = PBXBuildFile; fileRef = 858C9D329E54B589E585026F /* star.icon */; };
 		6AF7F3B9CC665C1DDB660E8B /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 59C792A4726AFADEADC5480A /* WebKit.framework */; };
 		7836BB4E6F0DE9F82B3B3666 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 889148FB83A5C407848F791A /* MetalKit.framework */; };
@@ -105,6 +106,7 @@
 		889148FB83A5C407848F791A /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		8DFCF3DF18E67017AF2DFB4A /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 		9293C4C41FDE45F29583EAE0 /* LumaLiveActivityBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaLiveActivityBundle.swift; sourceTree = "<group>"; };
+		955B611099566567F87DDF71 /* LumaTabBarLab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaTabBarLab.swift; sourceTree = "<group>"; };
 		97DDC0CBEC611EA00976EC3E /* settings.rs */ = {isa = PBXFileReference; path = settings.rs; sourceTree = "<group>"; };
 		9B899CBD09BDE44CE2F2445B /* snippets.rs */ = {isa = PBXFileReference; path = snippets.rs; sourceTree = "<group>"; };
 		9F0E06B8110700E7628D1B1B /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
@@ -300,6 +302,7 @@
 				4ED9FCA2F5B4A65E4A826E04 /* LumaLiveActivity.swift */,
 				F98284A9CA9DBC522D8E6AC6 /* LumaMenu.swift */,
 				1084D0403F3D7A518DD6A7BA /* LumaTabBar.swift */,
+				955B611099566567F87DDF71 /* LumaTabBarLab.swift */,
 				82C981E0D49899869B47A137 /* main.mm */,
 				71D60BDEE985F2EC51A21DF2 /* bindings */,
 			);
@@ -439,18 +442,18 @@
 			path = luma_iOS;
 			sourceTree = "<group>";
 		};
-		"TEMP_B029329B-AAA2-49E9-AA54-D5F6DDD33BED" /* x86_64 */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = x86_64;
-			sourceTree = "<group>";
-		};
-		"TEMP_DEB9EAFE-F3F7-498E-A37C-9F5028A04F77" /* arm64 */ = {
+		"TEMP_17830131-56F2-411C-B2BA-10351B47DD9D" /* arm64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			path = arm64;
+			sourceTree = "<group>";
+		};
+		"TEMP_55E1E251-1B68-42D6-B4EF-5864F863883F" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -582,6 +585,7 @@
 				28211C846355396664231DDC /* LumaLiveActivity.swift in Sources */,
 				8F19FAEDA8CF44C2875B6E56 /* LumaMenu.swift in Sources */,
 				16AC03F5D7EE158D8A76D84B /* LumaTabBar.swift in Sources */,
+				5F1E3BB5D6F70BA165BB9F1C /* LumaTabBarLab.swift in Sources */,
 				DA3C42591DA5AF2C2B015FC3 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

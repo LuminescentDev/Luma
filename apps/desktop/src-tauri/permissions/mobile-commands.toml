@@ -116,5 +116,6 @@ commands.allow = [
   "tab_bar_attach",
   "tab_bar_update",
   "tab_bar_set_visible",
+  "tab_bar_lab",
   "menu_present",
 ]

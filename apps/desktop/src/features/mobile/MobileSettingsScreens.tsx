@@ -1,4 +1,6 @@
-import { Monitor, Moon, Sun } from "lucide-react";
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { FlaskConical, Monitor, Moon, Sun } from "lucide-react";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
 import { useTheme } from "../../hooks/useTheme";
 import { useCapabilityStore } from "../../stores/capabilityStore";
@@ -10,6 +12,7 @@ import { CollaborationSection } from "../collaboration/CollaborationSection";
 import { AccountSection } from "../account/AccountSection";
 import { MobileScreen } from "./MobileScreen";
 import { Field, Section, Toggle } from "./MobileFormControls";
+import { tabBarStatus } from "./tabBar";
 
 /*
  * The settings surfaces reachable from the Profile hub, one screen per concern.
@@ -181,12 +184,51 @@ export function MobileCollaborationScreen({ onBack }: { onBack: () => void }) {
 }
 
 export function MobileAboutScreen({ onBack }: { onBack: () => void }) {
+  const status = tabBarStatus();
+  const [labError, setLabError] = useState<string | null>(null);
   return (
     <MobileScreen title="About" onBack={onBack}>
       <Section>
         <p className="text-sm text-muted">
           Luma — a lightweight terminal &amp; SSH client. MIT licensed.
         </p>
+      </Section>
+      {/* The web capsule is a silent fallback: without this, a denied command
+          or an unsupported OS looks like a styling bug rather than a wiring
+          one. Shows which bar is really on screen, and why. */}
+      <Section title="Diagnostics">
+        <Field label="Tab bar">
+          <p className="text-sm text-muted">
+            {status.kind === "native"
+              ? `Native (Liquid Glass), ${Math.round(status.height)}pt`
+              : status.kind === "web"
+                ? `Web fallback — ${status.reason}`
+                : "Starting…"}
+          </p>
+        </Field>
+        <Field
+          label="Animation lab"
+          hint="Native screen with each tab-bar animation style side by side. Tap the tabs on each bar to compare."
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setLabError(null);
+              invoke("tab_bar_lab").catch((error) =>
+                setLabError(error instanceof Error ? error.message : String(error)),
+              );
+            }}
+            className="flex min-h-11 items-center gap-2 rounded-lg border border-border bg-surface px-4 text-sm font-medium active:bg-raised"
+          >
+            <FlaskConical size={16} className="text-accent" />
+            Open tab bar lab
+          </button>
+          {labError && (
+            <p role="alert" className="mt-2 text-xs text-danger">
+              {labError}
+            </p>
+          )}
+        </Field>
       </Section>
     </MobileScreen>
   );

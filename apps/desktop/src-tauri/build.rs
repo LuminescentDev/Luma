@@ -22,6 +22,7 @@ fn allow_undefined_swift_bridge_symbols() {
         "_luma_tab_bar_update",
         "_luma_tab_bar_set_visible",
         "_luma_menu_present",
+        "_luma_tab_bar_lab_present",
     ] {
         println!("cargo:rustc-link-arg=-Wl,-U,{symbol}");
     }

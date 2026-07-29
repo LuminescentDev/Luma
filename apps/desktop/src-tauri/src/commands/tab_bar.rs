@@ -53,6 +53,14 @@ pub fn tab_bar_set_visible(visible: bool) -> Result<()> {
     imp::set_visible(visible)
 }
 
+/// Present the native animation lab (LumaTabBarLab.swift): one bar per move
+/// style, side by side, so the selection animation can be judged on a device
+/// instead of guessed at. A design aid reachable from Profile > About.
+#[tauri::command]
+pub fn tab_bar_lab() -> Result<()> {
+    imp::lab()
+}
+
 /// Store the app handle so the Swift tap callback can emit events. Called from
 /// the builder's setup hook; a no-op off iOS.
 pub fn register_tab_bar(app: &tauri::AppHandle) {
@@ -73,6 +81,7 @@ mod imp {
         fn luma_tab_bar_attach(json: *const c_char) -> f64;
         fn luma_tab_bar_update(json: *const c_char);
         fn luma_tab_bar_set_visible(visible: bool);
+        fn luma_tab_bar_lab_present() -> bool;
     }
 
     #[derive(Serialize)]
@@ -132,6 +141,17 @@ mod imp {
         Ok(())
     }
 
+    pub fn lab() -> Result<()> {
+        // SAFETY: no arguments; Swift presents a view controller and returns.
+        let presented = unsafe { luma_tab_bar_lab_present() };
+        if !presented {
+            return Err(LumaError::InvalidInput(
+                "tab bar lab unavailable".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Called from Swift on the main thread when a tab is tapped.
     ///
     /// # Safety
@@ -177,6 +197,10 @@ mod imp {
     }
 
     pub fn set_visible(_visible: bool) -> Result<()> {
+        unsupported()
+    }
+
+    pub fn lab() -> Result<()> {
         unsupported()
     }
 }
