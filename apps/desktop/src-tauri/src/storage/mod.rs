@@ -51,6 +51,7 @@ const LEGACY_CRLF_CHECKSUMS: &[(i64, &str)] = &[
     (12, "c3e520af5217bd569e56dddf46145d0f9c88182d2cc7f21dcba98b94bb09438cd5f64df08cb363eaedf1c86315cb19aa"),
     (13, "9c8b937fcc6ebf80e336a818127d65208defdd6ae41ff23996196183000516b67886ee7a4076eb06b500df564e9bfbb9"),
     (14, "40281f5190bdde6249d0e4a10210326a2ed6f5e3d80de06f18428791ac5bc36fb501370eaf5ce06b0f8c9d4561a7d5d8"),
+    (15, "823105168192ac5374f1acd10901a878a19b65b37b06af20b6be7bcc26bcc3422ce9114407666adffc5dd9e303198e86"),
 ];
 
 fn is_allowlisted_legacy_checksum(version: i64, recorded: &[u8]) -> bool {
@@ -187,7 +188,10 @@ fn migration_backup_path(db_path: &Path) -> std::path::PathBuf {
 #[cfg(test)]
 pub async fn init_in_memory() -> Result<SqlitePool> {
     use std::str::FromStr;
-    let options = SqliteConnectOptions::from_str("sqlite::memory:")?;
+    // Foreign keys are on in the real database, so they are on here too: a
+    // migration that trips enforcement (rebuilding a table other tables
+    // reference, say) has to fail in tests rather than only on a user's disk.
+    let options = SqliteConnectOptions::from_str("sqlite::memory:")?.foreign_keys(true);
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
@@ -302,7 +306,11 @@ mod tests {
     /// before that migration runs.
     async fn pool_at_migration(version: i64) -> SqlitePool {
         use std::str::FromStr;
-        let options = SqliteConnectOptions::from_str("sqlite::memory:").unwrap();
+        // Matches the real database: a migration that trips foreign key
+        // enforcement has to fail here rather than on a user's disk.
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .unwrap()
+            .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)
@@ -484,6 +492,80 @@ mod tests {
             share_secrets, 1,
             "the global key opt-in was not carried over"
         );
+    }
+
+    /// A fresh database has no `sync_state` row, so this is the shape that
+    /// matters: an install with a configured remote, where `sync_state.vault_id`
+    /// references `vaults(id)`. Rebuilding `vaults` here trips foreign key
+    /// enforcement, which is why 0015 only adds columns.
+    #[tokio::test]
+    async fn migration_0015_preserves_a_configured_remote_and_its_vaults() {
+        let pool = pool_at_migration(15).await;
+        sqlx::query(
+            "INSERT INTO vaults (id, name, kind, share_secrets) VALUES ('v-shared', 'Infra', 'shared', 1);
+             INSERT INTO sync_state (vault_id, provider, last_synced_at, state)
+             VALUES ('personal', 'local-folder', 1700000000, '{\"folderPath\":\"/tmp/luma\"}'),
+                    ('v-shared', 'webdav', 1700000001, '{}')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_migration(&pool, 15).await;
+
+        let vaults: Vec<(String, String, Option<String>, i64)> =
+            sqlx::query_as("SELECT id, kind, remote_vault_id, key_epoch FROM vaults ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            vaults,
+            vec![
+                ("personal".into(), "personal".into(), None, 1),
+                ("v-shared".into(), "shared".into(), None, 1),
+            ]
+        );
+
+        // The configured remotes still point at their vaults.
+        let remotes: Vec<(String, String)> =
+            sqlx::query_as("SELECT vault_id, provider FROM sync_state ORDER BY vault_id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            remotes,
+            vec![
+                ("personal".into(), "local-folder".into()),
+                ("v-shared".into(), "webdav".into()),
+            ]
+        );
+
+        let violations: Vec<(String,)> = sqlx::query_as("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    /// Two local rows may not claim the same server-side vault: that would give
+    /// one remote two divergent local copies.
+    #[tokio::test]
+    async fn migration_0015_rejects_a_duplicate_remote_vault_id() {
+        let pool = init_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO vaults (id, name, kind, remote_vault_id) VALUES ('a', 'A', 'shared', 'r1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let error = sqlx::query(
+            "INSERT INTO vaults (id, name, kind, remote_vault_id) VALUES ('b', 'B', 'shared', 'r1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("UNIQUE"), "{error}");
     }
 
     #[tokio::test]

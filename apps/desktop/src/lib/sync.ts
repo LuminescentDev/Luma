@@ -56,6 +56,9 @@ export type ConflictResolution = {
   resolution: ConflictResolutionChoice;
 };
 
+/** Where Luma Cloud lives unless the user points at their own deployment. */
+export const DEFAULT_LUMA_CLOUD_URL = "https://sync.luma.bwmp.dev";
+
 export type SyncProvider =
   | "local-folder"
   | "webdav"

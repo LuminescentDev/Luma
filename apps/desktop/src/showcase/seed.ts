@@ -8,7 +8,15 @@ import { SETTING_KEYS, type ThemeMode } from "../types";
 const VAULT_ID = "personal";
 
 export const VAULTS: Vault[] = [
-  { id: VAULT_ID, name: "Personal", kind: "personal", shareSecrets: false, sortOrder: 0 },
+  {
+    id: VAULT_ID,
+    name: "Personal",
+    kind: "personal",
+    shareSecrets: false,
+    sortOrder: 0,
+    remoteVaultId: null,
+    keyEpoch: 1,
+  },
 ];
 
 export const GROUPS: HostGroup[] = [

@@ -409,13 +409,32 @@ pub struct LumaCloudProvider {
 }
 
 impl LumaCloudProvider {
-    pub fn new(api_url: String, access_token: String, vault_slot: Option<String>) -> Result<Self> {
+    /// `remote_vault_id` is set for managed vaults, which have their own
+    /// server-side vault and membership. Everything else shares the account's
+    /// single blob, keyed by `vault_slot` so two local vaults on one account do
+    /// not overwrite each other.
+    pub fn new(
+        api_url: String,
+        access_token: String,
+        vault_slot: Option<String>,
+        remote_vault_id: Option<String>,
+    ) -> Result<Self> {
         validate_cloud_api_url(&api_url)?;
         let api_url = api_url.trim_end_matches('/');
-        let slot = RemoteSlot::new(vault_slot);
+        let endpoint = match &remote_vault_id {
+            Some(id) => {
+                if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+                    return Err(LumaError::SyncUnavailable(
+                        "managed vault identifier is invalid".into(),
+                    ));
+                }
+                format!("{api_url}/v1/vaults/{id}/sync")
+            }
+            None => format!("{api_url}/v1/sync{}", RemoteSlot::new(vault_slot).segment()),
+        };
         Ok(Self {
             client: http_client()?,
-            endpoint: format!("{api_url}/v1/sync{}", slot.segment()),
+            endpoint,
             access_token,
         })
     }
@@ -772,7 +791,7 @@ struct GistFile {
     raw_url: Option<String>,
 }
 
-fn http_client() -> Result<reqwest::Client> {
+pub(super) fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()

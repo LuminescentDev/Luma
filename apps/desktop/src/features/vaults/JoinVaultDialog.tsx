@@ -3,7 +3,12 @@ import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, ShieldAlert } from "lucide-react";
 import { Modal } from "../../components/Modal";
 import { parseLumaError } from "../../lib/hosts";
-import { createVault, parseVaultJoinLink, type VaultJoinLink } from "../../lib/vaults";
+import {
+  createVault,
+  joinManagedVault,
+  parseVaultJoinLink,
+  type VaultJoinLink,
+} from "../../lib/vaults";
 import {
   syncConfigure,
   syncSetPassphrase,
@@ -63,6 +68,7 @@ export function JoinVaultDialog({
   const [passphrase, setPassphrase] = useState("");
   const [remember, setRemember] = useState(true);
 
+  const [inviteSecret, setInviteSecret] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -78,12 +84,14 @@ export function JoinVaultDialog({
     if (parsed.username) setUsername(parsed.username);
     if (parsed.gistId) setGistId(parsed.gistId);
     if (parsed.cloudUrl) setCloudUrl(parsed.cloudUrl);
+    setInviteSecret(parsed.inviteSecret);
   };
 
   useEffect(() => {
     if (!open) return;
     setPastedLink("");
     setName("");
+    setInviteSecret(null);
     setProvider(folderSyncEnabled ? "local-folder" : "webdav");
     setFolderPath("");
     setUrl("");
@@ -138,15 +146,38 @@ export function JoinVaultDialog({
     return cloudUrl.trim() ? { provider: "luma-cloud", cloudUrl: cloudUrl.trim() } : null;
   };
 
+  const managed = inviteSecret !== null;
   const input = buildInput();
   const trimmedName = name.trim();
-  const canJoin = Boolean(trimmedName) && input !== null && passphrase.length > 0 && !busy;
+  const canJoin =
+    Boolean(trimmedName) &&
+    !busy &&
+    (managed ? cloudUrl.trim().length > 0 : input !== null && passphrase.length > 0);
 
   const join = async () => {
-    if (!canJoin || !input) return;
+    if (!canJoin) return;
     setBusy(true);
     setError(null);
     try {
+      if (managed) {
+        // The server hands back the vault and seals its key to this device as
+        // soon as a member syncs; there is no passphrase and no provider form.
+        const vault = await joinManagedVault({
+          name: trimmedName,
+          cloudUrl: cloudUrl.trim(),
+          inviteSecret,
+        });
+        await syncConfigure(vault.id, {
+          provider: "luma-cloud",
+          cloudUrl: cloudUrl.trim(),
+        });
+        await invalidateVaults();
+        await invalidateSyncConfig();
+        void runSyncNow(vault.id);
+        onOpenChange(false);
+        return;
+      }
+      if (!input) return;
       if (!createdId.current) {
         // Secret sharing stays off locally until the user opts in from the
         // vault's sync settings; it only governs what this device uploads.
@@ -180,7 +211,11 @@ export function JoinVaultDialog({
       open={open}
       onOpenChange={onOpenChange}
       title="Join a shared vault"
-      description="Point Luma at the vault's remote and enter its passphrase. Both come from whoever set it up."
+      description={
+        managed
+          ? "This invite grants access on its own. Confirm the name and Luma will fetch the vault's key for this device."
+          : "Point Luma at the vault's remote and enter its passphrase. Both come from whoever set it up."
+      }
       footer={
         <>
           <button
@@ -220,6 +255,11 @@ export function JoinVaultDialog({
           <TextInput value={name} onChange={setName} placeholder="Infra" />
         </Field>
 
+        {managed ? (
+          <Field label="Service URL" hint="HTTPS required.">
+            <TextInput value={cloudUrl} onChange={setCloudUrl} mono />
+          </Field>
+        ) : (
         <div>
           <span className="mb-1.5 block text-sm font-medium">Provider</span>
           <div className="flex flex-wrap gap-1 rounded-lg border border-border bg-surface p-1">
@@ -241,8 +281,9 @@ export function JoinVaultDialog({
             ))}
           </div>
         </div>
+        )}
 
-        {provider === "local-folder" && (
+        {!managed && provider === "local-folder" && (
           <Field label="Folder">
             <div className="flex gap-2">
               <input
@@ -262,7 +303,7 @@ export function JoinVaultDialog({
           </Field>
         )}
 
-        {provider === "webdav" && (
+        {!managed && provider === "webdav" && (
           <>
             <Field label="URL" hint="HTTPS required.">
               <TextInput value={url} onChange={setUrl} placeholder="https://dav.example.com/luma" mono />
@@ -276,7 +317,7 @@ export function JoinVaultDialog({
           </>
         )}
 
-        {provider === "github-gist" && (
+        {!managed && provider === "github-gist" && (
           <>
             <Field label="Access token" hint="Your own token with gist access.">
               <TextInput value={token} onChange={setToken} type="password" />
@@ -287,23 +328,34 @@ export function JoinVaultDialog({
           </>
         )}
 
-        {provider === "luma-cloud" && (
+        {!managed && provider === "luma-cloud" && (
           <Field label="Service URL" hint="HTTPS required.">
             <TextInput value={cloudUrl} onChange={setCloudUrl} mono />
           </Field>
         )}
 
-        <Field label="Vault passphrase" hint="Same on every member's device.">
-          <TextInput value={passphrase} onChange={setPassphrase} type="password" />
-        </Field>
-        <label className="flex items-center gap-2 text-xs text-muted">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember(e.target.checked)}
-          />
-          Remember it in this device&apos;s OS keychain
-        </label>
+        {!managed && (
+          <>
+            <Field label="Vault passphrase" hint="Same on every member's device.">
+              <TextInput value={passphrase} onChange={setPassphrase} type="password" />
+            </Field>
+            <label className="flex items-center gap-2 text-xs text-muted">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
+              />
+              Remember it in this device&apos;s OS keychain
+            </label>
+          </>
+        )}
+
+        {managed && (
+          <p className="text-xs text-muted">
+            The vault stays locked until a member&apos;s app is next open to release
+            its key to this device. Luma retries on every sync.
+          </p>
+        )}
 
         <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
           <ShieldAlert size={14} className="mt-0.5 shrink-0" />

@@ -11,16 +11,38 @@ import type { SyncProvider } from "./sync";
  * syncs settings and terminal profiles. Seeded by the schema on every device. */
 export const PERSONAL_VAULT_ID = "personal";
 
+export type VaultKind = "personal" | "shared" | "managed";
+
 export type Vault = {
   id: string;
   name: string;
-  kind: "personal" | "shared";
+  /**
+   * `shared` vaults are unlocked with a passphrase the members pass around
+   * themselves; `managed` vaults get their key from Luma Cloud, sealed to each
+   * member device. The difference is only how the key is obtained — the bundle
+   * format and merge behaviour are identical.
+   */
+  kind: VaultKind;
   /** When true, this vault's bundle carries private keys and identity
    * passwords, handing them to every member permanently. Surface this in the
    * UI: sharing secrets is only for people the user trusts. */
   shareSecrets: boolean;
   sortOrder: number;
+  /** Server-side identity, set only for `managed` vaults. */
+  remoteVaultId: string | null;
+  /** Which generation of the content key this device holds. */
+  keyEpoch: number;
 };
+
+export type VaultInvite = {
+  id: string;
+  /** Bearer token. Anyone holding it can join at the invite's role. */
+  secret: string;
+  expiresAt: number;
+  role: VaultRole;
+};
+
+export type VaultRole = "writer" | "reader";
 
 export type VaultInput = {
   name: string;
@@ -53,19 +75,68 @@ export function deleteVault(id: string): Promise<void> {
   return invoke<void>("vault_delete", { id });
 }
 
+// Managed vaults ------------------------------------------------------------
+
+/**
+ * Create a vault whose key Luma Cloud distributes to member devices. The
+ * content key is generated and sealed in Rust — it is never exposed here.
+ */
+export function createManagedVault(input: {
+  name: string;
+  cloudUrl: string;
+  shareSecrets: boolean;
+}): Promise<Vault> {
+  return invoke<Vault>("vault_create_managed", input);
+}
+
+/** Redeem an invite. The vault appears immediately, but stays unreadable until
+ * an existing member's app seals the key to this device. */
+export function joinManagedVault(input: {
+  name: string;
+  cloudUrl: string;
+  inviteSecret: string;
+}): Promise<Vault> {
+  return invoke<Vault>("vault_join_managed", input);
+}
+
+export function createVaultInvite(input: {
+  id: string;
+  cloudUrl: string;
+  role: VaultRole;
+}): Promise<VaultInvite> {
+  return invoke<VaultInvite>("vault_create_invite", input);
+}
+
+/** Revoke a member and rotate the key. Rotation stops them reading anything
+ * written afterwards; it cannot retract what they already hold. */
+export function removeVaultMember(input: {
+  id: string;
+  cloudUrl: string;
+  subject: string;
+}): Promise<void> {
+  return invoke<void>("vault_remove_member", input);
+}
+
 // Join links ----------------------------------------------------------------
 
 /**
- * Where a shared vault lives, as carried by a `luma://vault?…` link.
+ * Where a vault lives, as carried by a `luma://vault?…` link.
  *
- * A join link is *not* an access grant: it names a location, nothing more.
- * Reading the vault also needs its passphrase, and WebDAV/Gist need their own
- * account credentials. Those are secrets, so they are never in the link — the
- * person joining types them. Treat a link as public.
+ * For a passphrase-shared vault a link is *not* an access grant: it names a
+ * location, nothing more. Reading it also needs the passphrase, and
+ * WebDAV/Gist need their own account credentials. Those are secrets, so they
+ * are never in the link — the person joining types them.
+ *
+ * A managed vault is the exception, and the one case where a link *is* a
+ * grant: `inviteSecret` is a bearer token the server accepts, so such a link
+ * must be sent over a private channel and expires with the invite. Anything
+ * displaying a link has to distinguish the two — see `linkIsSensitive`.
  */
 export type VaultJoinLink = {
   name: string;
   provider: SyncProvider;
+  /** managed only: a bearer token. Treat a link carrying this as a secret. */
+  inviteSecret: string | null;
   /** local-folder */
   folderPath: string | null;
   /** webdav */
@@ -76,6 +147,12 @@ export type VaultJoinLink = {
   /** luma-cloud */
   cloudUrl: string | null;
 };
+
+/** Whether this link grants access by itself, and so must not be posted
+ * anywhere the vault's members would not be welcome. */
+export function linkIsSensitive(link: VaultJoinLink): boolean {
+  return link.inviteSecret !== null;
+}
 
 const JOIN_PROVIDERS: SyncProvider[] = [
   "local-folder",
@@ -101,6 +178,7 @@ export function buildVaultJoinLink(link: VaultJoinLink): string {
   }
   params.set(location[0], location[1]);
   if (link.provider === "webdav" && link.username) params.set("username", link.username);
+  if (link.inviteSecret) params.set("invite", link.inviteSecret);
   return `luma://vault?${params.toString()}`;
 }
 
@@ -123,6 +201,7 @@ export function parseVaultJoinLink(raw: string): VaultJoinLink | null {
   const link: VaultJoinLink = {
     name: url.searchParams.get("name")?.trim() || "Shared vault",
     provider,
+    inviteSecret: url.searchParams.get("invite"),
     folderPath: url.searchParams.get("path"),
     url: url.searchParams.get("url"),
     username: url.searchParams.get("username"),

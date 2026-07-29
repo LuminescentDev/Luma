@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import {
+  createManagedVault,
   createVault,
   deleteVault,
+  joinManagedVault,
   listVaults,
   updateVault,
   type Vault,
@@ -44,6 +46,32 @@ export function useCreateVault() {
   return useMutation({
     mutationFn: (input: VaultInput) => createVault(input),
     onSuccess: () => invalidate(),
+  });
+}
+
+/** Creating a managed vault also configures its sync, so the sync config for
+ * the new vault has to be refetched alongside the vault list. */
+export function useCreateManagedVault() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; cloudUrl: string; shareSecrets: boolean }) =>
+      createManagedVault(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: VAULTS_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["sync-config"] });
+    },
+  });
+}
+
+export function useJoinManagedVault() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; cloudUrl: string; inviteSecret: string }) =>
+      joinManagedVault(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: VAULTS_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["sync-config"] });
+    },
   });
 }
 

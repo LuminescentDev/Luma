@@ -1,20 +1,56 @@
 import { positiveInteger, updateUsage } from "./accounts";
 import { HttpError } from "./auth";
 import { securityHeaders } from "./responses";
-import type { Account, Env } from "./types";
+import {
+  ownerQuota,
+  ownerUsageExcluding,
+  setVaultUsage,
+} from "./vaults";
+import type { Account, Env, Vault } from "./types";
 
 const CONTENT_TYPE = "application/vnd.luma.sync";
 
-function currentKey(account: Account): string {
-  return `accounts/${account.storage_id}/current.luma`;
+/**
+ * Where one encrypted blob lives and whose quota it spends. Personal accounts
+ * and shared vaults differ only in these three answers, so the transfer,
+ * ETag and revision logic below is shared.
+ */
+interface SyncTarget {
+  prefix: string;
+  quotaBytes: number;
+  /** Bytes already charged to this quota by *other* blobs. */
+  usedBytesElsewhere: number;
+  commitUsage(env: Env, bytes: number): Promise<void>;
 }
 
-function revisionsPrefix(account: Account): string {
-  return `accounts/${account.storage_id}/revisions/`;
+export function accountTarget(account: Account): SyncTarget {
+  return {
+    prefix: `accounts/${account.storage_id}`,
+    quotaBytes: account.quota_bytes,
+    usedBytesElsewhere: 0,
+    commitUsage: (env, bytes) => updateUsage(env, account.subject, bytes),
+  };
 }
 
-export async function download(env: Env, account: Account): Promise<Response> {
-  const object = await env.SYNC_BUCKET.get(currentKey(account));
+export async function vaultTarget(env: Env, vault: Vault): Promise<SyncTarget> {
+  return {
+    prefix: `vaults/${vault.storage_id}`,
+    quotaBytes: await ownerQuota(env, vault.owner_subject),
+    usedBytesElsewhere: await ownerUsageExcluding(env, vault.owner_subject, vault.id),
+    commitUsage: (env, bytes) => setVaultUsage(env, vault.id, bytes),
+  };
+}
+
+function currentKey(target: SyncTarget): string {
+  return `${target.prefix}/current.luma`;
+}
+
+function revisionsPrefix(target: SyncTarget): string {
+  return `${target.prefix}/revisions/`;
+}
+
+export async function download(env: Env, target: SyncTarget): Promise<Response> {
+  const object = await env.SYNC_BUCKET.get(currentKey(target));
   if (!object) {
     return new Response(null, { status: 404, headers: securityHeaders() });
   }
@@ -33,7 +69,7 @@ export async function download(env: Env, account: Account): Promise<Response> {
 export async function upload(
   request: Request,
   env: Env,
-  account: Account,
+  target: SyncTarget,
   context: ExecutionContext,
 ): Promise<Response> {
   if (request.headers.get("content-type")?.split(";", 1)[0] !== CONTENT_TYPE) {
@@ -48,16 +84,16 @@ export async function upload(
   if (length > maxBlobBytes) {
     throw new HttpError(413, "sync blob exceeds the service size limit");
   }
-  if (length > account.quota_bytes) {
+  if (length + target.usedBytesElsewhere > target.quotaBytes) {
     throw new HttpError(413, "sync blob exceeds the account quota");
   }
 
-  const key = currentKey(account);
+  const key = currentKey(target);
   const current = await env.SYNC_BUCKET.get(key);
   const condition = uploadCondition(request, current);
 
   if (current) {
-    const revisionKey = `${revisionsPrefix(account)}${current.etag}.luma`;
+    const revisionKey = `${revisionsPrefix(target)}${current.etag}.luma`;
     await env.SYNC_BUCKET.put(revisionKey, current.body, {
       onlyIf: { etagDoesNotMatch: "*" },
       customMetadata: { sourceEtag: current.etag },
@@ -72,8 +108,8 @@ export async function upload(
     throw new HttpError(412, "sync data changed since it was downloaded");
   }
 
-  await updateUsage(env, account.subject, length);
-  context.waitUntil(pruneRevisions(env, account));
+  await target.commitUsage(env, length);
+  context.waitUntil(pruneRevisions(env, target));
 
   return new Response(null, {
     status: 204,
@@ -121,10 +157,10 @@ function parseContentLength(request: Request): number {
   return length;
 }
 
-async function pruneRevisions(env: Env, account: Account): Promise<void> {
+async function pruneRevisions(env: Env, target: SyncTarget): Promise<void> {
   const limit = positiveInteger(env.REVISION_LIMIT, "REVISION_LIMIT");
   const listed = await env.SYNC_BUCKET.list({
-    prefix: revisionsPrefix(account),
+    prefix: revisionsPrefix(target),
     limit: Math.min(limit + 100, 1_000),
   });
   if (listed.objects.length <= limit) return;
@@ -138,12 +174,12 @@ async function pruneRevisions(env: Env, account: Account): Promise<void> {
   }
 }
 
-export async function deleteAll(env: Env, account: Account): Promise<void> {
-  const keys = [currentKey(account)];
+export async function deleteAll(env: Env, target: SyncTarget): Promise<void> {
+  const keys = [currentKey(target)];
   let cursor: string | undefined;
   do {
     const listed = await env.SYNC_BUCKET.list({
-      prefix: revisionsPrefix(account),
+      prefix: revisionsPrefix(target),
       cursor,
       limit: 1_000,
     });

@@ -27,7 +27,8 @@
           "type": "toml",
           "path": "apps/desktop/src-tauri/Cargo.toml",
           "jsonpath": "$.package.version"
-        }
+        },
+        "apps/desktop/src-tauri/gen/apple/project.yml"
       ]
     }
   }

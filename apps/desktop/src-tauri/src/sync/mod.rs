@@ -22,7 +22,9 @@
 //! tombstone resurrects it within a bundle; a tombstone wins ties. Across two
 //! devices, simultaneous object/delete changes remain conflicts.
 
+pub mod managed;
 mod providers;
+pub mod vault_key;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -36,6 +38,7 @@ use chacha20poly1305::{
     XChaCha20Poly1305, XNonce,
 };
 use chrono::{SecondsFormat, Utc};
+use hkdf::Hkdf;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use keyring::Entry;
 use rand::{rngs::OsRng, RngCore};
@@ -58,6 +61,9 @@ use providers::{
 const MAGIC: &[u8; 8] = b"LUMASYNC";
 const ENVELOPE_VERSION: u8 = 1;
 const KDF_ARGON2ID: u8 = 1;
+/// Managed vaults are handed a random content key instead of a user secret, so
+/// there is nothing to stretch: the per-blob key is HKDF'd straight from it.
+const KDF_HKDF_CONTENT_KEY: u8 = 0;
 const CIPHER_XCHACHA20_POLY1305: u8 = 1;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
@@ -85,13 +91,15 @@ const PASSPHRASE_SECRET_TYPE: &str = "passphrase";
 const IDENTITY_PASSWORD_SECRET_TYPE: &str = "password";
 pub(crate) const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024;
 
-/// Per-vault sync runtime. Each vault has its own passphrase and its own
+/// Per-vault sync runtime. Each vault has its own unlocked secret and its own
 /// pending-conflict set, so one vault stalling on a conflict never blocks
-/// another. Nothing here is persisted: the passphrase lives in memory (and, if
-/// the user asked for it, the OS keychain) and never in SQLite.
+/// another. Nothing here is persisted: the secret lives in memory (and, if the
+/// user asked for it, the OS keychain) and never in SQLite. For a managed vault
+/// the secret is the content key unsealed from the server's envelope, so it is
+/// cached exactly like a passphrase and discarded on lock.
 #[derive(Default)]
 pub struct SyncRuntimeState {
-    passphrase: Mutex<HashMap<String, Zeroizing<String>>>,
+    passphrase: Mutex<HashMap<String, VaultSecret>>,
     pending: Mutex<HashMap<String, PendingSync>>,
 }
 
@@ -428,11 +436,10 @@ pub async fn initialize(
     for vault in vaults::list(pool).await? {
         let account = vault_account(KEYCHAIN_PASSPHRASE, &vault.id);
         if let Ok(passphrase) = credential_get(pool, keystore_state, &account).await {
-            runtime
-                .passphrase
-                .lock()
-                .unwrap()
-                .insert(vault.id, Zeroizing::new(passphrase));
+            runtime.passphrase.lock().unwrap().insert(
+                vault.id,
+                VaultSecret::Passphrase(Zeroizing::new(passphrase)),
+            );
         }
     }
     Ok(())
@@ -448,9 +455,10 @@ pub async fn export_encrypted(
 ) -> Result<ExportSummary> {
     vaults::require(pool, vault_id).await?;
     let path_buf = validate_file_path(path, app_data_dir, false)?;
-    let bundle = assemble_bundle(pool, keystore_state, passphrase, vault_id).await?;
+    let secret = VaultSecret::from(passphrase);
+    let bundle = assemble_bundle(pool, keystore_state, &secret, vault_id).await?;
     let counts = bundle.counts();
-    let blob = encrypt_bundle(&bundle, passphrase)?;
+    let blob = encrypt_bundle(&bundle, &secret)?;
     fs::write(&path_buf, blob).map_err(|error| {
         LumaError::Io(std::io::Error::new(
             error.kind(),
@@ -491,28 +499,29 @@ pub async fn import_apply(
     resolutions: &[ConflictResolution],
 ) -> Result<ImportSummary> {
     vaults::require(pool, vault_id).await?;
+    let secret = VaultSecret::from(passphrase);
     let bundle = read_encrypted_bundle(path, app_data_dir, passphrase)?;
     validate_bundle(&bundle)?;
-    let local = assemble_bundle(pool, keystore_state, passphrase, vault_id).await?;
+    let local = assemble_bundle(pool, keystore_state, &secret, vault_id).await?;
     let outcome = merge_bundles(&local, &bundle, None, resolutions)?;
     validate_states(&outcome.states)?;
     let prepared = prepare_remote_secrets(
         keystore_state,
-        passphrase,
+        &secret,
         &bundle.encrypted_key_secrets,
         &outcome.states,
         &outcome.remote_key_references,
     )?;
     let prepared_identities = prepare_remote_identity_secrets(
         keystore_state,
-        passphrase,
+        &secret,
         &bundle.encrypted_identity_secrets,
         &outcome.states,
         &outcome.remote_identities,
     )?;
     apply_states(pool, &outcome.states, vault_id).await?;
-    let private_keys = apply_prepared_secrets(pool, keystore_state, passphrase, prepared).await?;
-    apply_prepared_identity_secrets(pool, keystore_state, passphrase, prepared_identities).await?;
+    let private_keys = apply_prepared_secrets(pool, keystore_state, &secret, prepared).await?;
+    apply_prepared_identity_secrets(pool, keystore_state, &secret, prepared_identities).await?;
     Ok(ImportSummary {
         applied: outcome.applied_remote,
         kept_local: outcome.kept_local,
@@ -629,6 +638,22 @@ pub async fn configure(
             stored.gist_id = optional_identifier(input.gist_id.take(), "gistId")?;
         }
         "luma-cloud" => {
+            // On Luma Cloud a vault is either the account's own blob (personal)
+            // or a server-side vault with its own membership (managed). A
+            // passphrase-shared vault has neither, and would collide with the
+            // personal blob, so it belongs on one of the other providers.
+            let kind = vaults::get(pool, vault_id)
+                .await?
+                .map(|vault| vault.kind)
+                .unwrap_or_default();
+            if vault_id != PERSONAL_VAULT_ID && kind != vaults::MANAGED_KIND {
+                return Err(LumaError::InvalidInput(
+                    "Luma Cloud sync is available for the personal vault and for vaults \
+                     shared through Luma Cloud; use a local folder, WebDAV or GitHub Gist \
+                     for a passphrase-shared vault"
+                        .into(),
+                ));
+            }
             let cloud_url = required_trimmed(input.cloud_url.take(), "cloudUrl")?;
             providers::validate_cloud_api_url(&cloud_url)?;
             if !crate::collaboration::account_is_signed_in(pool, keystore_state).await {
@@ -700,11 +725,10 @@ pub async fn set_passphrase(
     } else {
         clear_credential(pool, keystore_state, &account).await?;
     }
-    runtime
-        .passphrase
-        .lock()
-        .unwrap()
-        .insert(vault_id.to_string(), Zeroizing::new(passphrase));
+    runtime.passphrase.lock().unwrap().insert(
+        vault_id.to_string(),
+        VaultSecret::Passphrase(Zeroizing::new(passphrase)),
+    );
     Ok(())
 }
 
@@ -741,7 +765,28 @@ pub async fn sync_now(
 ) -> Result<SyncReport> {
     vaults::require(pool, vault_id).await?;
     let (provider_name, mut stored) = load_enabled_config(pool, vault_id).await?;
-    let passphrase = current_passphrase(runtime, vault_id)?;
+    let secret = current_secret(
+        pool,
+        runtime,
+        collab_runtime,
+        keystore_state,
+        &stored,
+        vault_id,
+    )
+    .await?;
+    // Hand the key to any member device that joined since the last sync. Doing
+    // it before the transfer means a new joiner can decrypt as soon as one
+    // existing member syncs, rather than waiting for a change to push.
+    share_managed_key(
+        pool,
+        collab_runtime,
+        keystore_state,
+        &stored,
+        vault_id,
+        &secret,
+    )
+    .await?;
+
     let provider = create_provider(
         pool,
         keystore_state,
@@ -753,10 +798,10 @@ pub async fn sync_now(
     )
     .await?;
     let remote = provider.download().await?;
-    let local = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
+    let local = assemble_bundle(pool, keystore_state, &secret, vault_id).await?;
 
     let Some(remote) = remote else {
-        let blob = encrypt_bundle(&local, &passphrase)?;
+        let blob = encrypt_bundle(&local, &secret)?;
         let uploaded = provider.upload(&blob, None).await?;
         update_after_upload(
             pool,
@@ -778,29 +823,28 @@ pub async fn sync_now(
         });
     };
 
-    let remote_bundle = decrypt_bundle(&remote.bytes, &passphrase)?;
+    let remote_bundle = decrypt_bundle(&remote.bytes, &secret)?;
     validate_bundle(&remote_bundle)?;
     let outcome = merge_bundles(&local, &remote_bundle, Some(&stored.baseline), &[])?;
     validate_states(&outcome.states)?;
     let prepared = prepare_remote_secrets(
         keystore_state,
-        &passphrase,
+        &secret,
         &remote_bundle.encrypted_key_secrets,
         &outcome.states,
         &outcome.remote_key_references,
     )?;
     let prepared_identities = prepare_remote_identity_secrets(
         keystore_state,
-        &passphrase,
+        &secret,
         &remote_bundle.encrypted_identity_secrets,
         &outcome.states,
         &outcome.remote_identities,
     )?;
     apply_states(pool, &outcome.states, vault_id).await?;
-    let private_keys = apply_prepared_secrets(pool, keystore_state, &passphrase, prepared).await?;
+    let private_keys = apply_prepared_secrets(pool, keystore_state, &secret, prepared).await?;
     let identity_passwords =
-        apply_prepared_identity_secrets(pool, keystore_state, &passphrase, prepared_identities)
-            .await?;
+        apply_prepared_identity_secrets(pool, keystore_state, &secret, prepared_identities).await?;
     let pulled =
         !outcome.applied_remote.is_empty() || private_keys.applied > 0 || identity_passwords > 0;
 
@@ -826,12 +870,12 @@ pub async fn sync_now(
         });
     }
 
-    let merged = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
+    let merged = assemble_bundle(pool, keystore_state, &secret, vault_id).await?;
     let compare_private_keys = private_key_sync_active(pool, keystore_state, vault_id).await?;
     let needs_push =
-        !bundles_have_same_content(&merged, &remote_bundle, &passphrase, compare_private_keys)?;
+        !bundles_have_same_content(&merged, &remote_bundle, &secret, compare_private_keys)?;
     let pushed = if needs_push {
-        let blob = encrypt_bundle(&merged, &passphrase)?;
+        let blob = encrypt_bundle(&merged, &secret)?;
         let uploaded = provider.upload(&blob, Some(&remote.version)).await?;
         update_after_upload(
             pool,
@@ -858,6 +902,37 @@ pub async fn sync_now(
         private_keys_applied: private_keys.applied,
         private_keys_skipped_locked: private_keys.skipped_locked,
     })
+}
+
+/// Seal a managed vault's key to member devices that do not hold it yet. A no-op
+/// for every other vault kind.
+async fn share_managed_key(
+    pool: &SqlitePool,
+    collab_runtime: &crate::collaboration::CollaborationRuntimeState,
+    keystore_state: &KeystoreState,
+    stored: &StoredSyncState,
+    vault_id: &str,
+    secret: &VaultSecret,
+) -> Result<()> {
+    let Some(vault) = vaults::get(pool, vault_id).await? else {
+        return Ok(());
+    };
+    if vault.kind != vaults::MANAGED_KIND {
+        return Ok(());
+    }
+    let Some(api_url) = stored.cloud_url.as_deref() else {
+        return Ok(());
+    };
+    managed::share_key_with_pending_devices(
+        pool,
+        collab_runtime,
+        keystore_state,
+        api_url,
+        &vault,
+        secret,
+    )
+    .await?;
+    Ok(())
 }
 
 pub async fn sync_resolve(
@@ -903,8 +978,16 @@ pub async fn sync_resolve(
         });
     }
 
-    let passphrase = current_passphrase(runtime, vault_id)?;
-    let local = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
+    let secret = current_secret(
+        pool,
+        runtime,
+        collab_runtime,
+        keystore_state,
+        &stored,
+        vault_id,
+    )
+    .await?;
+    let local = assemble_bundle(pool, keystore_state, &secret, vault_id).await?;
     let mut states = local.states()?;
     let mut pulled = false;
     let mut remote_key_references = HashSet::new();
@@ -932,23 +1015,22 @@ pub async fn sync_resolve(
     validate_states(&states)?;
     let prepared = prepare_remote_secrets(
         keystore_state,
-        &passphrase,
+        &secret,
         &pending.remote_encrypted_key_secrets,
         &states,
         &remote_key_references,
     )?;
     let prepared_identities = prepare_remote_identity_secrets(
         keystore_state,
-        &passphrase,
+        &secret,
         &pending.remote_encrypted_identity_secrets,
         &states,
         &remote_identities,
     )?;
     apply_states(pool, &states, vault_id).await?;
-    let private_keys = apply_prepared_secrets(pool, keystore_state, &passphrase, prepared).await?;
+    let private_keys = apply_prepared_secrets(pool, keystore_state, &secret, prepared).await?;
     let identity_passwords =
-        apply_prepared_identity_secrets(pool, keystore_state, &passphrase, prepared_identities)
-            .await?;
+        apply_prepared_identity_secrets(pool, keystore_state, &secret, prepared_identities).await?;
     pulled |= private_keys.applied > 0 || identity_passwords > 0;
 
     let provider = create_provider(
@@ -961,8 +1043,8 @@ pub async fn sync_resolve(
         vault_id,
     )
     .await?;
-    let merged = assemble_bundle(pool, keystore_state, &passphrase, vault_id).await?;
-    let blob = encrypt_bundle(&merged, &passphrase)?;
+    let merged = assemble_bundle(pool, keystore_state, &secret, vault_id).await?;
+    let blob = encrypt_bundle(&merged, &secret)?;
     let uploaded = provider
         .upload(&blob, Some(&pending.remote_version))
         .await?;
@@ -986,8 +1068,8 @@ pub async fn sync_resolve(
     })
 }
 
-fn encrypt_bundle(bundle: &SyncBundle, passphrase: &str) -> Result<Vec<u8>> {
-    validate_passphrase(passphrase)?;
+fn encrypt_bundle(bundle: &SyncBundle, secret: &VaultSecret) -> Result<Vec<u8>> {
+    secret.validate()?;
     validate_bundle(bundle)?;
     let plaintext = serde_json::to_vec(bundle)
         .map_err(|_| LumaError::InvalidInput("could not serialize sync data".into()))?;
@@ -1000,13 +1082,13 @@ fn encrypt_bundle(bundle: &SyncBundle, passphrase: &str) -> Result<Vec<u8>> {
     let mut nonce = [0_u8; NONCE_LEN];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
-    let key = Zeroizing::new(derive_sync_key(passphrase, &salt)?);
+    let key = secret.derive(&salt)?;
 
     let mut blob = Vec::with_capacity(HEADER_LEN + plaintext.len() + 16);
     blob.extend_from_slice(MAGIC);
     blob.extend_from_slice(&[
         ENVELOPE_VERSION,
-        KDF_ARGON2ID,
+        secret.kdf_id(),
         CIPHER_XCHACHA20_POLY1305,
         SALT_LEN as u8,
         NONCE_LEN as u8,
@@ -1026,8 +1108,8 @@ fn encrypt_bundle(bundle: &SyncBundle, passphrase: &str) -> Result<Vec<u8>> {
     Ok(blob)
 }
 
-fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<SyncBundle> {
-    validate_passphrase(passphrase)?;
+fn decrypt_bundle(blob: &[u8], secret: &VaultSecret) -> Result<SyncBundle> {
+    secret.validate()?;
     if blob.len() < HEADER_LEN + 16 || blob.len() > MAX_BLOB_BYTES {
         return Err(LumaError::InvalidInput(
             "encrypted sync file has an invalid size".into(),
@@ -1039,7 +1121,7 @@ fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<SyncBundle> {
         ));
     }
     if blob[8] != ENVELOPE_VERSION
-        || blob[9] != KDF_ARGON2ID
+        || (blob[9] != KDF_ARGON2ID && blob[9] != KDF_HKDF_CONTENT_KEY)
         || blob[10] != CIPHER_XCHACHA20_POLY1305
         || blob[11] as usize != SALT_LEN
         || blob[12] as usize != NONCE_LEN
@@ -1048,9 +1130,10 @@ fn decrypt_bundle(blob: &[u8], passphrase: &str) -> Result<SyncBundle> {
             "encrypted sync format is unsupported".into(),
         ));
     }
+    secret.reject_foreign_kdf(blob[9])?;
     let salt = &blob[13..13 + SALT_LEN];
     let nonce = &blob[13 + SALT_LEN..HEADER_LEN];
-    let key = Zeroizing::new(derive_sync_key(passphrase, salt)?);
+    let key = secret.derive(salt)?;
     let plaintext = Zeroizing::new(
         XChaCha20Poly1305::new((&*key).into())
             .decrypt(
@@ -1127,6 +1210,74 @@ fn derive_sync_key(passphrase: &str, salt: &[u8]) -> Result<[u8; 32]> {
     Ok(key)
 }
 
+/// What a vault's blob and secrets are encrypted under.
+///
+/// A passphrase vault stretches a user secret with Argon2id, exactly as before.
+/// A managed vault is handed a random 32-byte content key that the server
+/// distributes sealed to each member device, so there is no secret to stretch —
+/// the per-blob key comes from HKDF over the same header salt. Everything below
+/// this point (envelope, bundle, three-way merge, conflict handling) is shared.
+#[derive(Clone)]
+pub(crate) enum VaultSecret {
+    Passphrase(Zeroizing<String>),
+    ContentKey(Zeroizing<[u8; vault_key::CONTENT_KEY_LEN]>),
+}
+
+impl VaultSecret {
+    fn kdf_id(&self) -> u8 {
+        match self {
+            Self::Passphrase(_) => KDF_ARGON2ID,
+            Self::ContentKey(_) => KDF_HKDF_CONTENT_KEY,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Passphrase(passphrase) => validate_passphrase(passphrase),
+            Self::ContentKey(_) => Ok(()),
+        }
+    }
+
+    fn derive(&self, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
+        match self {
+            Self::Passphrase(passphrase) => Ok(Zeroizing::new(derive_sync_key(passphrase, salt)?)),
+            Self::ContentKey(content_key) => {
+                let hkdf = Hkdf::<Sha256>::new(Some(salt), &**content_key);
+                let mut key = Zeroizing::new([0_u8; 32]);
+                hkdf.expand(b"luma.sync.blob", &mut *key)
+                    .map_err(|_| LumaError::SyncUnavailable("sync key derivation failed".into()))?;
+                Ok(key)
+            }
+        }
+    }
+
+    /// A blob written under a content key cannot be opened with a passphrase or
+    /// the other way round, so a KDF mismatch is a definite error rather than a
+    /// wrong-secret retry.
+    fn reject_foreign_kdf(&self, kdf_id: u8) -> Result<()> {
+        if kdf_id == self.kdf_id() {
+            return Ok(());
+        }
+        Err(LumaError::InvalidInput(
+            match self {
+                Self::Passphrase(_) => {
+                    "this remote holds a managed vault, which a passphrase cannot open"
+                }
+                Self::ContentKey(_) => {
+                    "this remote holds a passphrase-protected vault, not a managed one"
+                }
+            }
+            .into(),
+        ))
+    }
+}
+
+impl From<&str> for VaultSecret {
+    fn from(passphrase: &str) -> Self {
+        Self::Passphrase(Zeroizing::new(passphrase.to_string()))
+    }
+}
+
 fn secret_aad(
     key_reference_id: &str,
     secret_type: &str,
@@ -1156,9 +1307,9 @@ fn encrypt_sync_secret(
     secret_type: &str,
     plaintext: &str,
     updated_at: i64,
-    passphrase: &str,
+    secret: &VaultSecret,
 ) -> Result<SyncEncryptedSecret> {
-    validate_passphrase(passphrase)?;
+    secret.validate()?;
     if plaintext.len() > MAX_SYNC_SECRET_BYTES {
         return Err(LumaError::InvalidInput(
             "private key sync secret exceeds the size limit".into(),
@@ -1168,11 +1319,11 @@ fn encrypt_sync_secret(
     let mut nonce = [0_u8; NONCE_LEN];
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
-    let key = Zeroizing::new(derive_sync_key(passphrase, &salt)?);
+    let key = secret.derive(&salt)?;
     let aad = secret_aad(
         key_reference_id,
         secret_type,
-        KDF_ARGON2ID,
+        secret.kdf_id(),
         CIPHER_XCHACHA20_POLY1305,
         &salt,
         &nonce,
@@ -1193,7 +1344,7 @@ fn encrypt_sync_secret(
     Ok(SyncEncryptedSecret {
         key_reference_id: key_reference_id.to_string(),
         secret_type: secret_type.to_string(),
-        kdf_id: KDF_ARGON2ID,
+        kdf_id: secret.kdf_id(),
         cipher_id: CIPHER_XCHACHA20_POLY1305,
         salt: base64.encode(salt),
         nonce: base64.encode(nonce),
@@ -1206,7 +1357,7 @@ fn decode_sync_secret_parts(secret: &SyncEncryptedSecret) -> Result<(Vec<u8>, Ve
     if secret.key_reference_id.is_empty()
         || secret.key_reference_id.len() > 512
         || secret.key_reference_id.contains('\0')
-        || secret.kdf_id != KDF_ARGON2ID
+        || (secret.kdf_id != KDF_ARGON2ID && secret.kdf_id != KDF_HKDF_CONTENT_KEY)
         || secret.cipher_id != CIPHER_XCHACHA20_POLY1305
         || secret.updated_at < 0
     {
@@ -1238,11 +1389,12 @@ fn decode_sync_secret_parts(secret: &SyncEncryptedSecret) -> Result<(Vec<u8>, Ve
 
 fn decrypt_sync_secret(
     secret: &SyncEncryptedSecret,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
 ) -> Result<Zeroizing<String>> {
-    validate_passphrase(passphrase)?;
+    vault_secret.validate()?;
     let (salt, nonce, ciphertext) = decode_sync_secret_parts(secret)?;
-    let key = Zeroizing::new(derive_sync_key(passphrase, &salt)?);
+    vault_secret.reject_foreign_kdf(secret.kdf_id)?;
+    let key = vault_secret.derive(&salt)?;
     let aad = secret_aad(
         &secret.key_reference_id,
         &secret.secret_type,
@@ -1292,10 +1444,10 @@ async fn private_key_sync_active(
 async fn assemble_bundle(
     pool: &SqlitePool,
     keystore_state: &KeystoreState,
-    passphrase: &str,
+    secret: &VaultSecret,
     vault_id: &str,
 ) -> Result<SyncBundle> {
-    assemble_bundle_inner(pool, Some((keystore_state, passphrase)), vault_id).await
+    assemble_bundle_inner(pool, Some((keystore_state, secret)), vault_id).await
 }
 
 async fn assemble_bundle_without_private_keys(
@@ -1307,7 +1459,7 @@ async fn assemble_bundle_without_private_keys(
 
 async fn assemble_bundle_inner(
     pool: &SqlitePool,
-    private_key_sync: Option<(&KeystoreState, &str)>,
+    private_key_sync: Option<(&KeystoreState, &VaultSecret)>,
     vault_id: &str,
 ) -> Result<SyncBundle> {
     // Device-scoped preferences belong to the person, not the team: a teammate's
@@ -1407,7 +1559,7 @@ async fn assemble_bundle_inner(
     }
 
     let mut encrypted_key_secrets = Vec::new();
-    if let Some((keystore_state, passphrase)) = private_key_sync {
+    if let Some((keystore_state, vault_secret)) = private_key_sync {
         if share_secrets {
             for (key_reference_id, updated_at) in private_key_reference_timestamps {
                 for secret_type in [PRIVATE_KEY_SECRET_TYPE, PASSPHRASE_SECRET_TYPE] {
@@ -1427,7 +1579,7 @@ async fn assemble_bundle_inner(
                                 secret_type,
                                 &plaintext,
                                 updated_at,
-                                passphrase,
+                                vault_secret,
                             )?);
                         }
                         Ok(None) => {}
@@ -1470,14 +1622,14 @@ async fn assemble_bundle_inner(
         // keep travelling with it as they always have. A shared vault reaches other
         // people, so nothing secret leaves it until sharing is explicitly enabled.
         if has_password && (device_scoped || share_secrets) {
-            if let Some((keystore_state, passphrase)) = private_key_sync {
+            if let Some((keystore_state, vault_secret)) = private_key_sync {
                 match identities::password(pool, keystore_state, &id).await {
                     Ok(Some(password)) => encrypted_identity_secrets.push(encrypt_sync_secret(
                         &id,
                         IDENTITY_PASSWORD_SECRET_TYPE,
                         &password,
                         updated_at,
-                        passphrase,
+                        vault_secret,
                     )?),
                     Ok(None) => {}
                     Err(_error) if !keystore::is_unlocked(keystore_state) => {}
@@ -2019,7 +2171,7 @@ fn validate_encrypted_secret_metadata(secret: &SyncEncryptedSecret) -> Result<()
             secret.secret_type.as_str(),
             PRIVATE_KEY_SECRET_TYPE | PASSPHRASE_SECRET_TYPE
         )
-        || secret.kdf_id != KDF_ARGON2ID
+        || (secret.kdf_id != KDF_ARGON2ID && secret.kdf_id != KDF_HKDF_CONTENT_KEY)
         || secret.cipher_id != CIPHER_XCHACHA20_POLY1305
         || secret.updated_at < 0
     {
@@ -2035,7 +2187,7 @@ fn validate_encrypted_identity_secret_metadata(secret: &SyncEncryptedSecret) -> 
         || secret.key_reference_id.len() > 512
         || secret.key_reference_id.contains('\0')
         || secret.secret_type != IDENTITY_PASSWORD_SECRET_TYPE
-        || secret.kdf_id != KDF_ARGON2ID
+        || (secret.kdf_id != KDF_ARGON2ID && secret.kdf_id != KDF_HKDF_CONTENT_KEY)
         || secret.cipher_id != CIPHER_XCHACHA20_POLY1305
         || secret.updated_at < 0
     {
@@ -2316,7 +2468,7 @@ fn validate_sync_profile(profile: &SyncTerminalProfile) -> Result<()> {
 
 fn prepare_remote_secrets(
     keystore_state: &KeystoreState,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
     incoming: &[SyncEncryptedSecret],
     merged_states: &BTreeMap<String, MergeItem>,
     remote_key_references: &HashSet<String>,
@@ -2346,7 +2498,7 @@ fn prepare_remote_secrets(
     // Authenticate every selected secret before metadata writes begin. This prevents a
     // corrupted nested ciphertext from producing a partial import or sync apply.
     for secret in &entries {
-        drop(decrypt_sync_secret(secret, passphrase)?);
+        drop(decrypt_sync_secret(secret, vault_secret)?);
     }
     Ok(PreparedRemoteSecrets {
         entries,
@@ -2356,7 +2508,7 @@ fn prepare_remote_secrets(
 
 fn prepare_remote_identity_secrets(
     keystore_state: &KeystoreState,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
     incoming: &[SyncEncryptedSecret],
     merged_states: &BTreeMap<String, MergeItem>,
     remote_identities: &HashSet<String>,
@@ -2375,7 +2527,7 @@ fn prepare_remote_identity_secrets(
         .cloned()
         .collect();
     for secret in &entries {
-        drop(decrypt_sync_secret(secret, passphrase)?);
+        drop(decrypt_sync_secret(secret, vault_secret)?);
     }
     Ok(entries)
 }
@@ -2393,7 +2545,7 @@ fn identity_secret_store_available(keystore_state: &KeystoreState) -> bool {
 async fn apply_prepared_secrets(
     pool: &SqlitePool,
     keystore_state: &KeystoreState,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
     prepared: PreparedRemoteSecrets,
 ) -> Result<PrivateKeyApplySummary> {
     let mut summary = PrivateKeyApplySummary {
@@ -2412,7 +2564,7 @@ async fn apply_prepared_secrets(
                 .len();
             break;
         }
-        let plaintext = decrypt_sync_secret(secret, passphrase)?;
+        let plaintext = decrypt_sync_secret(secret, vault_secret)?;
         match keystore::store(
             pool,
             keystore_state,
@@ -2453,7 +2605,7 @@ async fn apply_prepared_secrets(
 async fn apply_prepared_identity_secrets(
     pool: &SqlitePool,
     keystore_state: &KeystoreState,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
     prepared: Vec<SyncEncryptedSecret>,
 ) -> Result<usize> {
     let mut applied = 0;
@@ -2461,7 +2613,7 @@ async fn apply_prepared_identity_secrets(
         if !identity_secret_store_available(keystore_state) {
             break;
         }
-        let plaintext = decrypt_sync_secret(&secret, passphrase)?;
+        let plaintext = decrypt_sync_secret(&secret, vault_secret)?;
         identities::set_synced_password(pool, keystore_state, &secret.key_reference_id, &plaintext)
             .await?;
         applied += 1;
@@ -2793,7 +2945,7 @@ fn read_encrypted_bundle(path: &str, app_data_dir: &Path, passphrase: &str) -> R
         ));
     }
     let blob = fs::read(path)?;
-    decrypt_bundle(&blob, passphrase)
+    decrypt_bundle(&blob, &VaultSecret::from(passphrase))
 }
 
 fn is_safe_setting_key(key: &str) -> bool {
@@ -2882,30 +3034,30 @@ fn baseline_for_bundle(bundle: &SyncBundle) -> Result<BTreeMap<String, String>> 
 fn bundles_have_same_content(
     left: &SyncBundle,
     right: &SyncBundle,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
     compare_private_keys: bool,
 ) -> Result<bool> {
     if baseline_for_bundle(left)? != baseline_for_bundle(right)? {
         return Ok(false);
     }
-    if identity_secret_content_hashes(left, passphrase)?
-        != identity_secret_content_hashes(right, passphrase)?
+    if identity_secret_content_hashes(left, vault_secret)?
+        != identity_secret_content_hashes(right, vault_secret)?
     {
         return Ok(false);
     }
     if !compare_private_keys {
         return Ok(true);
     }
-    Ok(secret_content_hashes(left, passphrase)? == secret_content_hashes(right, passphrase)?)
+    Ok(secret_content_hashes(left, vault_secret)? == secret_content_hashes(right, vault_secret)?)
 }
 
 fn identity_secret_content_hashes(
     bundle: &SyncBundle,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
 ) -> Result<BTreeMap<String, [u8; 32]>> {
     let mut hashes = BTreeMap::new();
     for secret in &bundle.encrypted_identity_secrets {
-        let plaintext = decrypt_sync_secret(secret, passphrase)?;
+        let plaintext = decrypt_sync_secret(secret, vault_secret)?;
         let mut hasher = Sha256::new();
         hasher.update(secret.key_reference_id.as_bytes());
         hasher.update([0]);
@@ -2917,11 +3069,11 @@ fn identity_secret_content_hashes(
 
 fn secret_content_hashes(
     bundle: &SyncBundle,
-    passphrase: &str,
+    vault_secret: &VaultSecret,
 ) -> Result<BTreeMap<(String, String), [u8; 32]>> {
     let mut hashes = BTreeMap::new();
     for secret in &bundle.encrypted_key_secrets {
-        let plaintext = decrypt_sync_secret(secret, passphrase)?;
+        let plaintext = decrypt_sync_secret(secret, vault_secret)?;
         let mut hasher = Sha256::new();
         hasher.update(secret.key_reference_id.as_bytes());
         hasher.update([0]);
@@ -3185,18 +3337,59 @@ async fn clear_credential(
     }
 }
 
-fn current_passphrase(runtime: &SyncRuntimeState, vault_id: &str) -> Result<Zeroizing<String>> {
+fn cached_secret(runtime: &SyncRuntimeState, vault_id: &str) -> Option<VaultSecret> {
+    runtime.passphrase.lock().unwrap().get(vault_id).cloned()
+}
+
+/// Hold a freshly minted or rotated managed-vault key in memory so the next
+/// sync does not have to fetch back what this device just sealed.
+pub fn cache_vault_secret(runtime: &SyncRuntimeState, vault_id: &str, secret: VaultSecret) {
     runtime
         .passphrase
         .lock()
         .unwrap()
-        .get(vault_id)
-        .cloned()
-        .ok_or_else(|| {
-            LumaError::SyncPassphraseRequired(
-                "sync passphrase is not set; enter it before synchronizing".into(),
-            )
-        })
+        .insert(vault_id.to_string(), secret);
+}
+
+/// The secret this vault is encrypted under.
+///
+/// A passphrase vault can only get one from the user, so a cache miss is a
+/// prompt. A managed vault fetches its content key from Luma Cloud, sealed to
+/// this device, and caches it the same way — there is nothing for the user to
+/// type, but there is a network call, which is why this is async.
+async fn current_secret(
+    pool: &SqlitePool,
+    runtime: &SyncRuntimeState,
+    collab_runtime: &crate::collaboration::CollaborationRuntimeState,
+    keystore_state: &KeystoreState,
+    stored: &StoredSyncState,
+    vault_id: &str,
+) -> Result<VaultSecret> {
+    if let Some(secret) = cached_secret(runtime, vault_id) {
+        return Ok(secret);
+    }
+
+    let vault = vaults::get(pool, vault_id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown vault".into()))?;
+    if vault.kind != vaults::MANAGED_KIND {
+        return Err(LumaError::SyncPassphraseRequired(
+            "sync passphrase is not set; enter it before synchronizing".into(),
+        ));
+    }
+
+    let api_url = stored
+        .cloud_url
+        .as_deref()
+        .ok_or_else(|| LumaError::SyncUnavailable("Luma Cloud URL is not configured".into()))?;
+    let secret =
+        managed::content_key(pool, collab_runtime, keystore_state, api_url, &vault).await?;
+    runtime
+        .passphrase
+        .lock()
+        .unwrap()
+        .insert(vault_id.to_string(), secret.clone());
+    Ok(secret)
 }
 
 async fn load_enabled_config(
@@ -3283,10 +3476,17 @@ async fn create_provider(
                 crate::collaboration::account_access_token(pool, collab_runtime, keystore_state)
                     .await
                     .map_err(|e| LumaError::SyncAuthFailed(e.message))?;
+            // A managed vault has its own server-side vault with its own
+            // membership, so it addresses `/v1/vaults/{id}/sync` rather than the
+            // account-wide blob a personal vault uses.
+            let remote_vault_id = vaults::get(pool, vault_id)
+                .await?
+                .and_then(|vault| vault.remote_vault_id);
             Ok(Box::new(LumaCloudProvider::new(
                 api_url,
                 access_token,
                 slot,
+                remote_vault_id,
             )?))
         }
         _ => Err(LumaError::SyncUnavailable(
@@ -3431,22 +3631,83 @@ mod tests {
         bundle
             .settings
             .insert("appearance.theme".into(), setting("dark", 10));
-        let encrypted = encrypt_bundle(&bundle, "correct horse battery staple").unwrap();
-        let decrypted = decrypt_bundle(&encrypted, "correct horse battery staple").unwrap();
+        let encrypted = encrypt_bundle(&bundle, &"correct horse battery staple".into()).unwrap();
+        let decrypted = decrypt_bundle(&encrypted, &"correct horse battery staple".into()).unwrap();
         assert_eq!(decrypted, bundle);
+    }
+
+    fn content_key_secret(byte: u8) -> VaultSecret {
+        VaultSecret::ContentKey(Zeroizing::new([byte; vault_key::CONTENT_KEY_LEN]))
+    }
+
+    #[test]
+    fn a_content_key_bundle_round_trips_and_marks_its_kdf() {
+        let mut bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
+        bundle
+            .settings
+            .insert("appearance.theme".into(), setting("dark", 10));
+        let secret = content_key_secret(7);
+
+        let encrypted = encrypt_bundle(&bundle, &secret).unwrap();
+        assert_eq!(encrypted[9], KDF_HKDF_CONTENT_KEY);
+        assert_eq!(decrypt_bundle(&encrypted, &secret).unwrap(), bundle);
+
+        // A different content key is a wrong key, not a wrong format.
+        let error = decrypt_bundle(&encrypted, &content_key_secret(8)).unwrap_err();
+        assert_eq!(error.category(), "sync-auth-failed");
+    }
+
+    #[test]
+    fn a_passphrase_and_a_content_key_cannot_open_each_others_blobs() {
+        let bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
+        let passphrase = VaultSecret::from("correct horse battery staple");
+        let content_key = content_key_secret(7);
+
+        let managed = encrypt_bundle(&bundle, &content_key).unwrap();
+        let error = decrypt_bundle(&managed, &passphrase).unwrap_err();
+        assert!(error.to_string().contains("managed vault"), "{error}");
+
+        let shared = encrypt_bundle(&bundle, &passphrase).unwrap();
+        assert_eq!(shared[9], KDF_ARGON2ID);
+        let error = decrypt_bundle(&shared, &content_key).unwrap_err();
+        assert!(
+            error.to_string().contains("passphrase-protected"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_content_key_secret_round_trips_and_rejects_a_passphrase() {
+        let secret = content_key_secret(7);
+        let encrypted = encrypt_sync_secret(
+            "key-1",
+            PRIVATE_KEY_SECRET_TYPE,
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+            42,
+            &secret,
+        )
+        .unwrap();
+
+        assert_eq!(encrypted.kdf_id, KDF_HKDF_CONTENT_KEY);
+        validate_encrypted_secret_metadata(&encrypted).unwrap();
+        assert!(decrypt_sync_secret(&encrypted, &secret).is_ok());
+
+        let error =
+            decrypt_sync_secret(&encrypted, &"correct horse battery staple".into()).unwrap_err();
+        assert!(error.to_string().contains("managed vault"), "{error}");
     }
 
     #[test]
     fn wrong_passphrase_and_tampering_fail_readably() {
         let bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
-        let mut encrypted = encrypt_bundle(&bundle, "correct passphrase").unwrap();
-        let error = decrypt_bundle(&encrypted, "incorrect passphrase").unwrap_err();
+        let mut encrypted = encrypt_bundle(&bundle, &"correct passphrase".into()).unwrap();
+        let error = decrypt_bundle(&encrypted, &"incorrect passphrase".into()).unwrap_err();
         assert_eq!(error.category(), "sync-auth-failed");
         assert!(error.to_string().contains("incorrect sync passphrase"));
 
         let last = encrypted.len() - 1;
         encrypted[last] ^= 0x80;
-        let error = decrypt_bundle(&encrypted, "correct passphrase").unwrap_err();
+        let error = decrypt_bundle(&encrypted, &"correct passphrase".into()).unwrap_err();
         assert_eq!(error.category(), "sync-auth-failed");
     }
 
@@ -3577,10 +3838,11 @@ mod tests {
             PRIVATE_KEY_SECRET_TYPE,
             private_key,
             42,
-            "correct horse battery staple",
+            &"correct horse battery staple".into(),
         )
         .unwrap();
-        let decrypted = decrypt_sync_secret(&encrypted, "correct horse battery staple").unwrap();
+        let decrypted =
+            decrypt_sync_secret(&encrypted, &"correct horse battery staple".into()).unwrap();
         assert_eq!(&*decrypted, private_key);
     }
 
@@ -3604,7 +3866,7 @@ mod tests {
                 PRIVATE_KEY_SECRET_TYPE,
                 private_key,
                 42,
-                "correct horse battery staple",
+                &"correct horse battery staple".into(),
             )
             .unwrap(),
         );
@@ -3656,7 +3918,7 @@ mod tests {
         let bundle = assemble_bundle(
             &pool,
             &keystore_state,
-            "correct horse battery staple",
+            &"correct horse battery staple".into(),
             PERSONAL_VAULT_ID,
         )
         .await
@@ -3671,7 +3933,7 @@ mod tests {
     async fn keystore_locked_apply_skips_private_keys_and_counts_them() {
         let pool = crate::storage::init_in_memory().await.unwrap();
         let keystore_state = KeystoreState::default();
-        let passphrase = "correct horse battery staple";
+        let passphrase = VaultSecret::from("correct horse battery staple");
         let mut remote = empty_bundle("22222222-2222-4222-8222-222222222222");
         remote.key_references.push(SyncKeyReference {
             id: "key-1".into(),
@@ -3689,7 +3951,7 @@ mod tests {
                 PRIVATE_KEY_SECRET_TYPE,
                 "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
                 42,
-                passphrase,
+                &passphrase,
             )
             .unwrap(),
         );
@@ -3697,7 +3959,7 @@ mod tests {
         let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
         let prepared = prepare_remote_secrets(
             &keystore_state,
-            passphrase,
+            &passphrase,
             &remote.encrypted_key_secrets,
             &outcome.states,
             &outcome.remote_key_references,
@@ -3706,7 +3968,7 @@ mod tests {
         apply_states(&pool, &outcome.states, PERSONAL_VAULT_ID)
             .await
             .unwrap();
-        let summary = apply_prepared_secrets(&pool, &keystore_state, passphrase, prepared)
+        let summary = apply_prepared_secrets(&pool, &keystore_state, &passphrase, prepared)
             .await
             .unwrap();
         assert_eq!(summary.applied, 0);
@@ -3726,7 +3988,7 @@ mod tests {
         keystore::setup(&pool, &keystore_state, "keystore password", false)
             .await
             .unwrap();
-        let passphrase = "correct horse battery staple";
+        let passphrase = VaultSecret::from("correct horse battery staple");
         let private_key =
             "-----BEGIN OPENSSH PRIVATE KEY-----\nREMOTEKEY\n-----END OPENSSH PRIVATE KEY-----\n";
         let mut remote = empty_bundle("22222222-2222-4222-8222-222222222222");
@@ -3746,7 +4008,7 @@ mod tests {
                 PRIVATE_KEY_SECRET_TYPE,
                 private_key,
                 42,
-                passphrase,
+                &passphrase,
             )
             .unwrap(),
         );
@@ -3754,7 +4016,7 @@ mod tests {
         let outcome = merge_bundles(&local, &remote, None, &[]).unwrap();
         let prepared = prepare_remote_secrets(
             &keystore_state,
-            passphrase,
+            &passphrase,
             &remote.encrypted_key_secrets,
             &outcome.states,
             &outcome.remote_key_references,
@@ -3763,7 +4025,7 @@ mod tests {
         apply_states(&pool, &outcome.states, PERSONAL_VAULT_ID)
             .await
             .unwrap();
-        let summary = apply_prepared_secrets(&pool, &keystore_state, passphrase, prepared)
+        let summary = apply_prepared_secrets(&pool, &keystore_state, &passphrase, prepared)
             .await
             .unwrap();
 
@@ -3842,7 +4104,7 @@ mod tests {
                 PRIVATE_KEY_SECRET_TYPE,
                 "-----BEGIN OPENSSH PRIVATE KEY-----\nREMOTEKEY\n-----END OPENSSH PRIVATE KEY-----\n",
                 20,
-                "correct horse battery staple",
+                &"correct horse battery staple".into(),
             )
             .unwrap(),
         );
@@ -3851,7 +4113,7 @@ mod tests {
         assert!(outcome.remote_key_references.is_empty());
         let prepared = prepare_remote_secrets(
             &keystore_state,
-            "correct horse battery staple",
+            &"correct horse battery staple".into(),
             &remote.encrypted_key_secrets,
             &outcome.states,
             &outcome.remote_key_references,
@@ -3863,7 +4125,7 @@ mod tests {
         let summary = apply_prepared_secrets(
             &pool,
             &keystore_state,
-            "correct horse battery staple",
+            &"correct horse battery staple".into(),
             prepared,
         )
         .await
@@ -4063,18 +4325,18 @@ mod tests {
 
     #[test]
     fn encrypted_identity_password_roundtrip_and_validation() {
-        let passphrase = "correct horse battery staple";
+        let passphrase = VaultSecret::from("correct horse battery staple");
         let secret = encrypt_sync_secret(
             "identity-1",
             IDENTITY_PASSWORD_SECRET_TYPE,
             "super secret password",
             42,
-            passphrase,
+            &passphrase,
         )
         .unwrap();
         validate_encrypted_identity_secret_metadata(&secret).unwrap();
         assert_eq!(
-            decrypt_sync_secret(&secret, passphrase).unwrap().as_str(),
+            decrypt_sync_secret(&secret, &passphrase).unwrap().as_str(),
             "super secret password"
         );
         let mut bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
@@ -4107,7 +4369,7 @@ mod tests {
                 updated_at: 1,
             },
         );
-        let error = encrypt_bundle(&bundle, "correct passphrase").unwrap_err();
+        let error = encrypt_bundle(&bundle, &"correct passphrase".into()).unwrap_err();
         assert_eq!(error.category(), "invalid-input");
         assert!(!error.to_string().contains("do-not-sync"));
     }
@@ -4252,18 +4514,65 @@ mod tests {
             .unwrap();
         }
 
-        let passphrase = "correct horse battery staple";
-        let withheld = assemble_bundle(&pool, &keystore_state, passphrase, &private)
+        let passphrase = VaultSecret::from("correct horse battery staple");
+        let withheld = assemble_bundle(&pool, &keystore_state, &passphrase, &private)
             .await
             .unwrap();
         assert_eq!(withheld.key_references.len(), 1);
         assert!(withheld.encrypted_key_secrets.is_empty());
 
-        let shared = assemble_bundle(&pool, &keystore_state, passphrase, &sharing)
+        let shared = assemble_bundle(&pool, &keystore_state, &passphrase, &sharing)
             .await
             .unwrap();
         assert_eq!(shared.key_references.len(), 1);
         assert_eq!(shared.encrypted_key_secrets.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn luma_cloud_is_rejected_for_a_shared_vault() {
+        let root = temporary_directory();
+        let app_data_dir = root.join("app-data");
+        fs::create_dir_all(&app_data_dir).unwrap();
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let runtime = SyncRuntimeState::default();
+        let keystore_state = KeystoreState::default();
+        initialize(&pool, &runtime, &keystore_state).await.unwrap();
+
+        let shared = shared_vault(&pool, "Infra", false).await;
+        let input = SyncConfigureInput {
+            provider: "luma-cloud".into(),
+            folder_path: None,
+            url: None,
+            username: None,
+            password: None,
+            gist_id: None,
+            token: None,
+            cloud_url: Some("https://sync.example.com".into()),
+        };
+
+        let error = configure(
+            &pool,
+            &runtime,
+            &keystore_state,
+            &app_data_dir,
+            &shared,
+            input,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, LumaError::InvalidInput(_)), "{error:?}");
+
+        // The vault is left unconfigured rather than half-enabled.
+        let provider: Option<String> =
+            sqlx::query_scalar("SELECT provider FROM sync_state WHERE vault_id = ?1")
+                .bind(&shared)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .flatten();
+        assert_eq!(provider, None);
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]
@@ -4343,22 +4652,23 @@ mod tests {
 
         // Force a conflict in the first vault only: rewrite its remote blob behind
         // its back, then change the same host locally.
-        let passphrase = "first vault passphrase";
+        let passphrase = VaultSecret::from("first vault passphrase");
         let blob_path = folder.join(
             blobs
                 .iter()
                 .find(|name| {
                     let bytes = fs::read(folder.join(name)).unwrap();
-                    decrypt_bundle(&bytes, passphrase).is_ok()
+                    decrypt_bundle(&bytes, &passphrase).is_ok()
                 })
                 .unwrap(),
         );
-        let mut remote_bundle = decrypt_bundle(&fs::read(&blob_path).unwrap(), passphrase).unwrap();
+        let mut remote_bundle =
+            decrypt_bundle(&fs::read(&blob_path).unwrap(), &passphrase).unwrap();
         remote_bundle.hosts[0].hostname = "remote-edit.example.com".into();
         remote_bundle.hosts[0].updated_at += 60;
         fs::write(
             &blob_path,
-            encrypt_bundle(&remote_bundle, passphrase).unwrap(),
+            encrypt_bundle(&remote_bundle, &passphrase).unwrap(),
         )
         .unwrap();
 

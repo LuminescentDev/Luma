@@ -32,6 +32,12 @@ pub struct Vault {
     /// Turning this on hands those secrets to every member, permanently.
     pub share_secrets: bool,
     pub sort_order: i32,
+    /// Server-side identity, set only for `managed` vaults. The local `id` is
+    /// per-device; this is what every member's device agrees on.
+    pub remote_vault_id: Option<String>,
+    /// Which generation of the content key the local cache holds. Bumped by the
+    /// server when a member is removed.
+    pub key_epoch: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,14 +51,29 @@ pub struct VaultInput {
 }
 
 fn row_to_vault(row: &sqlx::sqlite::SqliteRow) -> Vault {
+    let remote_vault_id: Option<String> = row.get("remote_vault_id");
+    let stored_kind: String = row.get("kind");
     Vault {
         id: row.get("id"),
+        // A managed vault is stored as 'shared' — the two differ only in how the
+        // key is obtained, and holding a server-side vault is what distinguishes
+        // them. Callers get the narrower kind so they do not have to know that.
+        kind: match remote_vault_id {
+            Some(_) => MANAGED_KIND.to_string(),
+            None => stored_kind,
+        },
         name: row.get("name"),
-        kind: row.get("kind"),
         share_secrets: row.get::<i64, _>("share_secrets") != 0,
         sort_order: row.get("sort_order"),
+        remote_vault_id: row.get("remote_vault_id"),
+        key_epoch: row.get::<i64, _>("key_epoch") as u32,
     }
 }
+
+/// Managed vaults get their content key from Luma Cloud rather than a
+/// passphrase, so they are the one kind that cannot live on another provider.
+/// Reported by [`row_to_vault`]; never stored in the `kind` column.
+pub const MANAGED_KIND: &str = "managed";
 
 fn validate_name(name: &str) -> Result<()> {
     let name = name.trim();
@@ -66,7 +87,7 @@ fn validate_name(name: &str) -> Result<()> {
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Vault>> {
     let rows = sqlx::query(
-        "SELECT id, name, kind, share_secrets, sort_order
+        "SELECT id, name, kind, share_secrets, sort_order, remote_vault_id, key_epoch
          FROM vaults ORDER BY kind = 'personal' DESC, sort_order, name COLLATE NOCASE",
     )
     .fetch_all(pool)
@@ -75,11 +96,13 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Vault>> {
 }
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<Vault>> {
-    let row =
-        sqlx::query("SELECT id, name, kind, share_secrets, sort_order FROM vaults WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
+    let row = sqlx::query(
+        "SELECT id, name, kind, share_secrets, sort_order, remote_vault_id, key_epoch
+             FROM vaults WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
     Ok(row.as_ref().map(row_to_vault))
 }
 
@@ -117,6 +140,67 @@ pub async fn create(pool: &SqlitePool, input: VaultInput) -> Result<Vault> {
     get(pool, &id)
         .await?
         .ok_or_else(|| LumaError::InvalidInput("vault creation failed".into()))
+}
+
+/// Record a vault whose content key Luma Cloud distributes. `remote_vault_id`
+/// is the server's id for it, so joining the same vault on a second device
+/// creates a second local row pointing at the same remote.
+pub async fn create_managed(
+    pool: &SqlitePool,
+    name: &str,
+    remote_vault_id: &str,
+    key_epoch: u32,
+    share_secrets: bool,
+) -> Result<Vault> {
+    validate_name(name)?;
+    if remote_vault_id.is_empty() || remote_vault_id.len() > 128 {
+        return Err(LumaError::InvalidInput(
+            "managed vault identifier is invalid".into(),
+        ));
+    }
+    if let Some(existing) = by_remote_id(pool, remote_vault_id).await? {
+        return Err(LumaError::InvalidInput(format!(
+            "this vault is already set up locally as \"{}\"",
+            existing.name
+        )));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO vaults (id, name, kind, share_secrets, remote_vault_id, key_epoch)
+         VALUES (?1, ?2, 'shared', ?3, ?4, ?5)",
+    )
+    .bind(&id)
+    .bind(name.trim())
+    .bind(share_secrets)
+    .bind(remote_vault_id)
+    .bind(i64::from(key_epoch))
+    .execute(pool)
+    .await?;
+
+    get(pool, &id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("vault creation failed".into()))
+}
+
+pub async fn by_remote_id(pool: &SqlitePool, remote_vault_id: &str) -> Result<Option<Vault>> {
+    let row = sqlx::query(
+        "SELECT id, name, kind, share_secrets, sort_order, remote_vault_id, key_epoch
+         FROM vaults WHERE remote_vault_id = ?1",
+    )
+    .bind(remote_vault_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.as_ref().map(row_to_vault))
+}
+
+pub async fn set_key_epoch(pool: &SqlitePool, id: &str, key_epoch: u32) -> Result<()> {
+    sqlx::query("UPDATE vaults SET key_epoch = ?2, updated_at = unixepoch() WHERE id = ?1")
+        .bind(id)
+        .bind(i64::from(key_epoch))
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn update(pool: &SqlitePool, id: &str, input: VaultInput) -> Result<Vault> {

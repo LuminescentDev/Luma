@@ -61,6 +61,16 @@ tracing-appender = "0.2"
 regex = "1"
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
+# Managed-vault key sealing: the same ECDH-P256-HKDF-SHA256-AES-256-GCM envelope
+# the collaboration client uses for room keys, implemented here so a vault
+# content key never crosses into JS.
+p256 = { version = "0.13", default-features = false, features = [
+  "ecdh",
+  "pkcs8",
+  "std",
+] }
+hkdf = "0.12"
+aes-gcm = "0.10"
 rand = "0.8"
 base64 = "0.22"
 fs2 = "0.4"

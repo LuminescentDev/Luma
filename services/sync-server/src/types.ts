@@ -26,3 +26,20 @@ export interface Account {
 export interface AuthenticatedUser {
   subject: string;
 }
+
+export type VaultRole = "owner" | "writer" | "reader";
+
+export interface Vault {
+  id: string;
+  owner_subject: string;
+  storage_id: string;
+  key_epoch: number;
+  used_bytes: number;
+  deleted_at: number | null;
+}
+
+/** A vault plus the requesting subject's live role in it. */
+export interface VaultMembership {
+  vault: Vault;
+  role: VaultRole;
+}

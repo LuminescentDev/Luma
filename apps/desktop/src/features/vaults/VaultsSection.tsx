@@ -13,7 +13,12 @@ import {
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { parseLumaError } from "../../lib/hosts";
 import type { SyncConfig } from "../../lib/sync";
-import { buildVaultJoinLink, PERSONAL_VAULT_ID, type Vault } from "../../lib/vaults";
+import {
+  buildVaultJoinLink,
+  createVaultInvite,
+  PERSONAL_VAULT_ID,
+  type Vault,
+} from "../../lib/vaults";
 import { useDeleteVault, useVaults } from "../../hooks/useVaults";
 import { useSyncConfigs } from "../../hooks/useSync";
 import { useHostGroups, useHosts, useIdentities, useKeyReferences } from "../../hooks/useHosts";
@@ -159,20 +164,35 @@ export function VaultsSection() {
 }
 
 /**
- * The link that lets someone else point their Luma at this vault's remote. It
- * carries the location only — the passphrase is shared out of band, and the
- * link alone reveals nothing readable.
+ * The link that lets someone else reach this vault.
+ *
+ * For a passphrase vault it carries the remote's location only: the passphrase
+ * travels out of band, so the link alone reveals nothing readable. For a
+ * managed vault it also carries a server-issued invite, which *is* access — the
+ * copy below says so, and a fresh invite is minted per click so one can be
+ * revoked without invalidating the rest.
  */
 function InviteRow({ vault, config }: { vault: Vault; config: SyncConfig | undefined }) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const managed = vault.kind === "managed";
 
-  const copy = () => {
-    if (!config?.provider) return;
+  const copy = async () => {
+    if (!config?.provider || busy) return;
+    setBusy(true);
     try {
+      let inviteSecret: string | null = null;
+      if (managed) {
+        if (!config.cloudUrl) throw new Error("This vault has no Luma Cloud URL configured.");
+        inviteSecret = (
+          await createVaultInvite({ id: vault.id, cloudUrl: config.cloudUrl, role: "writer" })
+        ).secret;
+      }
       const link = buildVaultJoinLink({
         name: vault.name,
         provider: config.provider,
+        inviteSecret,
         folderPath: config.folderPath,
         url: config.url,
         username: config.username,
@@ -180,12 +200,13 @@ function InviteRow({ vault, config }: { vault: Vault; config: SyncConfig | undef
         cloudUrl: config.cloudUrl,
       });
       setError(null);
-      void navigator.clipboard.writeText(link).then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
-      });
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(err instanceof Error ? err.message : parseLumaError(err).message);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -195,18 +216,19 @@ function InviteRow({ vault, config }: { vault: Vault; config: SyncConfig | undef
         <div className="min-w-0">
           <p className="text-sm font-medium">Invite link</p>
           <p className="text-xs text-muted">
-            Names the remote only. Send the passphrase separately — together they are
-            full access to this vault.
+            {managed
+              ? "Includes a one-time invite: anyone who opens this link joins the vault. Send it privately."
+              : "Names the remote only. Send the passphrase separately — together they are full access to this vault."}
           </p>
         </div>
         <button
           type="button"
-          onClick={copy}
-          disabled={!config?.enabled || !config.provider}
+          onClick={() => void copy()}
+          disabled={!config?.enabled || !config.provider || busy}
           className="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-accent/60 hover:bg-surface disabled:opacity-50"
         >
           {copied ? <Check size={14} className="text-accent" /> : <Link2 size={14} />}
-          {copied ? "Copied" : "Copy link"}
+          {copied ? "Copied" : busy ? "Creating…" : managed ? "Create invite link" : "Copy link"}
         </button>
       </div>
       {!config?.enabled && (

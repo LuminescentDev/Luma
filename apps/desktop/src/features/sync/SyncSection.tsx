@@ -14,6 +14,7 @@ import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { PassphrasePrompt } from "./PassphrasePrompt";
 import { parseLumaError } from "../../lib/hosts";
 import {
+  DEFAULT_LUMA_CLOUD_URL,
   formatRelativeTime,
   truncateVersion,
   type SyncConfig,
@@ -49,8 +50,6 @@ const PROVIDER_LABELS: Record<SyncProvider, string> = {
   "luma-cloud": "Luma Cloud",
 };
 
-const DEFAULT_LUMA_CLOUD_URL = "https://sync.luma.bwmp.dev";
-
 /**
  * The personal vault's sync, for the Account settings category. Other vaults
  * are configured from the vault list, which passes its own `vault`.
@@ -78,15 +77,22 @@ function SyncSectionBody({ vault, config }: { vault: Vault; config: SyncConfig }
   const folderSyncEnabled = useCapabilityStore(
     (s) => s.capabilities.features.folderSync,
   );
+  // On Luma Cloud a vault is either the account's own blob (personal) or a
+  // server-side vault with its own membership (managed). A passphrase-shared
+  // vault is neither, so it belongs on one of the other providers; the backend
+  // rejects the combination too, this just keeps it out of the picker.
+  const cloudEligible = vaultId === PERSONAL_VAULT_ID || vault.kind === "managed";
   const providerOptions = PROVIDER_OPTIONS.filter(
-    (option) => folderSyncEnabled || option.value !== "local-folder",
+    (option) =>
+      (folderSyncEnabled || option.value !== "local-folder") &&
+      (cloudEligible || option.value !== "luma-cloud"),
   );
   const configure = useConfigureSync(vaultId);
   const disable = useDisableSync(vaultId);
   const setPassphrase = useSetSyncPassphrase(vaultId);
   const updateVault = useUpdateVault();
 
-  const shared = vault.kind === "shared";
+  const shared = vault.kind !== "personal";
   const shareSecrets = vault.shareSecrets;
 
   const runtime = useSyncStore((s) => selectVault(s, vaultId));
