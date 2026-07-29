@@ -1,11 +1,10 @@
 import { useState } from "react";
 import {
-  Check,
   Cloud,
   CloudOff,
-  Link2,
   Pencil,
   Plus,
+  Share2,
   ShieldAlert,
   Trash2,
   Vault as VaultIcon,
@@ -27,6 +26,7 @@ import { SyncSection } from "../sync/SyncSection";
 import { BackupSection } from "../sync/BackupSection";
 import { VaultDialog } from "./VaultDialog";
 import { useUiStore } from "../../stores/uiStore";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 import { cn } from "../../lib/utils";
 
 /**
@@ -72,7 +72,7 @@ export function VaultsSection() {
               key={vault.id}
               vault={vault}
               selected={selected?.id === vault.id}
-              syncEnabled={syncByVault.get(vault.id)?.enabled ?? false}
+              syncConfig={syncByVault.get(vault.id)}
               onSelect={() => setSelectedId(vault.id)}
               onRename={() => openRename(vault)}
               onDelete={vault.kind === "personal" ? undefined : () => setDeleting(vault)}
@@ -80,18 +80,18 @@ export function VaultsSection() {
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={openCreate}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:brightness-110"
+            className="flex min-h-10 items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:brightness-110"
           >
             <Plus size={14} /> New vault
           </button>
           <button
             type="button"
             onClick={() => openJoin()}
-            className="rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-accent/60 hover:bg-surface"
+            className="min-h-10 rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-accent/60 hover:bg-surface"
           >
             Join a shared vault
           </button>
@@ -111,9 +111,6 @@ export function VaultsSection() {
               Sync — {selected.name}
             </h3>
             <SyncSection vault={selected} />
-            {selected.kind === "shared" && (
-              <InviteRow vault={selected} config={syncByVault.get(selected.id)} />
-            )}
           </section>
           <section className="space-y-4 border-t border-border pt-6">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted">
@@ -163,160 +160,147 @@ export function VaultsSection() {
   );
 }
 
-/**
- * The link that lets someone else reach this vault.
- *
- * For a passphrase vault it carries the remote's location only: the passphrase
- * travels out of band, so the link alone reveals nothing readable. For a
- * managed vault it also carries a server-issued invite, which *is* access — the
- * copy below says so, and a fresh invite is minted per click so one can be
- * revoked without invalidating the rest.
- */
-function InviteRow({ vault, config }: { vault: Vault; config: SyncConfig | undefined }) {
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const managed = vault.kind === "managed";
-
-  const copy = async () => {
-    if (!config?.provider || busy) return;
-    setBusy(true);
-    try {
-      let inviteSecret: string | null = null;
-      if (managed) {
-        if (!config.cloudUrl) throw new Error("This vault has no Luma Cloud URL configured.");
-        inviteSecret = (
-          await createVaultInvite({ id: vault.id, cloudUrl: config.cloudUrl, role: "writer" })
-        ).secret;
-      }
-      const link = buildVaultJoinLink({
-        name: vault.name,
-        provider: config.provider,
-        inviteSecret,
-        folderPath: config.folderPath,
-        url: config.url,
-        username: config.username,
-        gistId: config.gistId,
-        cloudUrl: config.cloudUrl,
-      });
-      setError(null);
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : parseLumaError(err).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-2 rounded-lg border border-border bg-background p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">Invite link</p>
-          <p className="text-xs text-muted">
-            {managed
-              ? "Includes a one-time invite: anyone who opens this link joins the vault. Send it privately."
-              : "Names the remote only. Send the passphrase separately — together they are full access to this vault."}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => void copy()}
-          disabled={!config?.enabled || !config.provider || busy}
-          className="flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-raised px-3 py-1.5 text-sm font-medium text-foreground hover:border-accent/60 hover:bg-surface disabled:opacity-50"
-        >
-          {copied ? <Check size={14} className="text-accent" /> : <Link2 size={14} />}
-          {copied ? "Copied" : busy ? "Creating…" : managed ? "Create invite link" : "Copy link"}
-        </button>
-      </div>
-      {!config?.enabled && (
-        <p className="text-xs text-muted">Configure a provider above before inviting anyone.</p>
-      )}
-      {error && (
-        <p role="alert" className="text-xs text-danger">
-          {error}
-        </p>
-      )}
-    </div>
-  );
-}
-
 function VaultRow({
   vault,
   selected,
-  syncEnabled,
+  syncConfig,
   onSelect,
   onRename,
   onDelete,
 }: {
   vault: Vault;
   selected: boolean;
-  syncEnabled: boolean;
+  syncConfig: SyncConfig | undefined;
   onSelect: () => void;
   onRename: () => void;
   onDelete?: () => void;
 }) {
   const counts = useVaultCounts(vault.id);
+  const isMobile = useCapabilityStore((state) => state.capabilities.isMobile);
+  const [sharing, setSharing] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const canShare =
+    vault.kind !== "personal" && Boolean(syncConfig?.enabled && syncConfig.provider);
+
+  const share = async () => {
+    if (!canShare || !syncConfig?.provider || sharing) return;
+    setSharing(true);
+    setShareError(null);
+    try {
+      let inviteSecret: string | null = null;
+      if (vault.kind === "managed") {
+        const cloudUrl = syncConfig.cloudUrl;
+        if (!cloudUrl) {
+          throw new Error("This vault has no Luma Cloud URL configured.");
+        }
+        inviteSecret = (
+          await createVaultInvite({
+            id: vault.id,
+            cloudUrl,
+            role: "writer",
+          })
+        ).secret;
+      }
+      const link = buildVaultJoinLink({
+        name: vault.name,
+        provider: syncConfig.provider,
+        inviteSecret,
+        folderPath: syncConfig.folderPath,
+        url: syncConfig.url,
+        username: syncConfig.username,
+        gistId: syncConfig.gistId,
+        cloudUrl: syncConfig.cloudUrl,
+      });
+      if (isMobile && navigator.share) {
+        await navigator.share({ title: `Join ${vault.name} in Luma`, text: link });
+      } else {
+        await navigator.clipboard.writeText(link);
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setShareError(err instanceof Error ? err.message : parseLumaError(err).message);
+    } finally {
+      setSharing(false);
+    }
+  };
+
   return (
-    <div
-      className={cn(
-        "group flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors",
-        selected ? "border-accent bg-accent/10" : "border-border bg-surface hover:border-accent/50",
-      )}
-    >
-      <button
-        type="button"
-        onClick={onSelect}
-        aria-current={selected ? "true" : undefined}
-        className="flex min-w-0 flex-1 items-center gap-3 text-left"
+    <div className="space-y-1">
+      <div
+        className={cn(
+          "group flex items-center gap-2 rounded-lg border px-3 py-2.5 transition-colors",
+          selected ? "border-accent bg-accent/10" : "border-border bg-surface hover:border-accent/50",
+        )}
       >
-        <span
-          className={cn(
-            "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
-            selected ? "bg-accent/20 text-accent" : "bg-raised text-muted",
-          )}
-        >
-          <VaultIcon size={16} />
-        </span>
-        <span className="min-w-0">
-          <span className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-foreground">{vault.name}</span>
-            {vault.kind === "shared" && vault.shareSecrets && (
-              <span
-                title="Shares private keys and passwords with every member"
-                className="flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-400"
-              >
-                <ShieldAlert size={10} /> Secrets shared
-              </span>
-            )}
-          </span>
-          <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-            {syncEnabled ? <Cloud size={11} /> : <CloudOff size={11} />}
-            {counts}
-          </span>
-        </span>
-      </button>
-      <button
-        type="button"
-        onClick={onRename}
-        aria-label={`Rename ${vault.name}`}
-        title="Rename"
-        className="invisible shrink-0 rounded p-1 text-muted hover:text-foreground group-hover:visible"
-      >
-        <Pencil size={14} />
-      </button>
-      {onDelete && (
         <button
           type="button"
-          onClick={onDelete}
-          aria-label={`Delete ${vault.name}`}
-          title="Delete"
-          className="invisible shrink-0 rounded p-1 text-muted hover:text-danger group-hover:visible"
+          onClick={onSelect}
+          aria-current={selected ? "true" : undefined}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          <Trash2 size={14} />
+          <span
+            className={cn(
+              "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
+              selected ? "bg-accent/20 text-accent" : "bg-raised text-muted",
+            )}
+          >
+            <VaultIcon size={16} />
+          </span>
+          <span className="min-w-0">
+            <span className="flex items-center gap-2">
+              <span className="truncate text-sm font-medium text-foreground">{vault.name}</span>
+              {vault.kind === "shared" && vault.shareSecrets && (
+                <span
+                  title="Shares private keys and passwords with every member"
+                  className="flex shrink-0 items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-400"
+                >
+                  <ShieldAlert size={10} /> Secrets shared
+                </span>
+              )}
+            </span>
+            <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
+              {syncConfig?.enabled ? <Cloud size={11} /> : <CloudOff size={11} />}
+              {counts}
+            </span>
+          </span>
         </button>
+        <button
+          type="button"
+          onClick={onRename}
+          aria-label={`Rename ${vault.name}`}
+          title="Rename"
+          className="shrink-0 rounded p-1.5 text-muted hover:text-foreground"
+        >
+          <Pencil size={14} />
+        </button>
+        {vault.kind !== "personal" && (
+          <button
+            type="button"
+            onClick={() => void share()}
+            disabled={!canShare || sharing}
+            aria-label={`Share ${vault.name}`}
+            title={canShare ? "Share vault" : "Configure sync before sharing"}
+            className="shrink-0 rounded p-1.5 text-muted hover:text-accent disabled:opacity-40"
+          >
+            <Share2 size={14} />
+          </button>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            onClick={onDelete}
+            aria-label={`Delete ${vault.name}`}
+            title="Delete"
+            className="shrink-0 rounded p-1.5 text-muted hover:text-danger"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+      </div>
+      {shareError && (
+        <p role="alert" className="px-3 text-xs text-danger">
+          {shareError}
+        </p>
       )}
     </div>
   );
