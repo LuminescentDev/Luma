@@ -44,14 +44,14 @@ describe("mobile navigation", () => {
   it("leaves other tabs untouched when re-selecting pops one to root", () => {
     const nav = useMobileNavStore.getState();
     nav.selectTab("profile");
-    nav.push("settings-sync");
+    nav.push("settings-vaults");
     nav.selectTab("vaults");
     useMobileNavStore.getState().push("hosts");
     useMobileNavStore.getState().selectTab("vaults");
 
     const { stacks } = useMobileNavStore.getState();
     expect(stacks.vaults).toEqual([]);
-    expect(stacks.profile).toEqual(["settings-sync"]);
+    expect(stacks.profile).toEqual(["settings-vaults"]);
   });
 
   it("pops one level at a time and no-ops at the hub", () => {

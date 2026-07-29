@@ -60,6 +60,7 @@ export function MobileVaultsHub() {
   const { data: snippets } = useSnippets(vaultId);
   const { data: knownHosts } = useKnownHosts();
   const { data: forwards } = useAllPortForwards();
+  const { data: vaults } = useVaults();
 
   // Port forwards belong to hosts, not vaults, so scope them by the hosts the
   // active vault owns rather than showing a global count under one vault.
@@ -108,6 +109,16 @@ export function MobileVaultsHub() {
       <MobileList className="mt-6">
         <MobileRow icon={FolderTree} label="Files" onSelect={() => push("sftp")} />
         <MobileRow icon={ScrollText} label="Logs" onSelect={() => push("logs")} />
+      </MobileList>
+
+      <MobileList className="mt-6">
+        <MobileRow
+          icon={FolderLock}
+          label="Manage Vaults"
+          detail="Create, join, sync and back up vaults"
+          count={vaults?.length}
+          onSelect={() => push("settings-vaults")}
+        />
       </MobileList>
     </MobileScreen>
   );

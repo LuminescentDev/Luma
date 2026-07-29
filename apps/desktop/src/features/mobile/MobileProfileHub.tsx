@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import {
-  Archive,
   ChevronRight,
-  Cloud,
+  FolderLock,
   Info,
   Palette,
   ShieldCheck,
@@ -73,16 +72,16 @@ export function MobileProfileHub() {
       </MobileList>
 
       <MobileList className="mt-6">
-        <MobileRow icon={Cloud} label="Sync" onSelect={() => push("settings-sync")} />
+        <MobileRow
+          icon={FolderLock}
+          label="Vaults & Sync"
+          detail="Create vaults, sync and encrypted backup"
+          onSelect={() => push("settings-vaults")}
+        />
         <MobileRow
           icon={Users}
           label="Collaboration"
           onSelect={() => push("settings-collaboration")}
-        />
-        <MobileRow
-          icon={Archive}
-          label="Encrypted backup"
-          onSelect={() => push("settings-backup")}
         />
       </MobileList>
 

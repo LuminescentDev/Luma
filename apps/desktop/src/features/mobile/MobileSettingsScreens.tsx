@@ -5,9 +5,7 @@ import { useCapabilityStore } from "../../stores/capabilityStore";
 import { SETTING_KEYS, type ThemeMode } from "../../types";
 import { cn } from "../../lib/utils";
 import { AppearanceSection } from "../settings/AppearanceSection";
-import { PersonalVaultSyncSection } from "../sync/SyncSection";
-import { BackupSection } from "../sync/BackupSection";
-import { PERSONAL_VAULT_ID } from "../../lib/vaults";
+import { VaultsSection } from "../vaults/VaultsSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
 import { AccountSection } from "../account/AccountSection";
 import { MobileScreen } from "./MobileScreen";
@@ -60,6 +58,7 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
   const { data: settings } = useSettings();
   const setSetting = useSetSetting();
   const scrollback = Number(settings?.[SETTING_KEYS.scrollback] ?? 5000);
+  const restoreSessions = settings?.[SETTING_KEYS.restoreSessions] !== false;
 
   return (
     <MobileScreen title="Terminal" onBack={onBack}>
@@ -78,6 +77,21 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
               }
             }}
             className="h-11 w-32 rounded-md border border-border bg-background px-2.5 text-sm outline-none focus:border-accent"
+          />
+        </Field>
+        <Field
+          label="Restore previous sessions on launch"
+          hint="Reopens tabs and split panes; terminal output is not restored."
+        >
+          <Toggle
+            checked={restoreSessions}
+            label="Restore previous sessions on launch"
+            onClick={() =>
+              setSetting.mutate({
+                key: SETTING_KEYS.restoreSessions,
+                value: !restoreSessions,
+              })
+            }
           />
         </Field>
       </Section>
@@ -142,11 +156,15 @@ export function MobileAccountScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-export function MobileSyncScreen({ onBack }: { onBack: () => void }) {
+/** Vault management: create, rename, delete and join vaults, plus the selected
+ * vault's sync and encrypted backup. The same VaultsSection the desktop shows
+ * under "Vaults & Sync" — it is already a single-column stack, so it reuses as
+ * is. Reachable from the Vaults hub and from Profile. */
+export function MobileVaultsScreen({ onBack }: { onBack: () => void }) {
   return (
-    <MobileScreen title="Sync" onBack={onBack}>
+    <MobileScreen title="Vaults & Sync" onBack={onBack}>
       <Section>
-        <PersonalVaultSyncSection />
+        <VaultsSection />
       </Section>
     </MobileScreen>
   );
@@ -157,16 +175,6 @@ export function MobileCollaborationScreen({ onBack }: { onBack: () => void }) {
     <MobileScreen title="Collaboration" onBack={onBack}>
       <Section>
         <CollaborationSection />
-      </Section>
-    </MobileScreen>
-  );
-}
-
-export function MobileBackupScreen({ onBack }: { onBack: () => void }) {
-  return (
-    <MobileScreen title="Encrypted backup" onBack={onBack}>
-      <Section>
-        <BackupSection vaultId={PERSONAL_VAULT_ID} />
       </Section>
     </MobileScreen>
   );

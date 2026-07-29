@@ -27,7 +27,7 @@ import {
   useSetSyncPassphrase,
   useSyncConfig,
 } from "../../hooks/useSync";
-import { useUpdateVault, useVault } from "../../hooks/useVaults";
+import { useUpdateVault } from "../../hooks/useVaults";
 import { PERSONAL_VAULT_ID, type Vault } from "../../lib/vaults";
 import { selectVault, useSyncStore } from "../../stores/syncStore";
 import { useCapabilityStore } from "../../stores/capabilityStore";
@@ -49,16 +49,6 @@ const PROVIDER_LABELS: Record<SyncProvider, string> = {
   "github-gist": "GitHub Gist",
   "luma-cloud": "Luma Cloud",
 };
-
-/**
- * The personal vault's sync, for the Account settings category. Other vaults
- * are configured from the vault list, which passes its own `vault`.
- */
-export function PersonalVaultSyncSection() {
-  const vault = useVault(PERSONAL_VAULT_ID);
-  if (!vault) return <p className="text-sm text-muted">Loading sync configuration…</p>;
-  return <SyncSection vault={vault} />;
-}
 
 export function SyncSection({ vault }: { vault: Vault }) {
   const { data: config, isLoading } = useSyncConfig(vault.id);

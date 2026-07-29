@@ -26,11 +26,10 @@ import {
   MobileAboutScreen,
   MobileAccountScreen,
   MobileAppearanceScreen,
-  MobileBackupScreen,
   MobileCollaborationScreen,
   MobileSshSettingsScreen,
-  MobileSyncScreen,
   MobileTerminalSettingsScreen,
+  MobileVaultsScreen,
 } from "./MobileSettingsScreens";
 
 /*
@@ -180,12 +179,10 @@ function RouteScreen({
       return <MobileTerminalSettingsScreen onBack={onBack} />;
     case "settings-ssh":
       return <MobileSshSettingsScreen onBack={onBack} />;
-    case "settings-sync":
-      return <MobileSyncScreen onBack={onBack} />;
+    case "settings-vaults":
+      return <MobileVaultsScreen onBack={onBack} />;
     case "settings-collaboration":
       return <MobileCollaborationScreen onBack={onBack} />;
-    case "settings-backup":
-      return <MobileBackupScreen onBack={onBack} />;
     case "settings-about":
       return <MobileAboutScreen onBack={onBack} />;
   }
