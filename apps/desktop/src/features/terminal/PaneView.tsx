@@ -52,6 +52,7 @@ export function PaneView({
   const splitActivePane = useSessionStore((s) => s.splitActivePane);
   const closeActivePane = useSessionStore((s) => s.closeActivePane);
   const setPaneBroadcast = useSessionStore((s) => s.setPaneBroadcast);
+  const setTransportNotice = useSessionStore((s) => s.setTransportNotice);
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   const openCollab = useUiStore((s) => s.openCollab);
   const startLog = useSessionLogStore((s) => s.start);
@@ -398,6 +399,25 @@ export function PaneView({
             aria-label="Dismiss"
             onClick={() => setLogError(null)}
             className="shrink-0 rounded p-1 text-danger/80 hover:text-danger"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* Non-blocking transport notice (Mosh → SSH auto-fallback). */}
+      {session.transportNotice && (
+        <div
+          role="status"
+          className="absolute inset-x-2 top-2 z-8 flex items-start gap-2 rounded-lg border border-border bg-surface/95 px-3 py-2 text-xs shadow-glow backdrop-blur"
+        >
+          <ShieldCheck size={14} className="mt-0.5 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 text-foreground">{session.transportNotice}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setTransportNotice(session.id, undefined)}
+            className="shrink-0 rounded p-1 text-muted hover:bg-raised hover:text-foreground"
           >
             <X size={14} />
           </button>

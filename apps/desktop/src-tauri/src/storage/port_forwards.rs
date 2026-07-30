@@ -311,6 +311,9 @@ mod tests {
                 tags: vec![],
                 favorite: false,
                 tab_color: None,
+                transport: "ssh".into(),
+                mosh_server_path: None,
+                mosh_port_range: None,
             },
         )
         .await

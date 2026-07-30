@@ -36,6 +36,12 @@ const MESSAGES: Record<string, string> = {
     "The scanned host key expired before it was accepted (or the host or port changed). Luma re-scanned the server — verify the newly shown fingerprints before trusting them.",
   "host-key-scan-requires-auth":
     "Luma must authenticate to the trusted jump host before it can verify the next server. Save credentials for the jump host, then try again.",
+  "mosh-client-missing":
+    "Mosh is not installed on this machine (mosh-client was not found). Install mosh locally to use the Mosh transport.",
+  "mosh-server-missing":
+    "mosh-server was not found on the remote host. Install mosh on the server, or set a custom mosh-server path in the host settings.",
+  "mosh-bootstrap-failed":
+    "The remote mosh-server did not report a session. Mosh needs direct UDP reachability — a stalled connection usually means UDP is blocked, and proxy-jump hosts only tunnel the SSH bootstrap.",
 };
 
 /** A short human label for a category (used in tabs / compact spots). */
@@ -69,6 +75,12 @@ export function sshCategoryLabel(category: string): string {
       return "Host key rescan required";
     case "host-key-scan-requires-auth":
       return "Jump host authentication required";
+    case "mosh-client-missing":
+      return "Mosh not installed locally";
+    case "mosh-server-missing":
+      return "mosh-server missing on host";
+    case "mosh-bootstrap-failed":
+      return "Mosh bootstrap failed";
     default:
       return "Connection failed";
   }

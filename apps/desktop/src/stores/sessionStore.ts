@@ -13,7 +13,7 @@ import {
   sshHostKeyTrust,
   type SshHostKeyStatus,
 } from "../lib/ssh";
-import { parseLumaError } from "../lib/hosts";
+import { getHost, parseLumaError, type TransportType } from "../lib/hosts";
 import {
   terminalManager,
   isSpawnAbandoned,
@@ -149,6 +149,9 @@ type SessionState = {
   toggleActiveBroadcast: () => void;
   /** Include/exclude a single pane's session from its tab's broadcast group. */
   setPaneBroadcast: (tabId: string, sessionId: string, enabled: boolean) => void;
+  /** Set or clear (undefined) a session's non-blocking transport notice (the
+   * "Mosh unavailable, fell back to SSH" card). */
+  setTransportNotice: (id: string, notice: string | undefined) => void;
 };
 
 /** The session ids that should currently receive broadcast for a tab: every
@@ -499,8 +502,47 @@ function makeCallbacks(set: SetFn, get: () => SessionState, id: string) {
   };
 }
 
+/** Patch the post-spawn success state for a launch/fallback attempt. Local,
+ * serial, and Mosh sessions are connected the moment the backend spawns; SSH
+ * flips to connected later, after authentication completes. */
+function applySpawnSuccess(
+  set: SetFn,
+  id: string,
+  descriptorKind: SpawnDescriptor["kind"],
+  title: string | undefined,
+): void {
+  set((state) => {
+    const current = state.sessions.find((s) => s.id === id);
+    // A fast backend exit can fire onExit BEFORE createSession resolves, which
+    // already moved the session to disconnected/error. Never overwrite that
+    // with "connected" — that is exactly the ghost-session race.
+    const spawnExited = !!current && current.status !== "connecting";
+    return {
+      sessions: patchSession(state.sessions, id, {
+        ...(descriptorKind !== "ssh" && !spawnExited
+          ? { status: "connected" as const }
+          : {}),
+        title,
+      }),
+    };
+  });
+}
+
+function applySpawnError(set: SetFn, id: string, error: unknown): void {
+  const { category, message } = parseLumaError(error);
+  set((state) => ({
+    sessions: patchSession(state.sessions, id, {
+      status: "error",
+      errorCategory: category,
+      errorMessage: message,
+    }),
+  }));
+}
+
 /** Spawn a managed terminal for an already-registered session, then patch its
- * status to connected/error. */
+ * status to connected/error. SSH descriptors honor the host's transport
+ * preference: "mosh"/"auto" spawn through mosh_spawn, and "auto" falls back to
+ * plain SSH with a non-blocking notice when the Mosh attempt fails. */
 async function launch(
   set: SetFn,
   get: () => SessionState,
@@ -511,9 +553,23 @@ async function launch(
   // SSH sessions must clear the host-key preflight before any spawn. This
   // covers first-open, split-pane duplication, and workspace restore alike —
   // an unknown host on restore prompts, it is never silently auto-trusted.
+  // Mosh bootstraps over the same embedded SSH engine, so the preflight covers
+  // it identically.
   if (descriptor.kind === "ssh") {
     const proceed = await runHostKeyPreflight(set, get, id, descriptor.hostId);
     if (!proceed || !sessionStillOpen(get, id)) return;
+  }
+  // Resolve the host's transport preference. A lookup failure falls back to
+  // plain SSH — the spawn will surface any real problem with the host itself.
+  let transport: TransportType = "ssh";
+  if (descriptor.kind === "ssh") {
+    try {
+      transport = (await getHost(descriptor.hostId))?.transport ?? "ssh";
+    } catch {
+      transport = "ssh";
+    }
+    if (!sessionStillOpen(get, id)) return;
+    if (transport !== "ssh") descriptor = { kind: "mosh", hostId: descriptor.hostId };
   }
   try {
     const result = await terminalManager.createSession(
@@ -521,35 +577,40 @@ async function launch(
       descriptor,
       makeCallbacks(set, get, id),
     );
-    set((state) => {
-      const current = state.sessions.find((s) => s.id === id);
-      // A fast backend exit can fire onExit BEFORE createSession resolves, which
-      // already moved the session to disconnected/error. Never overwrite that
-      // with "connected" — that is exactly the ghost-session race.
-      const spawnExited = !!current && current.status !== "connecting";
-      return {
-        sessions: patchSession(state.sessions, id, {
-          // Local and serial sessions are connected the moment the backend spawns;
-          // SSH flips to connected later, after authentication completes.
-          ...(descriptor.kind !== "ssh" && !spawnExited
-            ? { status: "connected" as const }
-            : {}),
-          title: title ?? result.title,
-        }),
-      };
-    });
+    applySpawnSuccess(set, id, descriptor.kind, title ?? result.title);
   } catch (error) {
     // A superseding restart (or disposal) abandoned this attempt; the winner
     // owns the session's state, so leave it untouched.
     if (isSpawnAbandoned(error)) return;
-    const { category, message } = parseLumaError(error);
-    set((state) => ({
-      sessions: patchSession(state.sessions, id, {
-        status: "error",
-        errorCategory: category,
-        errorMessage: message,
-      }),
-    }));
+    if (
+      descriptor.kind === "mosh" &&
+      transport === "auto" &&
+      sessionStillOpen(get, id)
+    ) {
+      // Automatic fallback: retry the SAME managed session over plain SSH and
+      // leave a dismissible notice. (A Mosh session that connects but stalls
+      // cannot be detected here — that usually means UDP is blocked.)
+      const { message } = parseLumaError(error);
+      set((state) => ({
+        sessions: patchSession(state.sessions, id, {
+          status: "connecting",
+          connectionStage: "starting",
+          errorCategory: undefined,
+          errorMessage: undefined,
+          transportNotice: `Mosh unavailable — connected over SSH instead. (${message})`,
+        }),
+      }));
+      const sshDescriptor: SpawnDescriptor = { kind: "ssh", hostId: descriptor.hostId };
+      terminalManager.setDescriptor(id, sshDescriptor);
+      try {
+        const result = await terminalManager.restart(id);
+        applySpawnSuccess(set, id, sshDescriptor.kind, title ?? result.title);
+      } catch (retryError) {
+        if (!isSpawnAbandoned(retryError)) applySpawnError(set, id, retryError);
+      }
+      return;
+    }
+    applySpawnError(set, id, error);
   }
 }
 
@@ -1426,6 +1487,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // the UI for single-pane tabs, so the shortcut/palette entry match that.
     if (!tab || collectLeaves(tab.root).length < 2) return;
     get().toggleBroadcast(tab.id);
+  },
+
+  setTransportNotice: (id, notice) => {
+    set((state) => ({
+      sessions: patchSession(state.sessions, id, { transportNotice: notice }),
+    }));
   },
 
   setPaneBroadcast: (tabId, sessionId, enabled) => {

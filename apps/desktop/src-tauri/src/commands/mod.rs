@@ -30,6 +30,8 @@ mod known_hosts;
 mod live_activity;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod menu;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod mosh;
 mod platform;
 mod port_forwards;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -50,6 +52,8 @@ pub use known_hosts::*;
 pub use live_activity::*;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use menu::*;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use mosh::*;
 pub use platform::*;
 pub use port_forwards::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

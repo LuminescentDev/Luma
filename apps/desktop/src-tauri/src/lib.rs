@@ -4,6 +4,7 @@ mod errors;
 mod import;
 mod keystore;
 mod logging;
+mod mosh;
 mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
@@ -187,6 +188,7 @@ pub fn run() {
         commands::known_hosts_list,
         commands::known_hosts_remove,
         commands::ssh_spawn,
+        commands::mosh_spawn,
         commands::ssh_config_preview,
         commands::ssh_config_import,
         commands::import_hosts_preview,

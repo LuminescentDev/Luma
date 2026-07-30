@@ -54,6 +54,7 @@ commands.allow = [
   "known_hosts_list",
   "known_hosts_remove",
   "ssh_spawn",
+  "mosh_spawn",
   "ssh_config_preview",
   "ssh_config_import",
   "import_hosts_preview",

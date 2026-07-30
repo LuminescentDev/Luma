@@ -157,7 +157,23 @@ pub struct SyncHost {
     pub favorite: bool,
     #[serde(default)]
     pub tab_color: Option<String>,
+    // Mosh transport settings. Defaulted AND skipped when at their defaults so
+    // bundles from hosts that never touched Mosh stay byte-identical for older
+    // clients (SyncHost is deny_unknown_fields on the receiving side).
+    #[serde(
+        default = "crate::storage::hosts::default_transport",
+        skip_serializing_if = "is_default_transport"
+    )]
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mosh_server_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mosh_port_range: Option<String>,
     pub updated_at: i64,
+}
+
+fn is_default_transport(transport: &str) -> bool {
+    transport == "ssh"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1471,7 +1487,8 @@ async fn assemble_bundle_inner(
 
     let hosts = sqlx::query(
         "SELECT id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,proxy_jump_host_id,
-                startup_command,working_directory,environment,tags,favorite,tab_color,updated_at FROM hosts
+                startup_command,working_directory,environment,tags,favorite,tab_color,transport,
+                mosh_server_path,mosh_port_range,updated_at FROM hosts
          WHERE is_ephemeral = 0 AND vault_id = ?1",
     )
     .bind(vault_id)
@@ -1505,6 +1522,9 @@ async fn assemble_bundle_inner(
                 .map_err(|_| LumaError::InvalidInput("stored host tags are invalid".into()))?,
             favorite: row.get::<i64, _>("favorite") != 0,
             tab_color: row.get("tab_color"),
+            transport: row.get("transport"),
+            mosh_server_path: row.get("mosh_server_path"),
+            mosh_port_range: row.get("mosh_port_range"),
             updated_at: row.get("updated_at"),
         })
     })
@@ -2262,6 +2282,9 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
                     tags: host.tags,
                     favorite: host.favorite,
                     tab_color: host.tab_color,
+                    transport: host.transport,
+                    mosh_server_path: host.mosh_server_path,
+                    mosh_port_range: host.mosh_port_range,
                 })?;
                 host_ids.insert(host.id.clone());
                 host_proxies.insert(
@@ -2779,15 +2802,16 @@ async fn apply_object(
             sqlx::query(
                 "INSERT INTO hosts(id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,
                  proxy_jump_host_id,startup_command,working_directory,environment,tags,favorite,tab_color,
-                 vault_id,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18)
+                 transport,mosh_server_path,mosh_port_range,vault_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?21)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,hostname=excluded.hostname,
                  port=excluded.port,username=excluded.username,group_id=excluded.group_id,
                  auth_type=excluded.auth_type,key_id=excluded.key_id,identity_id=excluded.identity_id,
                  proxy_jump_host_id=excluded.proxy_jump_host_id,startup_command=excluded.startup_command,
                  working_directory=excluded.working_directory,environment=excluded.environment,
                  tags=excluded.tags,favorite=excluded.favorite,tab_color=excluded.tab_color,
-                 updated_at=excluded.updated_at
+                 transport=excluded.transport,mosh_server_path=excluded.mosh_server_path,
+                 mosh_port_range=excluded.mosh_port_range,updated_at=excluded.updated_at
                  WHERE hosts.vault_id=excluded.vault_id",
             )
             .bind(value.id)
@@ -2806,6 +2830,9 @@ async fn apply_object(
             .bind(serde_json::to_string(&value.tags).map_err(|_| LumaError::InvalidInput("host tags are invalid".into()))?)
             .bind(value.favorite)
             .bind(value.tab_color)
+            .bind(value.transport)
+            .bind(value.mosh_server_path)
+            .bind(value.mosh_port_range)
             .bind(vault_id)
             .bind(value.updated_at)
             .execute(&mut **transaction)
@@ -4235,6 +4262,9 @@ mod tests {
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 1,
         });
         bundle.hosts.push(SyncHost {
@@ -4254,6 +4284,9 @@ mod tests {
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 1,
         });
 
@@ -4298,6 +4331,9 @@ mod tests {
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 10,
         });
 
@@ -4427,6 +4463,9 @@ mod tests {
                 tags: vec![],
                 favorite: false,
                 tab_color: None,
+                transport: "ssh".into(),
+                mosh_server_path: None,
+                mosh_port_range: None,
             },
         )
         .await
@@ -4764,6 +4803,9 @@ mod tests {
             tags: vec![],
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 9_999_999,
         });
         apply_states(&pool, &hostile.states().unwrap(), &shared)

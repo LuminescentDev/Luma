@@ -176,6 +176,37 @@ export function sshDisconnect(sessionId: string): Promise<void> {
   return invoke<void>("ssh_disconnect", { sessionId });
 }
 
+/**
+ * Spawn a Mosh session for a saved host (desktop only). The backend bootstraps
+ * mosh-server over the host's embedded SSH configuration and launches a local
+ * mosh-client through the PTY infrastructure — the session key stays entirely
+ * backend-side. The returned sessionId is a PTY session id: I/O goes through
+ * pty_write / pty_resize / pty_kill, exactly like a local shell.
+ */
+export function spawnMosh(
+  request: { hostId: string; cols: number; rows: number },
+  onData: (data: Uint8Array | string) => void,
+  onExit: (payload: SshExitPayload) => void,
+): Promise<SshSpawnResult> {
+  const dataChannel = new Channel<ArrayBuffer | number[] | string>();
+  dataChannel.onmessage = (message) => {
+    if (message instanceof ArrayBuffer) onData(new Uint8Array(message));
+    else if (Array.isArray(message)) onData(new Uint8Array(message));
+    else onData(message);
+  };
+  const exitChannel = new Channel<SshExitPayload>();
+  exitChannel.onmessage = onExit;
+  return invoke<SshSpawnResult>("mosh_spawn", {
+    request: {
+      hostId: request.hostId,
+      cols: request.cols,
+      rows: request.rows,
+    },
+    onData: dataChannel,
+    onExit: exitChannel,
+  });
+}
+
 export async function spawnSsh(
   request: { hostId: string; cols: number; rows: number },
   onData: (data: Uint8Array | string) => void,

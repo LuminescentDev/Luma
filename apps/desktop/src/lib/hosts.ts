@@ -8,6 +8,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type AuthenticationType = "key" | "password" | "interactive";
 
+/** Per-host transport preference: plain SSH (default), Mosh with automatic
+ * SSH fallback ("auto"), or Mosh only. */
+export type TransportType = "ssh" | "auto" | "mosh";
+
 export type Host = {
   id: string;
   /** Vault that owns this host. Every reference it holds (group, key, identity,
@@ -33,6 +37,13 @@ export type Host = {
   /** Per-host tab accent color as "#RRGGBB", or null for no accent. The backend
    * only accepts null or a "#RRGGBB" string. */
   tabColor: string | null;
+  /** Transport preference: "ssh" (default), "auto" (Mosh with SSH fallback),
+   * or "mosh" (Mosh only). */
+  transport: TransportType;
+  /** Optional custom remote mosh-server path (no shell metacharacters). */
+  moshServerPath: string | null;
+  /** Optional UDP port range for mosh-server: "N" or "N-M" (1-65535). */
+  moshPortRange: string | null;
   /** True for a throwaway host created by quick-connect that has not been saved
    * to the host list. Ephemeral hosts are excluded from hosts_list / recents by
    * the backend; quick_connect_save clears this flag. */
@@ -59,6 +70,9 @@ export type HostInput = {
   favorite: boolean;
   /** Per-host tab accent color as "#RRGGBB", or null for no accent. */
   tabColor: string | null;
+  transport: TransportType;
+  moshServerPath: string | null;
+  moshPortRange: string | null;
 };
 
 export type HostGroup = {
@@ -140,6 +154,9 @@ export function hostToInput(host: Host): HostInput {
     tags: host.tags,
     favorite: host.favorite,
     tabColor: host.tabColor,
+    transport: host.transport,
+    moshServerPath: host.moshServerPath,
+    moshPortRange: host.moshPortRange,
   };
 }
 

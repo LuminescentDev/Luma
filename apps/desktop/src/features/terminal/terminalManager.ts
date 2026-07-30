@@ -28,6 +28,7 @@ import {
   type ShellRef,
 } from "../../lib/terminal";
 import {
+  spawnMosh,
   spawnSsh,
   sshDisconnect,
   sshResize,
@@ -43,12 +44,15 @@ import {
 } from "../../lib/serial";
 
 /** What a managed session should launch. Local shells resolve a ShellRef;
- * SSH sessions send only a hostId (the backend owns the connection details);
- * serial sessions carry their full port config (the backend has no host record).
+ * SSH and Mosh sessions send only a hostId (the backend owns the connection
+ * details); serial sessions carry their full port config (the backend has no
+ * host record). A Mosh session's backend is a local mosh-client PTY, so its
+ * I/O rides the local PTY commands, not the embedded-SSH ones.
  */
 export type SpawnDescriptor =
   | { kind: "local"; ref: ShellRef | undefined }
   | { kind: "ssh"; hostId: string }
+  | { kind: "mosh"; hostId: string }
   | { kind: "serial"; config: SerialConfig };
 
 /** SSH sessions use the embedded-SSH commands on every platform; local shells
@@ -951,6 +955,20 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
       (osId, prettyName) => session.callbacks.onRemoteOs(osId, prettyName),
     );
     result = { sessionId: spawned.sessionId, title: spawned.title };
+  } else if (descriptor.kind === "mosh") {
+    // Authentication completes during the backend bootstrap (before the invoke
+    // resolves), so there is no SSH transcript scraping for Mosh sessions.
+    const spawned = await spawnMosh(
+      { hostId: descriptor.hostId, cols: term.cols, rows: term.rows },
+      handleData,
+      (payload: SshExitPayload) =>
+        handleExit({
+          code: payload.code,
+          errorCategory: payload.errorCategory,
+          errorMessage: payload.errorMessage,
+        }),
+    );
+    result = { sessionId: spawned.sessionId, title: spawned.title };
   } else {
     const spawned = await spawnPty(
       { cols: term.cols, rows: term.rows, ref: descriptor.ref },
@@ -1301,6 +1319,15 @@ export const terminalManager = {
       if (!isSpawnAbandoned(error) && !session.disposed) session.exited = true;
       throw error;
     }
+  },
+
+  /** Replace a session's spawn descriptor before a restart. Used by the store's
+   * Mosh auto-fallback: a failed "mosh" attempt is retried as plain "ssh" on the
+   * SAME managed session so the pane and xterm instance are preserved. Metadata
+   * only — never terminal bytes. */
+  setDescriptor(sessionId: string, descriptor: SpawnDescriptor): void {
+    const session = sessions.get(sessionId);
+    if (session) session.descriptor = descriptor;
   },
 
   /** Mount the terminal into a host element (tab activation). */

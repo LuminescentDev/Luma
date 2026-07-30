@@ -400,6 +400,9 @@ pub async fn import_config(
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
         };
         hosts::validate_fields(&input)?;
         proxy_graph.insert(id.clone(), proxy_id);

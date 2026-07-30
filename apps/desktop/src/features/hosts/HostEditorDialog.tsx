@@ -13,6 +13,7 @@ import {
   type HostInput,
   type KeyReference,
   type Identity,
+  type TransportType,
 } from "../../lib/hosts";
 import { useInvalidateHosts } from "../../hooks/useHosts";
 import { CheckboxField, SelectField, TextField } from "./fields";
@@ -35,6 +36,9 @@ type FormState = {
   favorite: boolean;
   /** Per-host tab accent color as "#RRGGBB", or "" for no accent. */
   tabColor: string;
+  transport: TransportType;
+  moshServerPath: string;
+  moshPortRange: string;
   env: EnvRow[];
 };
 
@@ -66,6 +70,9 @@ function initialState(host: Host | null, initialGroupId: string | null = null): 
     tags: (host?.tags ?? []).join(", "),
     favorite: host?.favorite ?? false,
     tabColor: host?.tabColor ?? "",
+    transport: host?.transport ?? "ssh",
+    moshServerPath: host?.moshServerPath ?? "",
+    moshPortRange: host?.moshPortRange ?? "",
     env: host?.environment
       ? Object.entries(host.environment).map(([key, value]) => ({ key, value }))
       : [],
@@ -78,9 +85,24 @@ const AUTH_OPTIONS: { value: AuthenticationType; label: string }[] = [
   { value: "interactive", label: "Keyboard-interactive" },
 ];
 
+const TRANSPORT_OPTIONS: { value: TransportType; label: string }[] = [
+  { value: "ssh", label: "SSH" },
+  { value: "auto", label: "Auto (Mosh with SSH fallback)" },
+  { value: "mosh", label: "Mosh only" },
+];
+
 type FieldErrors = Partial<
   Record<
-    "name" | "hostname" | "username" | "port" | "keyId" | "groupId" | "identityId" | "proxyJumpHostId",
+    | "name"
+    | "hostname"
+    | "username"
+    | "port"
+    | "keyId"
+    | "groupId"
+    | "identityId"
+    | "proxyJumpHostId"
+    | "moshServerPath"
+    | "moshPortRange",
     string
   >
 >;
@@ -139,6 +161,24 @@ function validate(state: FormState): FieldErrors {
   if (!state.identityId && state.authenticationType === "key" && !state.keyId) {
     errors.keyId = "Select a key reference for key authentication.";
   }
+
+  const moshServerPath = state.moshServerPath.trim();
+  if (moshServerPath && !/^[A-Za-z0-9._/~+-]+$/.test(moshServerPath)) {
+    errors.moshServerPath =
+      "Path may only contain letters, digits, and / . _ - + ~ (no spaces or quotes).";
+  } else if (moshServerPath.startsWith("-")) {
+    errors.moshServerPath = "Path cannot start with '-'.";
+  }
+  const moshPortRange = state.moshPortRange.trim();
+  if (moshPortRange) {
+    const match = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(moshPortRange);
+    const low = match ? Number(match[1]) : NaN;
+    const high = match?.[2] !== undefined ? Number(match[2]) : low;
+    if (!match || low < 1 || high > 65535 || low > high) {
+      errors.moshPortRange =
+        "Use a port or low-high range between 1 and 65535 (e.g. 60000-61000).";
+    }
+  }
   return errors;
 }
 
@@ -166,6 +206,9 @@ function toInput(state: FormState): HostInput {
       .filter((t) => t.length > 0),
     favorite: state.favorite,
     tabColor: state.tabColor || null,
+    transport: state.transport,
+    moshServerPath: state.moshServerPath.trim() || null,
+    moshPortRange: state.moshPortRange.trim() || null,
   };
 }
 
@@ -406,19 +449,53 @@ export function HostEditorDialog({
           </p>
         )}
 
-        <SelectField
-          label="Proxy jump (optional)"
-          value={state.proxyJumpHostId}
-          onChange={(v) => patch({ proxyJumpHostId: v })}
-          error={err("proxyJumpHostId")}
-        >
-          <option value="">None</option>
-          {proxyOptions.map((h) => (
-            <option key={h.id} value={h.id}>
-              {h.name}
-            </option>
-          ))}
-        </SelectField>
+        <div className="grid grid-cols-2 gap-3">
+          <SelectField
+            label="Proxy jump (optional)"
+            value={state.proxyJumpHostId}
+            onChange={(v) => patch({ proxyJumpHostId: v })}
+            error={err("proxyJumpHostId")}
+          >
+            <option value="">None</option>
+            {proxyOptions.map((h) => (
+              <option key={h.id} value={h.id}>
+                {h.name}
+              </option>
+            ))}
+          </SelectField>
+          <SelectField
+            label="Transport"
+            value={state.transport}
+            onChange={(v) => patch({ transport: v as TransportType })}
+          >
+            {TRANSPORT_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </SelectField>
+        </div>
+
+        {state.transport !== "ssh" && (
+          <div className="grid grid-cols-2 gap-3">
+            <TextField
+              label="mosh-server path (optional)"
+              mono
+              value={state.moshServerPath}
+              onChange={(v) => patch({ moshServerPath: v })}
+              placeholder="mosh-server"
+              error={err("moshServerPath")}
+            />
+            <TextField
+              label="Mosh UDP port range (optional)"
+              mono
+              value={state.moshPortRange}
+              onChange={(v) => patch({ moshPortRange: v })}
+              placeholder="60000-61000"
+              error={err("moshPortRange")}
+            />
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <TextField
