@@ -1,0 +1,88 @@
+#!/bin/sh
+# luma-hook — emit a Luma agent event into the terminal stream.
+#
+# Writes the OSC sequence `ESC ] 7791 ; luma-agent ; base64(JSON) BEL` so a
+# Luma terminal hosting this process can surface agent state in its inbox.
+# Dependency-free POSIX sh; needs only `base64` or `openssl` on PATH.
+# Terminals that do not understand the sequence ignore it. See
+# scripts/luma-hook.md for the wire format and wiring examples.
+#
+# Usage:
+#   luma-hook --agent claude-code --session "$ID" --event needs-approval \
+#             --title "Approve tool use" [--detail "wants to run cargo test"]
+#
+# Events: needs-approval | waiting-for-input | tool-started | tool-finished |
+#         turn-completed | session-failed | limit-warning | session-started |
+#         session-ended
+
+set -u
+
+usage() {
+    echo "usage: luma-hook --agent <name> --session <id> --event <event> [--title <t>] [--detail <d>] [--ts <unix-seconds>]" >&2
+    exit 2
+}
+
+agent=""
+session=""
+event=""
+title=""
+detail=""
+ts=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --agent)   agent="${2-}"; shift 2 || usage ;;
+        --session) session="${2-}"; shift 2 || usage ;;
+        --event)   event="${2-}"; shift 2 || usage ;;
+        --title)   title="${2-}"; shift 2 || usage ;;
+        --detail)  detail="${2-}"; shift 2 || usage ;;
+        --ts)      ts="${2-}"; shift 2 || usage ;;
+        -h|--help) usage ;;
+        *) usage ;;
+    esac
+done
+
+[ -n "$agent" ] && [ -n "$session" ] && [ -n "$event" ] || usage
+[ -n "$ts" ] || ts=$(date +%s)
+
+# Minimal JSON string escaping: backslash, double quote, and control
+# characters that plausibly appear in titles (newline/tab/CR).
+json_escape() {
+    printf '%s' "$1" | awk '
+        BEGIN { ORS = "" }
+        {
+            if (NR > 1) print "\\n"
+            line = $0
+            gsub(/\\/, "\\\\", line)
+            gsub(/"/, "\\\"", line)
+            gsub(/\t/, "\\t", line)
+            gsub(/\r/, "\\r", line)
+            print line
+        }'
+}
+
+json=$(printf '{"v":1,"sessionId":"%s","agent":"%s","event":"%s"' \
+    "$(json_escape "$session")" "$(json_escape "$agent")" "$(json_escape "$event")")
+[ -n "$title" ] && json="$json,\"title\":\"$(json_escape "$title")\""
+[ -n "$detail" ] && json="$json,\"detail\":\"$(json_escape "$detail")\""
+json="$json,\"ts\":$ts}"
+
+if command -v base64 >/dev/null 2>&1; then
+    encoded=$(printf '%s' "$json" | base64 | tr -d '\n')
+elif command -v openssl >/dev/null 2>&1; then
+    encoded=$(printf '%s' "$json" | openssl base64 | tr -d '\n')
+else
+    echo "luma-hook: neither base64 nor openssl found" >&2
+    exit 1
+fi
+
+sequence=$(printf '\033]7791;luma-agent;%s\007' "$encoded")
+
+# Prefer the controlling terminal so the sequence reaches the terminal even
+# when stdout is redirected (e.g. inside an agent hook); fall back to stdout
+# when there is no controlling tty.
+if ( printf '%s' "$sequence" > /dev/tty ) 2>/dev/null; then
+    :
+else
+    printf '%s' "$sequence"
+fi

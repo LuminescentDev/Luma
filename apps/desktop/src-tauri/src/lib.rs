@@ -1,3 +1,4 @@
+mod agent_events;
 mod collaboration;
 mod commands;
 mod errors;

@@ -22,6 +22,7 @@ import { resolveAction, type KeymapActionId } from "../lib/keymap";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useCapabilityStore } from "../stores/capabilityStore";
 import { useCollabStore } from "../stores/collabStore";
+import { startAgentInboxListener } from "../stores/agentInboxStore";
 import {
   collabGetConfig,
   parseCollaborationError,
@@ -172,6 +173,10 @@ export function useAppInit(): void {
       unlisten?.();
     };
   }, []);
+
+  // Subscribe once to backend `agent-event` notifications (Agent Inbox),
+  // mirroring the `deep-link`/`ssh-remote-os` listener wiring.
+  useEffect(() => startAgentInboxListener(), []);
 
   // Reflect any tunnels the backend already has running. Skipped on platforms
   // without the port-forwarding feature (mobile): its `tunnels_list` command is

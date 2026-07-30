@@ -339,7 +339,11 @@ async fn ssh_spawn_impl(
     let app_for_remote_os = app.clone();
     let pool_for_remote_os = state.pool.clone();
     let host_id_for_remote_os = request.host_id.clone();
+    let agent_sink = crate::agent_events::AgentEventSink::new(app.clone());
+    let agent_sink_for_data = agent_sink.clone();
+    let mut agent_scanner = crate::agent_events::AgentEventScanner::new();
     let data_callback = Box::new(move |bytes: &[u8]| {
+        agent_sink_for_data.publish(agent_scanner.scan(bytes));
         let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
     });
     let exit_callback = Box::new(move |exit| {
@@ -376,6 +380,8 @@ async fn ssh_spawn_impl(
             remote_os_callback,
         )
         .await?;
+
+    agent_sink.attach(&session_id);
 
     {
         pending_remote_os.lock().unwrap().session_id = Some(session_id.clone());

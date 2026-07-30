@@ -142,6 +142,7 @@ mod desktop_terminal_commands {
 
     #[tauri::command]
     pub async fn pty_spawn(
+        app: tauri::AppHandle,
         state: State<'_, AppState>,
         pty: State<'_, PtyManager>,
         request: SpawnRequest,
@@ -184,17 +185,22 @@ mod desktop_terminal_commands {
             )
         };
 
+        let agent_sink = crate::agent_events::AgentEventSink::new(app);
+        let agent_sink_for_data = agent_sink.clone();
+        let mut agent_scanner = crate::agent_events::AgentEventScanner::new();
         let session_id = pty.spawn(
             shell,
             request.cols,
             request.rows,
             move |bytes| {
+                agent_sink_for_data.publish(agent_scanner.scan(bytes));
                 let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
             },
             move |code| {
                 let _ = on_exit.send(code);
             },
         )?;
+        agent_sink.attach(&session_id);
 
         Ok(SpawnResponse {
             session_id,

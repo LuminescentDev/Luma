@@ -20,6 +20,7 @@ use crate::AppState;
 
 #[tauri::command]
 pub async fn mosh_spawn(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     keystore_state: State<'_, KeystoreState>,
     pty: State<'_, PtyManager>,
@@ -75,11 +76,15 @@ pub async fn mosh_spawn(
         working_directory: None,
         environment,
     };
+    let agent_sink = crate::agent_events::AgentEventSink::new(app);
+    let agent_sink_for_data = agent_sink.clone();
+    let mut agent_scanner = crate::agent_events::AgentEventScanner::new();
     let session_id = pty.spawn(
         shell,
         request.cols,
         request.rows,
         move |bytes| {
+            agent_sink_for_data.publish(agent_scanner.scan(bytes));
             let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
         },
         move |code| {
@@ -90,6 +95,8 @@ pub async fn mosh_spawn(
             });
         },
     )?;
+
+    agent_sink.attach(&session_id);
 
     if let Err(error) = hosts::record_recent_connection(&state.pool, &request.host_id).await {
         let _ = pty.kill(&session_id);
