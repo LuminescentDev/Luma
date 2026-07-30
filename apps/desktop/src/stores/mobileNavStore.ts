@@ -40,6 +40,12 @@ type MobileNavState = {
   /** Whether the Connections tab is showing a session full-screen (nav hidden). */
   fullscreen: boolean;
   /**
+   * Whether a full-screen sheet (the host editor) covers the shell. On iOS the
+   * tab bar is a real UIKit view sitting OVER the webview, so a DOM overlay
+   * cannot hide it — the bar has to be told to get out of the way.
+   */
+  sheetOpen: boolean;
+  /**
    * Select a tab. Re-selecting the active tab pops it to its root, matching
    * iOS: tapping the current tab is "take me home", not a no-op.
    */
@@ -51,6 +57,7 @@ type MobileNavState = {
   /** Jump straight to a route in a given tab (deep links, cross-tab actions). */
   navigate: (tab: MobileTab, route?: MobileRoute) => void;
   setFullscreen: (fullscreen: boolean) => void;
+  setSheetOpen: (open: boolean) => void;
 };
 
 const EMPTY_STACKS: Record<MobileTab, MobileRoute[]> = {
@@ -63,6 +70,7 @@ export const useMobileNavStore = create<MobileNavState>((set) => ({
   tab: "vaults",
   stacks: EMPTY_STACKS,
   fullscreen: false,
+  sheetOpen: false,
 
   selectTab: (tab) =>
     set((state) => ({
@@ -98,6 +106,8 @@ export const useMobileNavStore = create<MobileNavState>((set) => ({
     })),
 
   setFullscreen: (fullscreen) => set({ fullscreen }),
+
+  setSheetOpen: (sheetOpen) => set({ sheetOpen }),
 }));
 
 /** Route currently shown in the active tab, or null when at the tab's hub. */

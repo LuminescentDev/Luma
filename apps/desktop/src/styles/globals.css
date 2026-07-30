@@ -239,6 +239,14 @@ select,
   );
 }
 
+/* Full-screen sheets (the host editor) hide the tab bar while they are open, so
+   their scrollers only owe the home indicator plus a comfortable end margin. */
+.pb-sheet {
+  padding-bottom: calc(
+    env(safe-area-inset-bottom) + var(--emulated-safe-area-bottom, 0px) + 2.5rem
+  );
+}
+
 /*
  * Touch devices have no hover, so Luma's hover-revealed row/folder controls
  * (kebab menus, favorite stars) would be unreachable. On a coarse pointer make

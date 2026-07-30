@@ -35,3 +35,16 @@ export function transformCallback(
 export function isTauri(): boolean {
   return false;
 }
+
+/** No-op stand-in for the plugin event bridge. The showcase runs in a plain
+ * browser with no native plugins attached, so nothing ever emits. */
+export async function addPluginListener(
+  plugin: string,
+  event: string,
+  callback: (payload: unknown) => void,
+): Promise<{ unregister: () => Promise<void> }> {
+  void plugin;
+  void event;
+  void callback;
+  return { unregister: async () => {} };
+}

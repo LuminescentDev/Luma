@@ -16,9 +16,11 @@ export function MobileScreen({
   title,
   onBack,
   action,
+  leading,
   large = false,
   scroll = true,
   padded = true,
+  inSheet = false,
   children,
 }: {
   /** Omit for screens that render their own heading (the shared desktop
@@ -28,14 +30,33 @@ export function MobileScreen({
   onBack?: () => void;
   /** Trailing header control (add button, menu). */
   action?: ReactNode;
+  /** Replaces the back chevron with a custom leading control (the host editor's
+   * dismiss button). Takes precedence over `onBack`. */
+  leading?: ReactNode;
   /** iOS-style large title, for tab hubs. */
   large?: boolean;
   /** Let this component own vertical scrolling. False when the body scrolls itself. */
   scroll?: boolean;
   /** Horizontal padding on the body. False for edge-to-edge lists. */
   padded?: boolean;
+  /** Inside a full-screen sheet, which hides the tab bar — so the body only
+   * reserves the home indicator instead of a bar that is not there. */
+  inSheet?: boolean;
   children: ReactNode;
 }) {
+  const lead =
+    leading ??
+    (onBack ? (
+      <button
+        type="button"
+        onClick={onBack}
+        aria-label="Back"
+        className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-accent active:bg-raised"
+      >
+        <ChevronLeft size={26} strokeWidth={2.25} />
+      </button>
+    ) : null);
+
   return (
     <div className="flex h-full flex-col bg-background">
       <header
@@ -45,16 +66,7 @@ export function MobileScreen({
         )}
       >
         <div className={cn("flex items-center gap-1", title ? "min-h-11" : "min-h-0")}>
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              aria-label="Back"
-              className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-accent active:bg-raised"
-            >
-              <ChevronLeft size={26} strokeWidth={2.25} />
-            </button>
-          )}
+          {lead}
           {title ? (
             <h1
               className={cn(
@@ -71,21 +83,18 @@ export function MobileScreen({
             <span className="flex-1" />
           )}
           {/* Balances the centered compact title when only one side is filled. */}
-          {title && !large && !action && onBack && (
-            <span className="h-11 w-11 shrink-0" />
-          )}
+          {title && !large && !action && lead && <span className="h-11 w-11 shrink-0" />}
           {action && <div className="shrink-0">{action}</div>}
-          {title && !large && action && !onBack && (
-            <span className="h-11 w-11 shrink-0" />
-          )}
+          {title && !large && action && !lead && <span className="h-11 w-11 shrink-0" />}
         </div>
       </header>
-      {/* pb-tabbar either way: when this element scrolls, it pads the content so
-          the last row clears the floating bar; when the child owns scrolling, it
-          shrinks this box so the child's own scroller ends above the bar. */}
+      {/* The bottom inset applies either way: when this element scrolls, it pads
+          the content so the last row clears the floating bar; when the child owns
+          scrolling, it shrinks this box so the child's scroller ends above it. */}
       <div
         className={cn(
-          "min-h-0 flex-1 pb-tabbar",
+          "min-h-0 flex-1",
+          inSheet ? "pb-sheet" : "pb-tabbar",
           scroll && "overflow-y-auto",
           padded && "px-4",
           scroll && large && "pt-2",

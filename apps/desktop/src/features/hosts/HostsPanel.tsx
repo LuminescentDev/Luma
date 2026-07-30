@@ -42,6 +42,7 @@ import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { DistroIcon } from "../../components/DistroIcon";
 import { HostEditorDialog } from "./HostEditorDialog";
+import { MobileHostEditor } from "../mobile/MobileHostEditor";
 import { KeyReferencesDialog } from "./KeyReferencesDialog";
 import { IdentitiesDialog } from "./IdentitiesDialog";
 import { GroupDialog } from "./GroupDialog";
@@ -134,6 +135,9 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
   const portForwardingEnabled = useCapabilityStore(
     (s) => s.capabilities.features.portForwarding,
   );
+  // The desktop editor is a two-column dialog; on a phone the same fields go in
+  // a full-screen grouped form with pushed pickers instead.
+  const isMobile = useCapabilityStore((s) => s.capabilities.isMobile);
   const tunnels = useTunnelStore((s) => s.tunnels);
   const runningByHost = useMemo(() => {
     const counts = new Map<string, number>();
@@ -400,19 +404,26 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
         </div>
       )}
 
-      <HostEditorDialog
-        open={editorOpen}
-        onOpenChange={setEditorOpen}
-        host={editorHost}
-        groups={editorVaultGroups}
-        initialGroupId={groupId}
-        keyReferences={editorVaultKeys}
-        identities={editorVaultIdentities}
-        hosts={editorVaultHosts}
-        onManageKeys={() => onOpenKeychain ? onOpenKeychain() : setKeysOpen(true)}
-        vaultId={editorVaultId}
-        vaultName={multiVault ? editorVaultName : undefined}
-      />
+      {(() => {
+        const editorProps = {
+          open: editorOpen,
+          onOpenChange: setEditorOpen,
+          host: editorHost,
+          groups: editorVaultGroups,
+          initialGroupId: groupId,
+          keyReferences: editorVaultKeys,
+          identities: editorVaultIdentities,
+          hosts: editorVaultHosts,
+          onManageKeys: () => (onOpenKeychain ? onOpenKeychain() : setKeysOpen(true)),
+          vaultId: editorVaultId,
+          vaultName: multiVault ? editorVaultName : undefined,
+        };
+        return isMobile ? (
+          <MobileHostEditor {...editorProps} />
+        ) : (
+          <HostEditorDialog {...editorProps} />
+        );
+      })()}
       {!onOpenKeychain && <KeyReferencesDialog open={keysOpen} onOpenChange={setKeysOpen} />}
       {!onOpenKeychain && <IdentitiesDialog open={identitiesOpen} onOpenChange={setIdentitiesOpen} keys={scopedKeys} onManageKeys={() => { setIdentitiesOpen(false); setKeysOpen(true); }} />}
       <ImportDialog

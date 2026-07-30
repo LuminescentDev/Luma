@@ -1,10 +1,7 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { useSessionStore } from "../../stores/sessionStore";
-import {
-  useActiveRoute,
-  useMobileNavStore,
-  type MobileRoute,
-} from "../../stores/mobileNavStore";
+import { useMobileNavStore, type MobileRoute } from "../../stores/mobileNavStore";
+import { MobileStackNav } from "./MobileStackNav";
 import { MobileTabBar } from "./MobileTabBar";
 import { useNativeTabBar } from "./useNativeTabBar";
 import { MobileVaultsHub } from "./MobileVaultsHub";
@@ -39,6 +36,10 @@ import {
  * and deep links can jump straight to a screen; the desktop layout still runs on
  * uiStore.mainView and is untouched.
  *
+ * The stack is rendered by MobileStackNav, which slides pushed screens in from
+ * the right and lets a left-edge drag pop them back — so the back chevron is a
+ * fallback rather than the only way out of a detail screen.
+ *
  * Opening a terminal session takes over the whole viewport, hiding the tab bar
  * (natively too — the plugin's view is hidden, not just covered).
  */
@@ -49,11 +50,12 @@ const SyncDialogs = lazy(() =>
 
 export function MobileLayout() {
   const tab = useMobileNavStore((s) => s.tab);
-  const route = useActiveRoute();
+  const stack = useMobileNavStore((s) => s.stacks[s.tab]);
   const pop = useMobileNavStore((s) => s.pop);
   const navigate = useMobileNavStore((s) => s.navigate);
   const fullscreen = useMobileNavStore((s) => s.fullscreen);
   const setFullscreen = useMobileNavStore((s) => s.setFullscreen);
+  const sheetOpen = useMobileNavStore((s) => s.sheetOpen);
 
   const tabCount = useSessionStore((s) => s.tabs.length);
   const setActiveTab = useSessionStore((s) => s.setActiveTab);
@@ -62,7 +64,9 @@ export function MobileLayout() {
   const showingSession = fullscreen && tabCount > 0;
   const { native } = useNativeTabBar({
     sessionCount: tabCount,
-    hidden: showingSession,
+    // A full-screen sheet is a DOM overlay, which cannot cover the native bar —
+    // so the bar is told to hide for those too, not just for a session.
+    hidden: showingSession || sheetOpen,
   });
 
   // A newly opened session (tab count rose) jumps to Connections and opens
@@ -101,25 +105,32 @@ export function MobileLayout() {
         Skip to content
       </a>
       <main id="main-content" tabIndex={-1} className="min-h-0 flex-1">
-        {route ? (
-          <RouteScreen route={route} onBack={pop} />
-        ) : tab === "vaults" ? (
-          <MobileVaultsHub />
-        ) : tab === "connections" ? (
-          <MobileConnectionsScreen
-            onGoHosts={goToHosts}
-            onOpen={(tabId) => {
-              setActiveTab(tabId);
-              setFullscreen(true);
-            }}
-          />
-        ) : (
-          <MobileProfileHub />
-        )}
+        <MobileStackNav
+          rootKey={tab}
+          stack={stack}
+          onPop={pop}
+          renderPane={(route) =>
+            route ? (
+              <RouteScreen route={route as MobileRoute} onBack={pop} />
+            ) : tab === "vaults" ? (
+              <MobileVaultsHub />
+            ) : tab === "connections" ? (
+              <MobileConnectionsScreen
+                onGoHosts={goToHosts}
+                onOpen={(tabId) => {
+                  setActiveTab(tabId);
+                  setFullscreen(true);
+                }}
+              />
+            ) : (
+              <MobileProfileHub />
+            )
+          }
+        />
       </main>
       {/* The native bar owns the chrome when it attached; otherwise the web
           capsule renders. Never both. */}
-      {!native && <MobileTabBar sessionCount={tabCount} />}
+      {!native && !sheetOpen && <MobileTabBar sessionCount={tabCount} />}
       <SnippetRunner />
       <MultiHostRunDialog />
       <Suspense fallback={null}>
