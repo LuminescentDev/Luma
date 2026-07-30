@@ -36,7 +36,7 @@ export function MobileTabBar({ sessionCount }: { sessionCount: number }) {
           "pointer-events-auto mb-2 flex items-center gap-1 rounded-full p-1.5",
           // Glassmorphism approximation of the native material: a translucent
           // surface with a blurred backdrop and a bright top edge.
-          "border border-white/10 bg-surface/70 shadow-lg shadow-black/30",
+          "border border-border bg-surface/85 shadow-lg shadow-black/20",
           "backdrop-blur-2xl backdrop-saturate-150",
         )}
       >

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getResolvedAppAppearance } from "../../lib/appTheme";
 
 /*
  * Bridge to the native iOS menu (src-tauri/src/commands/menu.rs, Swift side in
@@ -73,6 +74,7 @@ export async function presentNativeMenu(
         width: anchor.width,
         height: anchor.height,
       },
+      appearance: getResolvedAppAppearance(),
     });
     return true;
   } catch {

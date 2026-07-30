@@ -18,6 +18,7 @@ use crate::errors::Result;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LiveActivityState {
+    pub appearance: String,
     pub primary: String,
     pub headline: String,
     pub detail: String,

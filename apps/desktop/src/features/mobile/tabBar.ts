@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useMobileNavStore, type MobileTab } from "../../stores/mobileNavStore";
+import { getResolvedAppAppearance } from "../../lib/appTheme";
 import { TAB_ITEMS } from "./MobileTabBar";
 
 /*
@@ -72,6 +73,7 @@ export async function attachNativeTabBar(
     const height = await invoke<number>("tab_bar_attach", {
       tabs: nativeTabs(sessionCount),
       selected: useMobileNavStore.getState().tab,
+      appearance: getResolvedAppAppearance(),
     });
     // Treat anything but a real positive height as "no native bar". A resolved
     // call is not proof of one: a stub or mock invoke can answer null, and
@@ -119,6 +121,7 @@ export async function syncNativeTabBar(
     await invoke("tab_bar_update", {
       tabs: nativeTabs(sessionCount),
       selected: tab,
+      appearance: getResolvedAppAppearance(),
     });
   } catch {
     // A failed mirror leaves the bar showing a stale selection for one frame;

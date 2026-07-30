@@ -20,6 +20,9 @@ struct LumaActivityAttributes: ActivityAttributes {
       var detail: String
     }
 
+    /// Resolved in-app appearance. The lock-screen card follows this while
+    /// Dynamic Island keeps its system-owned contrast.
+    var appearance: String?
     /// Largest line: the host label, or the file name while a transfer runs.
     var primary: String
     /// Connection count ("One connection", "3 connections"), or "File transfer"

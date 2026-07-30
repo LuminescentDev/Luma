@@ -58,6 +58,21 @@ export function useNativeTabBar({
 
   useEffect(() => {
     if (!native) return;
+    const observer = new MutationObserver(() => {
+      void syncNativeTabBar(
+        useMobileNavStore.getState().tab,
+        sessionCount,
+      );
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, [native, sessionCount]);
+
+  useEffect(() => {
+    if (!native) return;
     void setNativeTabBarVisible(!hidden);
   }, [native, hidden]);
 

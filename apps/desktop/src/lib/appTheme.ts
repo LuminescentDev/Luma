@@ -210,17 +210,21 @@ export function deriveAppTokens(theme: ITheme, kind: SchemeKind): AppTokens {
 /*
  * Application + coordination state.
  *
- * Two independent inputs decide the app's data-theme attribute: the appearance
- * mode (dark/light/system, owned by useTheme) and the selected scheme (owned by
- * terminalStyleStore). When a concrete scheme is active its kind wins; otherwise
- * the resolved mode wins. Both callers funnel through this module so the result
- * converges regardless of which runs first at startup, without a circular import.
+ * Two inputs decide the app's data-theme attribute: the system appearance
+ * (resolved by useTheme) and the selected scheme (owned by terminalStyleStore).
+ * When a concrete scheme is active its kind wins; otherwise the system appearance
+ * wins. Both callers funnel through this module so startup order does not matter.
  */
 
 type ActiveScheme = { theme: ITheme; kind: SchemeKind };
 
 let activeScheme: ActiveScheme | null = null;
 let resolvedMode: "dark" | "light" = "dark";
+
+/** Current effective appearance for native surfaces rendered outside the webview. */
+export function getResolvedAppAppearance(): "dark" | "light" {
+  return activeScheme?.kind ?? resolvedMode;
+}
 
 function root(): HTMLElement | null {
   return typeof document !== "undefined" ? document.documentElement : null;

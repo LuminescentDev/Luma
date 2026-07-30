@@ -333,7 +333,6 @@ pub fn run() {
         commands::tab_bar_attach,
         commands::tab_bar_update,
         commands::tab_bar_set_visible,
-        commands::tab_bar_lab,
         commands::menu_present,
         commands::sftp_connect,
         commands::sftp_disconnect,

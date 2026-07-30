@@ -37,28 +37,20 @@ pub struct TabBarItem {
 /// CSS pixels so web content can reserve room for it. Errors where no native
 /// bar exists, which is the frontend's signal to render its own.
 #[tauri::command]
-pub fn tab_bar_attach(tabs: Vec<TabBarItem>, selected: String) -> Result<f64> {
-    imp::attach(&tabs, &selected)
+pub fn tab_bar_attach(tabs: Vec<TabBarItem>, selected: String, appearance: String) -> Result<f64> {
+    imp::attach(&tabs, &selected, &appearance)
 }
 
 /// Replace the bar's items and selection in place.
 #[tauri::command]
-pub fn tab_bar_update(tabs: Vec<TabBarItem>, selected: String) -> Result<()> {
-    imp::update(&tabs, &selected)
+pub fn tab_bar_update(tabs: Vec<TabBarItem>, selected: String, appearance: String) -> Result<()> {
+    imp::update(&tabs, &selected, &appearance)
 }
 
 /// Show or hide the bar without tearing it down (full-screen terminal, keyboard).
 #[tauri::command]
 pub fn tab_bar_set_visible(visible: bool) -> Result<()> {
     imp::set_visible(visible)
-}
-
-/// Present the native animation lab (LumaTabBarLab.swift): one bar per move
-/// style, side by side, so the selection animation can be judged on a device
-/// instead of guessed at. A design aid reachable from Profile > About.
-#[tauri::command]
-pub fn tab_bar_lab() -> Result<()> {
-    imp::lab()
 }
 
 /// Store the app handle so the Swift tap callback can emit events. Called from
@@ -81,7 +73,6 @@ mod imp {
         fn luma_tab_bar_attach(json: *const c_char) -> f64;
         fn luma_tab_bar_update(json: *const c_char);
         fn luma_tab_bar_set_visible(visible: bool);
-        fn luma_tab_bar_lab_present() -> bool;
     }
 
     #[derive(Serialize)]
@@ -89,6 +80,7 @@ mod imp {
     struct TabBarConfig<'a> {
         tabs: &'a [TabBarItem],
         selected: &'a str,
+        appearance: &'a str,
     }
 
     #[derive(Clone, Serialize)]
@@ -106,16 +98,20 @@ mod imp {
         }
     }
 
-    fn encode(tabs: &[TabBarItem], selected: &str) -> Result<CString> {
-        let json = serde_json::to_string(&TabBarConfig { tabs, selected })
-            .map_err(|error| LumaError::InvalidInput(format!("tab bar payload: {error}")))?;
+    fn encode(tabs: &[TabBarItem], selected: &str, appearance: &str) -> Result<CString> {
+        let json = serde_json::to_string(&TabBarConfig {
+            tabs,
+            selected,
+            appearance,
+        })
+        .map_err(|error| LumaError::InvalidInput(format!("tab bar payload: {error}")))?;
         CString::new(json).map_err(|_| {
             LumaError::InvalidInput("tab bar payload contains a null byte".to_string())
         })
     }
 
-    pub fn attach(tabs: &[TabBarItem], selected: &str) -> Result<f64> {
-        let json = encode(tabs, selected)?;
+    pub fn attach(tabs: &[TabBarItem], selected: &str, appearance: &str) -> Result<f64> {
+        let json = encode(tabs, selected, appearance)?;
         // SAFETY: Swift copies the string before returning and never retains the
         // pointer, so the CString may be dropped after the call.
         let height = unsafe { luma_tab_bar_attach(json.as_ptr()) };
@@ -130,25 +126,14 @@ mod imp {
         Ok(height)
     }
 
-    pub fn update(tabs: &[TabBarItem], selected: &str) -> Result<()> {
-        let json = encode(tabs, selected)?;
+    pub fn update(tabs: &[TabBarItem], selected: &str, appearance: &str) -> Result<()> {
+        let json = encode(tabs, selected, appearance)?;
         unsafe { luma_tab_bar_update(json.as_ptr()) };
         Ok(())
     }
 
     pub fn set_visible(visible: bool) -> Result<()> {
         unsafe { luma_tab_bar_set_visible(visible) };
-        Ok(())
-    }
-
-    pub fn lab() -> Result<()> {
-        // SAFETY: no arguments; Swift presents a view controller and returns.
-        let presented = unsafe { luma_tab_bar_lab_present() };
-        if !presented {
-            return Err(LumaError::InvalidInput(
-                "tab bar lab unavailable".to_string(),
-            ));
-        }
         Ok(())
     }
 
@@ -188,19 +173,15 @@ mod imp {
 
     pub fn register(_app: &tauri::AppHandle) {}
 
-    pub fn attach(_tabs: &[TabBarItem], _selected: &str) -> Result<f64> {
+    pub fn attach(_tabs: &[TabBarItem], _selected: &str, _appearance: &str) -> Result<f64> {
         unsupported()
     }
 
-    pub fn update(_tabs: &[TabBarItem], _selected: &str) -> Result<()> {
+    pub fn update(_tabs: &[TabBarItem], _selected: &str, _appearance: &str) -> Result<()> {
         unsupported()
     }
 
     pub fn set_visible(_visible: bool) -> Result<()> {
-        unsupported()
-    }
-
-    pub fn lab() -> Result<()> {
         unsupported()
     }
 }

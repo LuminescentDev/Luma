@@ -34,7 +34,7 @@ function defaultFontSize(): number {
 }
 
 type TerminalStyleState = {
-  /** Selected scheme id: a bundled/custom id, or AUTO_SCHEME_ID for app mode. */
+  /** Selected scheme id: a bundled/custom id, or AUTO_SCHEME_ID for system mode. */
   schemeId: string;
   /** Custom (imported) schemes, resolvable by id alongside the bundled ones. */
   customThemes: CustomTheme[];

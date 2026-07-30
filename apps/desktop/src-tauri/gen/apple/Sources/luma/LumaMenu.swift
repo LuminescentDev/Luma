@@ -37,6 +37,7 @@ private struct LumaMenuAnchor: Decodable {
 private struct LumaMenuConfig: Decodable {
   let items: [LumaMenuItem]
   let anchor: LumaMenuAnchor
+  let appearance: String
 }
 
 /// Present the menu anchored to the given viewport rect. Returns false when no
@@ -90,6 +91,9 @@ private final class LumaMenuController {
     }
 
     host.bringSubviewToFront(button)
+    let style: UIUserInterfaceStyle = config.appearance == "light" ? .light : .dark
+    host.overrideUserInterfaceStyle = style
+    button.overrideUserInterfaceStyle = style
     button.frame = CGRect(
       x: config.anchor.x, y: config.anchor.y,
       width: max(config.anchor.width, 1), height: max(config.anchor.height, 1))

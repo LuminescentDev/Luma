@@ -43,8 +43,8 @@ pub struct MenuAnchor {
 /// reports nothing, exactly as a system menu does. Errors where no native menu
 /// exists, which is the frontend's signal to fall back to its own sheet.
 #[tauri::command]
-pub fn menu_present(items: Vec<MenuItem>, anchor: MenuAnchor) -> Result<()> {
-    imp::present(&items, anchor)
+pub fn menu_present(items: Vec<MenuItem>, anchor: MenuAnchor, appearance: String) -> Result<()> {
+    imp::present(&items, anchor, &appearance)
 }
 
 /// Store the app handle so the Swift selection callback can emit events.
@@ -71,6 +71,7 @@ mod imp {
     struct MenuConfig<'a> {
         items: &'a [MenuItem],
         anchor: MenuAnchor,
+        appearance: &'a str,
     }
 
     #[derive(Clone, Serialize)]
@@ -86,9 +87,13 @@ mod imp {
         }
     }
 
-    pub fn present(items: &[MenuItem], anchor: MenuAnchor) -> Result<()> {
-        let json = serde_json::to_string(&MenuConfig { items, anchor })
-            .map_err(|error| LumaError::InvalidInput(format!("menu payload: {error}")))?;
+    pub fn present(items: &[MenuItem], anchor: MenuAnchor, appearance: &str) -> Result<()> {
+        let json = serde_json::to_string(&MenuConfig {
+            items,
+            anchor,
+            appearance,
+        })
+        .map_err(|error| LumaError::InvalidInput(format!("menu payload: {error}")))?;
         let json = CString::new(json)
             .map_err(|_| LumaError::InvalidInput("menu payload contains a null byte".into()))?;
         // SAFETY: Swift copies the string before returning and never retains the
@@ -130,7 +135,7 @@ mod imp {
 
     pub fn register(_app: &tauri::AppHandle) {}
 
-    pub fn present(_items: &[MenuItem], _anchor: MenuAnchor) -> Result<()> {
+    pub fn present(_items: &[MenuItem], _anchor: MenuAnchor, _appearance: &str) -> Result<()> {
         Err(LumaError::InvalidInput(
             "native menus are only available on iOS".into(),
         ))

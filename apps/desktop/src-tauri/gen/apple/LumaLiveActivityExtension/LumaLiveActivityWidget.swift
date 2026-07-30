@@ -54,6 +54,7 @@ struct LumaLiveActivityWidget: Widget {
   var body: some WidgetConfiguration {
     ActivityConfiguration(for: LumaActivityAttributes.self) { context in
       LockScreenView(state: context.state)
+        .environment(\.colorScheme, context.state.appearance == "light" ? .light : .dark)
         .activitySystemActionForegroundColor(LumaTheme.accent)
     } dynamicIsland: { context in
       let status = SessionStatus(context.state)

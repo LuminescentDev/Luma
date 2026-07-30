@@ -1,11 +1,6 @@
-import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { FlaskConical, Monitor, Moon, Sun } from "lucide-react";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
-import { useTheme } from "../../hooks/useTheme";
 import { useCapabilityStore } from "../../stores/capabilityStore";
-import { SETTING_KEYS, type ThemeMode } from "../../types";
-import { cn } from "../../lib/utils";
+import { SETTING_KEYS } from "../../types";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { VaultsSection } from "../vaults/VaultsSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
@@ -21,36 +16,10 @@ import { tabBarStatus } from "./tabBar";
  * only the navigation changed, from one long page to pushed detail screens.
  */
 
-const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
-  { value: "dark", label: "Dark", icon: Moon },
-  { value: "light", label: "Light", icon: Sun },
-  { value: "system", label: "System", icon: Monitor },
-];
-
 export function MobileAppearanceScreen({ onBack }: { onBack: () => void }) {
-  const { mode, setMode } = useTheme();
   return (
     <MobileScreen title="Appearance" onBack={onBack}>
       <Section>
-        <Field label="Theme">
-          <div className="flex gap-1 rounded-lg border border-border bg-background p-1">
-            {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setMode(value)}
-                aria-pressed={mode === value}
-                className={cn(
-                  "flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-md px-3 text-sm transition-colors",
-                  mode === value ? "bg-raised text-accent shadow-glow" : "text-muted",
-                )}
-              >
-                <Icon size={14} />
-                {label}
-              </button>
-            ))}
-          </div>
-        </Field>
         <AppearanceSection />
       </Section>
     </MobileScreen>
@@ -185,7 +154,6 @@ export function MobileCollaborationScreen({ onBack }: { onBack: () => void }) {
 
 export function MobileAboutScreen({ onBack }: { onBack: () => void }) {
   const status = tabBarStatus();
-  const [labError, setLabError] = useState<string | null>(null);
   return (
     <MobileScreen title="About" onBack={onBack}>
       <Section>
@@ -205,29 +173,6 @@ export function MobileAboutScreen({ onBack }: { onBack: () => void }) {
                 ? `Web fallback — ${status.reason}`
                 : "Starting…"}
           </p>
-        </Field>
-        <Field
-          label="Animation lab"
-          hint="Native screen with each tab-bar animation style side by side. Tap the tabs on each bar to compare."
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setLabError(null);
-              invoke("tab_bar_lab").catch((error) =>
-                setLabError(error instanceof Error ? error.message : String(error)),
-              );
-            }}
-            className="flex min-h-11 items-center gap-2 rounded-lg border border-border bg-surface px-4 text-sm font-medium active:bg-raised"
-          >
-            <FlaskConical size={16} className="text-accent" />
-            Open tab bar lab
-          </button>
-          {labError && (
-            <p role="alert" className="mt-2 text-xs text-danger">
-              {labError}
-            </p>
-          )}
         </Field>
       </Section>
     </MobileScreen>

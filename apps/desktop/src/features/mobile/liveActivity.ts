@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { formatBytes, formatRate } from "../../lib/sftp";
+import { getResolvedAppAppearance } from "../../lib/appTheme";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useSftpStore, type TransferRecord } from "../../stores/sftpStore";
 import type { TerminalSession } from "../../types";
@@ -161,7 +162,11 @@ function rank(state: "connected" | "reconnecting" | "failed" | null): number {
 export function syncLiveActivity(
   payload: LiveActivityPayload | null,
 ): Promise<void> {
-  return invoke<void>("live_activity_sync", { state: payload });
+  return invoke<void>("live_activity_sync", {
+    state: payload
+      ? { ...payload, appearance: getResolvedAppAppearance() }
+      : null,
+  });
 }
 
 /** SFTP progress events arrive far faster than a lock-screen card can usefully
@@ -190,7 +195,10 @@ export function startLiveActivitySync(): () => void {
 
   const push = () => {
     const payload = currentPayload();
-    const serialized = JSON.stringify(payload);
+    const serialized = JSON.stringify({
+      payload,
+      appearance: getResolvedAppAppearance(),
+    });
     if (serialized === lastPayload) return;
     lastPayload = serialized;
     lastSentAt = Date.now();
@@ -214,11 +222,17 @@ export function startLiveActivitySync(): () => void {
     useSessionStore.subscribe(schedule),
     useSftpStore.subscribe(schedule),
   ];
+  const themeObserver = new MutationObserver(schedule);
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
 
   return () => {
     disposed = true;
     if (timer !== undefined) clearTimeout(timer);
     unsubscribe.forEach((stop) => stop());
+    themeObserver.disconnect();
     void syncLiveActivity(null).catch(() => {});
   };
 }

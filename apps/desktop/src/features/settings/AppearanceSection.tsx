@@ -23,7 +23,7 @@ import { cn } from "../../lib/utils";
  * design tokens (chrome, panels, modals) as well as the xterm terminals, owned
  * by terminalStyleStore, which applies them live via terminalManager +
  * lib/appTheme and persists them device-local. AUTO keeps the native Luma
- * dark/light look and follows the Theme mode control. Imported themes are parsed
+ * dark/light look and follows the system appearance. Imported themes are parsed
  * from pasted VS Code / iTerm2 theme text (see lib/themeImport) — no filesystem
  * access is used.
  */
@@ -68,11 +68,11 @@ export function AppearanceSection() {
         </div>
         <p className="mb-2 text-xs text-muted">
           Recolors the whole app and terminals. Auto keeps Luma's native look and
-          follows the Theme mode above.
+          follows your system appearance.
         </p>
         <div className="space-y-1.5">
           <SchemeRow
-            name="Auto (follow app theme)"
+            name="Auto (follow system)"
             selected={schemeId === AUTO_SCHEME_ID}
             onSelect={() => void setScheme(AUTO_SCHEME_ID)}
           />

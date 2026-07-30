@@ -20,9 +20,18 @@ import UIKit
  * glass path is availability guarded and falls back to a
  * .systemUltraThinMaterial blur, which is the closest pre-26 material.
  *
- * The selection-move animation comes in several styles (LumaTabMoveStyle) so
- * the design can be compared side by side in the lab screen (LumaTabBarLab.swift)
- * and a winner picked on a real device instead of guessed at.
+ * The selection glide is a live spring simulation stepped by a CADisplayLink,
+ * NOT a UIViewPropertyAnimator, and the pill's material is set once and never
+ * animated. Both choices are load-bearing for rapid back-and-forth tapping,
+ * which several animator-based designs could not survive:
+ *  - a UIView spring cannot be retargeted, so every interrupting tap had to
+ *    stop one spring and launch another from zero velocity, which halted the
+ *    pill dead mid-flight on each tap;
+ *  - freezing a mid-flight `effect` crossfade snaps the glass (there is no
+ *    representable half-faded state), which flashed the highlight at the tab
+ *    that was just abandoned.
+ * Here a tap only moves the simulation's target: position and velocity carry
+ * over untouched and there is no material transition to catch halfway.
  */
 
 /// Declared by the Rust side (src/commands/tab_bar.rs) and linked in from
@@ -30,7 +39,7 @@ import UIKit
 @_silgen_name("luma_tab_bar_did_select")
 func luma_tab_bar_did_select(_ id: UnsafePointer<CChar>?)
 
-struct LumaTabItem: Decodable {
+private struct LumaTabItem: Decodable {
   let id: String
   let label: String
   let sfSymbol: String
@@ -40,41 +49,7 @@ struct LumaTabItem: Decodable {
 private struct LumaTabBarConfig: Decodable {
   let tabs: [LumaTabItem]
   let selected: String
-}
-
-/// How the selection moves between tabs. Numbered to match the lab screen so
-/// "somewhere between 2 and 4" is meaningful feedback.
-enum LumaTabMoveStyle: Int, CaseIterable {
-  /// 1 — Calm slide: the highlighted pill glides over, well damped, no frills.
-  case calm = 1
-  /// 2 — Bouncy slide: the pill stays highlighted, inflates slightly mid-move,
-  /// and lands with a springy overshoot. The chosen shipping style.
-  case bounce = 2
-  /// 3 — Lens droplet: a clear-glass droplet detaches, swells over the icons it
-  /// crosses, and dissolves into the highlight as it lands.
-  case lens = 3
-  /// 4 — Surge droplet: like 3 but bigger, slower, and it overshoots the target
-  /// before snapping back.
-  case surge = 4
-  /// 5 — Gooey stretch: the highlighted pill stretches until it spans both
-  /// tabs, then contracts onto the destination.
-  case stretch = 5
-  /// 6 — Bouncy lens: the clear-glass droplet of 3, driven with the motion of
-  /// 2 — modest swell, a springy overshoot into the tab — a touch slower than
-  /// either.
-  case bouncyLens = 6
-}
-
-/// The three knobs of a droplet flight. The lab exposes these as live sliders
-/// so tuning happens on the device with no rebuild; once numbers are settled
-/// they become the defaults in `moveSelection`.
-struct LumaDropletTuning {
-  /// Spring damping: lower bounces harder. 0.3–1.0.
-  var damping: CGFloat
-  /// Flight duration in seconds.
-  var flight: TimeInterval
-  /// How much larger than the pill the droplet is born, in points.
-  var inflate: CGFloat
+  let appearance: String
 }
 
 /// Attach the bar over the webview and return the height it occupies in points
@@ -168,6 +143,12 @@ private final class LumaTabBarController {
   }
 
   func update(_ config: LumaTabBarConfig) {
+    let style: UIUserInterfaceStyle = config.appearance == "light" ? .light : .dark
+    // Apply at the host as well as the bar so UIKit-owned surfaces launched
+    // from the webview (keyboard, edit menus, status-bar contrast) inherit the
+    // same resolved appearance.
+    Self.hostView()?.overrideUserInterfaceStyle = style
+    barView?.overrideUserInterfaceStyle = style
     barView?.apply(tabs: config.tabs, selected: config.selected)
   }
 
@@ -228,9 +209,8 @@ private final class LumaTabBarController {
 }
 
 /// The floating capsule itself: a glass (or blurred) background with one button
-/// per tab and a pill behind the selected one. Internal (not private) so the
-/// lab screen can instantiate variants of it.
-final class LumaTabBarView: UIView {
+/// per tab and a pill behind the selected one.
+private final class LumaTabBarView: UIView {
   /// On iOS 26 this carries a UIGlassContainerEffect, which combines every
   /// nested glass element into ONE render — the pill and the bar body merge
   /// like one body of liquid within `spacing` of each other.
@@ -238,33 +218,46 @@ final class LumaTabBarView: UIView {
   /// The bar's own glass body, nested inside the container on iOS 26.
   private let barGlass = UIVisualEffectView(effect: nil)
   private let stack = UIStackView()
-  /// The resting highlight. Lives BEHIND the buttons so the selected icon stays
-  /// crisp; positioned by frame (layoutSubviews), not constraints, so every
-  /// move style can animate it freely.
+  /// The selection highlight. Lives BEHIND the buttons so the selected icon
+  /// stays crisp, and is positioned by frame (layoutSubviews / the glide), not
+  /// by constraints, so it can be moved a frame at a time. Its material is
+  /// assigned once in init and never animated — see the file header.
   private let selectionPill = UIVisualEffectView(effect: nil)
-  /// Clear-glass blob that rides ABOVE the bar during droplet-style moves,
-  /// lensing whatever it passes over. Glass only refracts what is behind it, so
-  /// only a view stacked over the buttons can visibly distort them.
-  private let droplet = UIVisualEffectView(effect: nil)
   private let onSelect: (String) -> Void
   private var buttons: [String: LumaTabButton] = [:]
   private var selectedId: String?
-  /// True while a move animation owns the pill's frame; layoutSubviews keeps
-  /// its hands off until the move ends.
+  /// Selection as last reported by the webview store. Distinguishes a stale
+  /// echo (the store still catching up to optimistic taps) from the web
+  /// genuinely changing tabs on its own, which must win.
+  private var webSelected: String?
+  /// Taps reported to the webview whose echo has not come back yet, in tap
+  /// order. While any are outstanding, an update carrying an older selection
+  /// is history being replayed, not an instruction to move.
+  private var pendingTaps: [String] = []
+  /// True while a glide owns the pill's frame; layoutSubviews keeps its hands
+  /// off until it ends.
   private var isMoving = false
-  /// Destination of the in-flight move. Re-asserting it (the webview echoing an
-  /// optimistic tap, a badge refresh) must not restart or cut the animation.
+  /// Destination of the in-flight glide. Re-asserting it (the webview echoing
+  /// an optimistic tap, a badge refresh) must not restart the animation.
   private var movingTo: String?
-  /// Every animator of the current move, held so a new move can stop them as a
-  /// set — including stages still waiting out a start delay.
-  private var moveAnimators: [UIViewPropertyAnimator] = []
 
-  /// Which animation the selection uses. The lab sets this per bar; the real
-  /// bar ships the winner: bouncy slide (chosen on device from the lab).
-  var moveStyle: LumaTabMoveStyle = .bounce
-  /// Live override for the droplet styles' spring parameters. Nil uses each
-  /// style's defaults; the lab wires sliders to this for rebuild-free tuning.
-  var tuning: LumaDropletTuning?
+  // The glide: one spring simulation per run of taps. Position and velocity are
+  // plain state stepped by the display link, so a retarget is just a new
+  // target — nothing is ever interrupted.
+  private var glideLink: CADisplayLink?
+  private var glidePos = CGPoint.zero
+  private var glideVel = CGVector.zero
+  private var glideTarget = CGPoint.zero
+  private var glideDest = CGRect.zero
+
+  /// Angular frequency in rad/s and damping ratio of the glide spring. A damped
+  /// spring settles in roughly 4/(damping·omega) seconds — about 0.32s here.
+  /// Damping just under 1 keeps it from overshooting the tab.
+  private static let glideOmega: CGFloat = 14
+  private static let glideDamping: CGFloat = 0.9
+
+  /// Pre-26 stand-in for the pill's clear-glass material.
+  private static let restingPillColor = UIColor.white.withAlphaComponent(0.12)
 
   init(height: CGFloat, onSelect: @escaping (String) -> Void) {
     self.onSelect = onSelect
@@ -292,7 +285,11 @@ final class LumaTabBarView: UIView {
       barGlass.effect = body
       barGlass.cornerConfiguration = .capsule()
 
-      selectionPill.effect = restingGlass()
+      // Clear and untinted, so the selection reads as a lens over the tab
+      // rather than a white-tinted plate with a lit outline.
+      let resting = UIGlassEffect(style: .clear)
+      resting.isInteractive = true
+      selectionPill.effect = resting
       selectionPill.cornerConfiguration = .capsule()
     } else {
       background.effect = UIBlurEffect(style: .systemUltraThinMaterial)
@@ -307,7 +304,7 @@ final class LumaTabBarView: UIView {
       layer.shadowOpacity = 0.25
       layer.shadowRadius = 12
       layer.shadowOffset = CGSize(width: 0, height: 4)
-      selectionPill.backgroundColor = UIColor.white.withAlphaComponent(0.12)
+      selectionPill.backgroundColor = Self.restingPillColor
       selectionPill.layer.cornerCurve = .continuous
     }
     addSubview(background)
@@ -332,13 +329,6 @@ final class LumaTabBarView: UIView {
     stack.spacing = 4
     background.contentView.addSubview(stack)
 
-    droplet.isUserInteractionEnabled = false
-    droplet.isHidden = true
-    if #available(iOS 26.0, *) {
-      droplet.cornerConfiguration = .capsule()
-    }
-    addSubview(droplet)
-
     NSLayoutConstraint.activate([
       background.topAnchor.constraint(equalTo: topAnchor),
       background.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -356,8 +346,16 @@ final class LumaTabBarView: UIView {
 
   override func layoutSubviews() {
     super.layoutSubviews()
-    // The pill tracks the selected button whenever no move animation owns it
-    // (first layout, rotation, size changes).
+    // A glide owns the pill, but it aims at a frame captured when the move
+    // started: re-aim at the destination's current geometry or a rotation
+    // mid-flight would land the pill where the tab used to be.
+    if glideLink != nil, let id = movingTo, let target = buttons[id] {
+      glideDest = target.convert(target.bounds, to: background.contentView)
+      glideTarget = CGPoint(x: glideDest.midX, y: glideDest.midY)
+      return
+    }
+    // Otherwise the pill simply tracks the selected button (first layout,
+    // rotation, size changes).
     guard !isMoving, let id = selectedId, let target = buttons[id] else { return }
     selectionPill.frame = target.convert(target.bounds, to: background.contentView)
     fixPillRadius()
@@ -380,13 +378,34 @@ final class LumaTabBarView: UIView {
       }
     }
 
+    // The webview echoes optimistic taps back one store change at a time, so
+    // under rapid tapping every update but the last carries a selection the bar
+    // has already moved past. Replaying those echoes dragged the pill back
+    // through each abandoned tab — visible as jumps. Stale echoes are consumed
+    // instead; only the web changing selection on its own (an id neither
+    // pending nor last confirmed) overrides the bar.
+    var effective = selected
+    if !pendingTaps.isEmpty {
+      if let echoed = pendingTaps.firstIndex(of: selected) {
+        pendingTaps.removeSubrange(...echoed)
+        effective = selectedId ?? selected
+      } else if selected == webSelected {
+        // A badge refresh emitted before the store processed the outstanding
+        // taps: it carries the pre-tap selection, not a decision to go back.
+        effective = selectedId ?? selected
+      } else {
+        pendingTaps.removeAll()
+      }
+    }
+    webSelected = selected
+
     for tab in tabs {
-      buttons[tab.id]?.update(item: tab, selected: tab.id == selected)
+      buttons[tab.id]?.update(item: tab, selected: tab.id == effective)
     }
     // Badge-only updates re-apply the same selection; animating a zero-distance
-    // move would flash the droplet in place.
-    moveSelection(to: selected, animated: selectedId != nil && selectedId != selected)
-    selectedId = selected
+    // move would restart the spring for nothing.
+    moveSelection(to: effective, animated: selectedId != nil && selectedId != effective)
+    selectedId = effective
   }
 
   // MARK: - Selection movement
@@ -395,10 +414,11 @@ final class LumaTabBarView: UIView {
   /// for the round trip (Swift → Rust event → webview store → tab_bar_update)
   /// used to start the move only after the webview had begun re-rendering the
   /// new route — visibly late, and stuttery whenever that render was heavy. The
-  /// echoed update() lands in apply() as a same-destination no-op, so native
-  /// and web still converge on the store's selection.
+  /// echoed update() lands in apply() as a stale echo, so native and web still
+  /// converge on the store's selection.
   private func handleTap(_ id: String) {
     if id != selectedId {
+      pendingTaps.append(id)
       for (buttonId, button) in buttons {
         button.setSelected(buttonId == id, animated: true)
       }
@@ -415,219 +435,87 @@ final class LumaTabBarView: UIView {
     }
     selectionPill.isHidden = false
 
-    // Re-asserting the destination of an in-flight move (the webview echoing an
-    // optimistic tap, a badge refresh) must not snap the pill there and cut the
-    // animation short.
+    // Re-asserting the destination of an in-flight glide (the webview echoing
+    // an optimistic tap, a badge refresh) must not restart it.
     if isMoving && movingTo == id { return }
 
-    // Buttons need frames before anything can fly between them.
+    // Nothing can be positioned before the bar has a width, and forcing the
+    // layout below at the engine's temporary zero width is worse than useless:
+    // the stack's 6pt insets and the buttons' 4pt spacing cannot fit in 0pt, so
+    // UIKit breaks the button width constraints and every button frame that
+    // comes back is garbage — which is what `dest` would then be computed from.
+    // layoutSubviews places the pill as soon as a real width arrives.
+    guard bounds.width > 0 else { return }
+
+    // Buttons need frames before anything can move between them.
     layoutIfNeeded()
     let dest = target.convert(target.bounds, to: background.contentView)
 
-    // Where the move visually departs from. Mid-flight the model frame already
-    // sits at the previous destination (the animations are presentation-only),
-    // so an interrupted move must read the presentation layer — the droplet's
-    // if one is airborne, the pill's otherwise — or rapid taps teleport.
-    var source = selectionPill.frame
-    if isMoving {
-      if !droplet.isHidden, let flying = droplet.layer.presentation() {
-        source = convert(flying.frame, to: background.contentView)
-      } else if let sliding = selectionPill.layer.presentation() {
-        source = sliding.frame
-      }
-    }
-
-    // A new move always starts from a clean slate: rapid taps must not strand a
-    // half-finished droplet or a de-materialized pill on screen.
-    cancelMove()
-    droplet.isHidden = true
-    droplet.effect = nil
-    selectionPill.transform = .identity
-    if #available(iOS 26.0, *) {
-      selectionPill.effect = restingGlass()
-    }
-
     guard animated else {
+      stopGlide()
+      isMoving = false
+      movingTo = nil
       selectionPill.frame = dest
       fixPillRadius()
       return
     }
 
+    // Retarget: an already-running glide keeps its position and velocity and
+    // simply springs toward the new tab, which is what makes hammering smooth.
+    glideDest = dest
+    glideTarget = CGPoint(x: dest.midX, y: dest.midY)
     isMoving = true
     movingTo = id
-    selectionPill.frame = source
-    fixPillRadius()
+    guard glideLink == nil else { return }
 
-    let finish: () -> Void = { [weak self] in
-      guard let self else { return }
-      self.moveAnimators.removeAll()
-      self.isMoving = false
-      self.movingTo = nil
-      self.selectionPill.frame = dest
-      self.fixPillRadius()
-      self.droplet.isHidden = true
-      self.droplet.effect = nil
-    }
-
-    // The droplet styles are built on clear glass; without it (pre-26) they
-    // degrade to the bouncy slide rather than to nothing.
-    var style = moveStyle
-    if #unavailable(iOS 26.0) {
-      if style == .lens || style == .surge || style == .bouncyLens { style = .bounce }
-    }
-
-    switch style {
-    case .calm:
-      let slide = UIViewPropertyAnimator(duration: 0.38, dampingRatio: 0.85) {
-        self.selectionPill.frame = dest
-      }
-      slide.addCompletion { _ in finish() }
-      slide.startAnimation()
-      moveAnimators = [slide]
-
-    case .bounce:
-      let slide = UIViewPropertyAnimator(duration: 0.55, dampingRatio: 0.5) {
-        self.selectionPill.frame = dest
-      }
-      slide.addCompletion { _ in finish() }
-      // A concurrent inflate-deflate pulse so the pill reads as picking up
-      // momentum. Small, and the pill sits behind the icons, so the scaled
-      // backdrop is the bar body — no icon smearing.
-      let inflate = UIViewPropertyAnimator(duration: 0.25, curve: .easeOut) {
-        self.selectionPill.transform = CGAffineTransform(scaleX: 1.12, y: 1.12)
-      }
-      let deflate = UIViewPropertyAnimator(duration: 0.30, curve: .easeInOut) {
-        self.selectionPill.transform = .identity
-      }
-      inflate.addCompletion { _ in deflate.startAnimation() }
-      slide.startAnimation()
-      inflate.startAnimation()
-      moveAnimators = [slide, inflate, deflate]
-
-    case .lens:
-      let t = tuning ?? LumaDropletTuning(damping: 0.8, flight: 0.5, inflate: 4)
-      flyDroplet(
-        from: source, to: dest,
-        damping: t.damping, flight: t.flight, inflate: t.inflate, completion: finish)
-
-    case .surge:
-      let t = tuning ?? LumaDropletTuning(damping: 0.48, flight: 0.7, inflate: 10)
-      flyDroplet(
-        from: source, to: dest,
-        damping: t.damping, flight: t.flight, inflate: t.inflate, completion: finish)
-
-    case .bouncyLens:
-      // Bounce's motion in lens's material: born slightly inflated, an
-      // underdamped spring for the springy landing, unhurried.
-      let t = tuning ?? LumaDropletTuning(damping: 0.58, flight: 0.65, inflate: 6)
-      flyDroplet(
-        from: source, to: dest,
-        damping: t.damping, flight: t.flight, inflate: t.inflate, completion: finish)
-
-    case .stretch:
-      // The pill itself goes gooey: stretches until it spans source and
-      // destination, then contracts onto the destination.
-      // Lab-only caveat: this animates the effect view's SIZE, which the glass
-      // backdrop does not resize smoothly — on 26 it shears while deforming.
-      // Kept as a shape reference; not shippable as-is.
-      let expand = UIViewPropertyAnimator(duration: 0.26, curve: .easeIn) {
-        self.selectionPill.frame = source.union(dest)
-      }
-      let contract = UIViewPropertyAnimator(duration: 0.26, curve: .easeOut) {
-        self.selectionPill.frame = dest
-      }
-      expand.addCompletion { _ in contract.startAnimation() }
-      contract.addCompletion { _ in finish() }
-      expand.startAnimation()
-      moveAnimators = [expand, contract]
-    }
+    glidePos = CGPoint(x: selectionPill.frame.midX, y: selectionPill.frame.midY)
+    glideVel = .zero
+    let link = CADisplayLink(target: self, selector: #selector(glideTick(_:)))
+    link.add(to: .main, forMode: .common)
+    glideLink = link
   }
 
-  /// Stop every animator of the current move, including stages still waiting
-  /// out their start delay — their animation blocks then never run at all.
-  /// This is why the stages are UIViewPropertyAnimators rather than
-  /// UIView.animate calls: removeAllAnimations() cannot un-schedule a delayed
-  /// effect crossfade, and one firing late restored the pill's glass mid-move.
-  /// Chained stages (deflate, contract) that were never started stay .inactive
-  /// and are simply dropped; stopping runs only on .active animators.
-  private func cancelMove() {
-    for animator in moveAnimators where animator.state == .active {
-      animator.stopAnimation(true)
+  @objc private func glideTick(_ link: CADisplayLink) {
+    guard window != nil else {
+      // The link retains self; the bar leaving the screen mid-glide is where
+      // the loop is broken.
+      stopGlide()
+      isMoving = false
+      movingTo = nil
+      return
     }
-    moveAnimators.removeAll()
+
+    // Semi-implicit Euler on a damped spring. dt is clamped so one hitched
+    // frame cannot kick the integration unstable.
+    let dt = CGFloat(min(link.targetTimestamp - link.timestamp, 1.0 / 30.0))
+    let omega = Self.glideOmega
+    let zeta = Self.glideDamping
+    glideVel.dx +=
+      (-omega * omega * (glidePos.x - glideTarget.x) - 2 * zeta * omega * glideVel.dx) * dt
+    glideVel.dy +=
+      (-omega * omega * (glidePos.y - glideTarget.y) - 2 * zeta * omega * glideVel.dy) * dt
+    glidePos.x += glideVel.dx * dt
+    glidePos.y += glideVel.dy * dt
+    selectionPill.center = glidePos
+
+    let distance = hypot(glidePos.x - glideTarget.x, glidePos.y - glideTarget.y)
+    let speed = hypot(glideVel.dx, glideVel.dy)
+    guard distance < 0.4 && speed < 4 else { return }
+
+    // Landed: take the exact frame rather than leaving the sub-point remainder
+    // of the simulation on screen.
+    stopGlide()
+    UIView.performWithoutAnimation {
+      selectionPill.frame = glideDest
+      fixPillRadius()
+    }
     isMoving = false
     movingTo = nil
   }
 
-  /// The droplet flight shared by the droplet styles: a clear-glass blob rises
-  /// off the old tab, springs across the bar (lensing the icons beneath it),
-  /// and dissolves into the resting highlight as it lands.
-  ///
-  /// Built ONLY from what UIVisualEffectView animates correctly:
-  ///  - position, via a single spring (the underdamped spring IS the bounce);
-  ///  - the `effect` property, whose animation is the supported way to fade
-  ///    glass in and out.
-  /// Never alpha (opacity below 1 on an effect view renders the material
-  /// broken) and never bounds (the backdrop snaps and smears instead of
-  /// re-rendering) — both were tried, and both looked exactly that bad on a
-  /// device. The droplet keeps ONE size for the whole flight: born slightly
-  /// inflated, it reads as swelling relative to the pill it replaces without a
-  /// single frame of resize.
-  private func flyDroplet(
-    from source: CGRect, to dest: CGRect,
-    damping: CGFloat, flight: TimeInterval, inflate: CGFloat,
-    completion: @escaping () -> Void
-  ) {
-    guard #available(iOS 26.0, *) else {
-      completion()
-      return
-    }
-
-    let clear = UIGlassEffect(style: .clear)
-    clear.isInteractive = true
-
-    let inflated = dest.insetBy(dx: -inflate, dy: -inflate * 0.6)
-    let sourceInSelf = background.contentView.convert(source, to: self)
-    let destInSelf = background.contentView.convert(dest, to: self)
-
-    droplet.effect = nil
-    droplet.bounds = CGRect(origin: .zero, size: inflated.size)
-    droplet.center = CGPoint(x: sourceInSelf.midX, y: sourceInSelf.midY)
-    droplet.isHidden = false
-
-    // Park the pill at the destination stripped of its material; it returns by
-    // regaining its effect, never by alpha.
-    selectionPill.frame = dest
-    fixPillRadius()
-    selectionPill.effect = nil
-
-    // Materialize the droplet over the old tab...
-    let materialize = UIViewPropertyAnimator(duration: 0.12, curve: .easeIn) {
-      self.droplet.effect = clear
-    }
-    // ...fly it on one spring — no waypoints, no phases; the overshoot and
-    // settle all come from the spring itself...
-    let fly = UIViewPropertyAnimator(duration: flight, dampingRatio: damping) {
-      self.droplet.center = CGPoint(x: destInSelf.midX, y: destInSelf.midY)
-    }
-    // ...and while it is still settling, dissolve it as the highlight rises
-    // beneath it. Two overlapping effect crossfades: no hard swap anywhere.
-    let dissolve = UIViewPropertyAnimator(duration: flight * 0.45, curve: .easeInOut) {
-      self.droplet.effect = nil
-    }
-    let land = UIViewPropertyAnimator(duration: flight * 0.5, curve: .easeOut) {
-      self.selectionPill.effect = self.restingGlass()
-    }
-    // `land` finishes last (delay 0.55·flight + 0.5·flight > every other
-    // stage), so it carries the move's completion. An interrupted move stops
-    // all four without completions; cancelMove's caller does the cleanup.
-    land.addCompletion { _ in completion() }
-
-    materialize.startAnimation()
-    fly.startAnimation()
-    dissolve.startAnimation(afterDelay: flight * 0.5)
-    land.startAnimation(afterDelay: flight * 0.55)
-    moveAnimators = [materialize, fly, dissolve, land]
+  private func stopGlide() {
+    glideLink?.invalidate()
+    glideLink = nil
   }
 
   /// Pre-26 the pill is a plain view whose capsule radius is maintained by
@@ -637,16 +525,6 @@ final class LumaTabBarView: UIView {
     if #unavailable(iOS 26.0) {
       selectionPill.layer.cornerRadius = selectionPill.bounds.height / 2
     }
-  }
-
-  /// The pill's at-rest material. Tinted so the merged glass-on-glass stays
-  /// legible against the bar body it is fused to.
-  @available(iOS 26.0, *)
-  private func restingGlass() -> UIGlassEffect {
-    let resting = UIGlassEffect(style: .regular)
-    resting.isInteractive = true
-    resting.tintColor = UIColor.white.withAlphaComponent(0.18)
-    return resting
   }
 }
 
@@ -669,8 +547,12 @@ private final class LumaTabButton: UIControl {
       pointSize: 19, weight: .regular)
 
     caption.translatesAutoresizingMaskIntoConstraints = false
-    caption.font = .systemFont(ofSize: 11, weight: .medium)
+    caption.font = .systemFont(ofSize: 10, weight: .medium)
     caption.textAlignment = .center
+    // The caption dictates the button's width rather than truncating: just
+    // below required so the bar's outer screen margins still win on devices
+    // too narrow for everything.
+    caption.setContentCompressionResistancePriority(UILayoutPriority(999), for: .horizontal)
 
     badge.translatesAutoresizingMaskIntoConstraints = false
     badge.font = .systemFont(ofSize: 10, weight: .semibold)
@@ -685,15 +567,33 @@ private final class LumaTabButton: UIControl {
     addSubview(caption)
     addSubview(badge)
 
+    // Well past the HIG 44pt touch minimum, and roomy enough that the longest
+    // caption ("Connections") fits with air instead of hugging the pill's
+    // edges. fillEqually spreads the widest tab's width to all. Just below
+    // required, like the caption's compression resistance: the bar's outer
+    // screen margins still win on devices too narrow for everything, and a
+    // layout pass at a temporary zero width drops it silently instead of
+    // logging an unsatisfiable-constraint break.
+    let minWidth = widthAnchor.constraint(greaterThanOrEqualToConstant: 92)
+    minWidth.priority = UILayoutPriority(999)
+
+    // The caption is inset from the button's edges, not clamped to them: at
+    // required priority these two fought the same zero-width pass (and would
+    // fight any width too narrow for the label) instead of letting the label
+    // compress.
+    let captionLeading = caption.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4)
+    let captionTrailing = caption.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4)
+    captionLeading.priority = UILayoutPriority(999)
+    captionTrailing.priority = UILayoutPriority(999)
+
     NSLayoutConstraint.activate([
-      // >=44pt of touch target in a 64pt bar, per the HIG minimum.
-      widthAnchor.constraint(greaterThanOrEqualToConstant: 76),
+      minWidth,
       icon.topAnchor.constraint(equalTo: topAnchor, constant: 8),
       icon.centerXAnchor.constraint(equalTo: centerXAnchor),
       icon.heightAnchor.constraint(equalToConstant: 22),
       caption.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 2),
-      caption.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-      caption.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+      captionLeading,
+      captionTrailing,
       badge.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: -4),
       badge.centerYAnchor.constraint(equalTo: icon.topAnchor, constant: 2),
       badge.heightAnchor.constraint(equalToConstant: 16),
@@ -737,7 +637,7 @@ private final class LumaTabButton: UIControl {
 
   /// Tint flip split out of update() so an optimistic tap can restyle the
   /// buttons immediately, without a LumaTabItem in hand and in step with the
-  /// pill's flight rather than the webview's echo.
+  /// pill's glide rather than the webview's echo.
   func setSelected(_ selected: Bool, animated: Bool) {
     accessibilityTraits = selected ? [.button, .selected] : .button
     let tint: UIColor = selected ? .label : .secondaryLabel

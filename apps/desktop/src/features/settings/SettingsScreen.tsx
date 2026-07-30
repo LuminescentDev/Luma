@@ -3,10 +3,7 @@ import {
   Download,
   Info,
   Keyboard,
-  Monitor,
-  Moon,
   Palette,
-  Sun,
   Terminal as TerminalIcon,
   UserRound,
   Vault as VaultIcon,
@@ -14,9 +11,8 @@ import {
 } from "lucide-react";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
 import { useProfiles, useShells } from "../../hooks/useShells";
-import { useTheme } from "../../hooks/useTheme";
 import { parseShellRef, serializeShellRef } from "../../lib/terminal";
-import { SETTING_KEYS, type ThemeMode } from "../../types";
+import { SETTING_KEYS } from "../../types";
 import { cn } from "../../lib/utils";
 import { ProfilesSection } from "./ProfilesSection";
 import { AppearanceSection } from "./AppearanceSection";
@@ -25,12 +21,6 @@ import { AccountSection } from "../account/AccountSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
 import { VaultsSection } from "../vaults/VaultsSection";
 import { UpdatesSection } from "../updater/UpdatesSection";
-
-const THEME_OPTIONS: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
-  { value: "dark", label: "Dark", icon: Moon },
-  { value: "light", label: "Light", icon: Sun },
-  { value: "system", label: "System", icon: Monitor },
-];
 
 type CategoryId =
   | "appearance"
@@ -52,7 +42,6 @@ const CATEGORIES: { id: CategoryId; label: string; icon: LucideIcon }[] = [
 ];
 
 export function SettingsScreen() {
-  const { mode, setMode } = useTheme();
   const { data: settings, isLoading } = useSettings();
   const setSetting = useSetSetting();
   const { data: shells } = useShells();
@@ -73,27 +62,6 @@ export function SettingsScreen() {
       case "appearance":
         return (
           <div className="space-y-5">
-            <Field label="Theme" hint="Light/dark base used when Color theme is Auto.">
-              <div className="flex gap-1 rounded-lg border border-border bg-surface p-1">
-                {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setMode(value)}
-                    aria-pressed={mode === value}
-                    className={cn(
-                      "flex flex-1 items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors",
-                      mode === value
-                        ? "bg-raised text-accent shadow-glow"
-                        : "text-muted hover:text-foreground",
-                    )}
-                  >
-                    <Icon size={14} />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </Field>
             <AppearanceSection />
           </div>
         );
