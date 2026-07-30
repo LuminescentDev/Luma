@@ -38,6 +38,10 @@ const KnownHostsScreen = named(
   () => import("../features/knownHosts/KnownHostsScreen"),
   "KnownHostsScreen",
 );
+const ServerStatsScreen = named(
+  () => import("../features/serverStats/ServerStatsScreen"),
+  "ServerStatsScreen",
+);
 const SyncDialogs = named(
   () => import("../features/sync/SyncDialogs"),
   "SyncDialogs",
@@ -102,6 +106,11 @@ export function DesktopLayout() {
             {mainView === "known-hosts" && (
               <Suspense fallback={<ScreenFallback />}>
                 <KnownHostsScreen />
+              </Suspense>
+            )}
+            {mainView === "server-stats" && (
+              <Suspense fallback={<ScreenFallback />}>
+                <ServerStatsScreen />
               </Suspense>
             )}
             {/* Shared-terminal viewer overlay: shown only while joining a room,

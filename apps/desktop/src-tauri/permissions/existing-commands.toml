@@ -86,6 +86,8 @@ commands.allow = [
   "sftp_download",
   "sftp_cancel",
   "sftp_retry",
+  "server_stats_fetch",
+  "server_stats_close",
   "pty_spawn",
   "pty_write",
   "pty_resize",

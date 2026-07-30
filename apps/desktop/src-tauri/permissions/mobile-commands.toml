@@ -76,6 +76,8 @@ commands.allow = [
   "sftp_download",
   "sftp_cancel",
   "sftp_retry",
+  "server_stats_fetch",
+  "server_stats_close",
   "keystore_status",
   "keystore_setup",
   "keystore_unlock",

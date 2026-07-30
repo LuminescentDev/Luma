@@ -14,7 +14,8 @@ export type MainView =
   | "terminal"
   | "settings"
   | "keychain"
-  | "known-hosts";
+  | "known-hosts"
+  | "server-stats";
 
 type UiState = {
   /** What the main area shows to the right of the sidebar. */
@@ -33,6 +34,8 @@ type UiState = {
   openKeychain: () => void;
   /** Show the known-hosts trust-store manager in the main area. */
   openKnownHosts: () => void;
+  /** Show the agentless server stats dashboard in the main area. */
+  openServerStats: () => void;
   terminalSearchOpen: boolean;
   setTerminalSearchOpen: (open: boolean) => void;
   newTabIds: string[];
@@ -85,6 +88,7 @@ export const useUiStore = create<UiState>((set) => ({
   openSettings: () => set({ mainView: "settings" }),
   openKeychain: () => set({ mainView: "keychain" }),
   openKnownHosts: () => set({ mainView: "known-hosts" }),
+  openServerStats: () => set({ mainView: "server-stats" }),
   terminalSearchOpen: false,
   setTerminalSearchOpen: (open) => set({ terminalSearchOpen: open }),
   newTabIds: [],

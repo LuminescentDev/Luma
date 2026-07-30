@@ -34,6 +34,7 @@ mod platform;
 mod port_forwards;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
+mod server_stats;
 mod sftp;
 mod snippets;
 mod ssh;
@@ -53,6 +54,7 @@ pub use platform::*;
 pub use port_forwards::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use serial::*;
+pub use server_stats::*;
 pub use sftp::*;
 pub use snippets::*;
 pub use ssh::*;

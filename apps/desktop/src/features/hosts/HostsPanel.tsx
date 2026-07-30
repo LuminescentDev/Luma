@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Activity,
   Cable,
   ChevronRight,
   Copy,
@@ -49,6 +50,7 @@ import { GroupDialog } from "./GroupDialog";
 import { ImportDialog } from "./ImportDialog";
 import { PortForwardsDialog } from "../portForwards/PortForwardsDialog";
 import { useUiStore } from "../../stores/uiStore";
+import { useServerStatsStore } from "../../stores/serverStatsStore";
 import { useTunnelStore } from "../../stores/tunnelStore";
 import { useCapabilityStore } from "../../stores/capabilityStore";
 import { useVaultStore } from "../../stores/vaultStore";
@@ -71,6 +73,8 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
   const invalidate = useInvalidateHosts();
   const queryClient = useQueryClient();
   const showTerminal = useUiStore((s) => s.showTerminal);
+  const openServerStats = useUiStore((s) => s.openServerStats);
+  const selectStatsHost = useServerStatsStore((s) => s.select);
 
   const { data: hosts } = useHosts();
   const { data: groups } = useHostGroups();
@@ -284,6 +288,14 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
     onPortForwards: portForwardingEnabled
       ? (h: Host) => setPortForwardsHost(h)
       : undefined,
+    // The server stats dashboard is a desktop main view; mobile navigation has
+    // no route for it yet, so the action is hidden there.
+    onServerStats: isMobile
+      ? undefined
+      : (h: Host) => {
+          selectStatsHost(h);
+          openServerStats();
+        },
     runningByHost,
     selectedHostIds,
     onSelect: (host: Host, additive: boolean) => setSelectedHostIds((previous) => {
@@ -658,6 +670,7 @@ function HostRow({
   onDelete,
   onToggleFavorite,
   onPortForwards,
+  onServerStats,
   runningByHost,
   selectedHostIds,
   onSelect,
@@ -673,6 +686,7 @@ function HostRow({
   onDelete: (host: Host) => void;
   onToggleFavorite: (host: Host) => void;
   onPortForwards?: (host: Host) => void;
+  onServerStats?: (host: Host) => void;
   runningByHost: Map<string, number>;
   selectedHostIds: Set<string>;
   onSelect: (host: Host, additive: boolean) => void;
@@ -691,6 +705,15 @@ function HostRow({
             label: "Port forwarding",
             icon: <Cable size={14} />,
             onSelect: () => onPortForwards(host),
+          } as MenuAction,
+        ]
+      : []),
+    ...(onServerStats
+      ? [
+          {
+            label: "Server stats",
+            icon: <Activity size={14} />,
+            onSelect: () => onServerStats(host),
           } as MenuAction,
         ]
       : []),

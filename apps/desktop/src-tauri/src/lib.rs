@@ -7,6 +7,7 @@ mod logging;
 mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
+mod server_stats;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod session_logging;
 mod sftp;
@@ -28,6 +29,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serial::SerialManager;
+use server_stats::ServerStatsManager;
 use sftp::SftpManager;
 use snippet_runs::SnippetRunManager;
 use ssh::EmbeddedSshManager;
@@ -115,6 +117,7 @@ pub fn run() {
         // russh session, so mobile forwards work too (see platform.rs).
         app.manage(TunnelManager::default());
         app.manage(SftpManager::default());
+        app.manage(ServerStatsManager::default());
         app.manage(SnippetRunManager::default());
 
         // Lets native menu Swift callbacks emit into the frontend.
@@ -216,6 +219,8 @@ pub fn run() {
         commands::sftp_download,
         commands::sftp_cancel,
         commands::sftp_retry,
+        commands::server_stats_fetch,
+        commands::server_stats_close,
         commands::pty_spawn,
         commands::pty_write,
         commands::pty_resize,
@@ -342,6 +347,8 @@ pub fn run() {
         commands::sftp_download,
         commands::sftp_cancel,
         commands::sftp_retry,
+        commands::server_stats_fetch,
+        commands::server_stats_close,
         commands::keystore_status,
         commands::keystore_setup,
         commands::keystore_unlock,
@@ -391,6 +398,7 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             app_handle.state::<SerialManager>().kill_all();
             app_handle.state::<SftpManager>().kill_all();
+            app_handle.state::<ServerStatsManager>().kill_all();
             app_handle.state::<SnippetRunManager>().kill_all();
             app_handle.state::<EmbeddedSshManager>().kill_all();
             app_handle.state::<TunnelManager>().kill_all();
