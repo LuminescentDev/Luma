@@ -10,13 +10,12 @@ if (process.platform !== "darwin") {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(root, "branding", "icon-composer", "star.icon");
-const destination = join(
+const iconsDirectory = join(
   root,
   "apps",
   "desktop",
   "src-tauri",
   "icons",
-  "star.icns",
 );
 const output = mkdtempSync(join(tmpdir(), "luma-apple-icon-"));
 
@@ -39,7 +38,10 @@ try {
     ],
     { stdio: "inherit" },
   );
-  cpSync(join(output, "star.icns"), destination);
+  // Tauri uses the ICNS as the backwards-compatible bundle icon. The compiled
+  // asset catalog carries the layered Icon Composer renditions used by macOS 26.
+  cpSync(join(output, "star.icns"), join(iconsDirectory, "star.icns"));
+  cpSync(join(output, "Assets.car"), join(iconsDirectory, "Assets.car"));
 } finally {
   rmSync(output, { recursive: true, force: true });
 }
