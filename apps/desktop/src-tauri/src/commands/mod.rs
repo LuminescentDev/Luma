@@ -38,8 +38,6 @@ mod sftp;
 mod snippets;
 mod ssh;
 mod sync;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-mod tab_bar;
 mod vaults;
 
 pub use collaboration::*;
@@ -59,8 +57,6 @@ pub use sftp::*;
 pub use snippets::*;
 pub use ssh::*;
 pub use sync::*;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub use tab_bar::*;
 pub use vaults::*;
 
 // --- Settings ---

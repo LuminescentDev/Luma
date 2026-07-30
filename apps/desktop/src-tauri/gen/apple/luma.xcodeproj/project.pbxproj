@@ -10,7 +10,6 @@
 		04F2BCE9931EFF8753C87313 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F1DD5E0C948BA5E2EF13AA6 /* libapp.a */; };
 		06025A5C93AA390DF5AA4C92 /* LumaLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9293C4C41FDE45F29583EAE0 /* LumaLiveActivityBundle.swift */; };
 		06B83BAEC5A77DE0CCBD7650 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 80352B1B3FDF6ABE60A1CBF1 /* Metal.framework */; };
-		16AC03F5D7EE158D8A76D84B /* LumaTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1084D0403F3D7A518DD6A7BA /* LumaTabBar.swift */; };
 		16C2E65FDF6CB31E7F6F3A41 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 245900759016140715B3A77D /* Assets.xcassets */; };
 		28211C846355396664231DDC /* LumaLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4ED9FCA2F5B4A65E4A826E04 /* LumaLiveActivity.swift */; };
 		2AE3561D42A51C2EC1BDE8E6 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 5DFD11FC39BC71335638D0FC /* assets */; };
@@ -63,7 +62,6 @@
 		08FE2A7D402384CEC2D7DAB2 /* sftp.rs */ = {isa = PBXFileReference; path = sftp.rs; sourceTree = "<group>"; };
 		0B284D21F2E50E0524FB876C /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		0BF887A74951F8B32E4763D2 /* keystore.rs */ = {isa = PBXFileReference; path = keystore.rs; sourceTree = "<group>"; };
-		1084D0403F3D7A518DD6A7BA /* LumaTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LumaTabBar.swift; sourceTree = "<group>"; };
 		12CCA1671102D3F34278224E /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
 		14ADD4B9A0C70E62BAEFF9B9 /* hosts.rs */ = {isa = PBXFileReference; path = hosts.rs; sourceTree = "<group>"; };
 		1AD918BA1DF54A03DE1E1F88 /* serial.rs */ = {isa = PBXFileReference; path = serial.rs; sourceTree = "<group>"; };
@@ -299,7 +297,6 @@
 			children = (
 				4ED9FCA2F5B4A65E4A826E04 /* LumaLiveActivity.swift */,
 				F98284A9CA9DBC522D8E6AC6 /* LumaMenu.swift */,
-				1084D0403F3D7A518DD6A7BA /* LumaTabBar.swift */,
 				82C981E0D49899869B47A137 /* main.mm */,
 				71D60BDEE985F2EC51A21DF2 /* bindings */,
 			);
@@ -581,7 +578,6 @@
 				35E9DEA33C5AB5F4894B62CF /* LumaActivityAttributes.swift in Sources */,
 				28211C846355396664231DDC /* LumaLiveActivity.swift in Sources */,
 				8F19FAEDA8CF44C2875B6E56 /* LumaMenu.swift in Sources */,
-				16AC03F5D7EE158D8A76D84B /* LumaTabBar.swift in Sources */,
 				DA3C42591DA5AF2C2B015FC3 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

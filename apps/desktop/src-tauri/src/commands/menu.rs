@@ -3,15 +3,14 @@ use serde::{Deserialize, Serialize};
 use crate::errors::Result;
 
 /*
- * Native mobile menu bridge, sibling to commands/tab_bar.rs and built the same
- * way: @_cdecl entry points in gen/apple/Sources/luma/LumaMenu.swift, reached
- * directly from the static library.
+ * Native mobile menu bridge using @_cdecl entry points in
+ * gen/apple/Sources/luma/LumaMenu.swift, reached directly from the static
+ * library.
  *
- * This exists for the same reason the tab bar does — a UIMenu presented over the
- * webview renders in real Liquid Glass on iOS 26, which web content can never
- * do. The frontend anchors it to a DOM element's bounding rect and gets the
- * selection back as an event, so a picker looks and behaves like a system menu
- * while its trigger stays an ordinary React button.
+ * A UIMenu presented over the webview renders in real Liquid Glass on iOS 26,
+ * which web content can never do. The frontend anchors it to a DOM element's
+ * bounding rect and gets the selection back as an event, so a picker looks and
+ * behaves like a system menu while its trigger stays an ordinary React button.
  */
 
 /// One row in the menu. `selected` renders a system checkmark.

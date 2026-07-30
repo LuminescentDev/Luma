@@ -30,15 +30,31 @@ export function useNativeTabBar({
     let unlisten: UnlistenFn | undefined;
 
     void (async () => {
-      const attached = await attachNativeTabBar(sessionCount);
-      if (disposed) {
-        // Unmounted mid-attach: hide the bar we just created rather than
-        // leaving an orphaned native view over the webview.
-        if (attached) void setNativeTabBarVisible(false);
-        return;
+      try {
+        // Register before attaching so the native bar is never interactive
+        // without a route-change listener.
+        unlisten = await listenNativeTabBar();
+        const attached = await attachNativeTabBar(sessionCount);
+        if (disposed) {
+          // Unmounted mid-attach: hide the bar we just created rather than
+          // leaving an orphaned native view over the webview.
+          unlisten();
+          if (attached) void setNativeTabBarVisible(false);
+          return;
+        }
+        setNative(attached);
+        if (!attached) {
+          unlisten();
+          unlisten = undefined;
+        }
+      } catch {
+        // If event registration fails, keep the functional web fallback rather
+        // than showing a native bar whose taps cannot drive navigation.
+        unlisten?.();
+        unlisten = undefined;
+        void setNativeTabBarVisible(false);
+        setNative(false);
       }
-      setNative(attached);
-      if (attached) unlisten = await listenNativeTabBar();
     })();
 
     return () => {
@@ -66,7 +82,9 @@ export function useNativeTabBar({
     });
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["data-theme"],
+      // data-theme changes the built-in dark/light tokens; style changes when
+      // a terminal color scheme applies its derived accent as an inline token.
+      attributeFilter: ["data-theme", "style"],
     });
     return () => observer.disconnect();
   }, [native, sessionCount]);

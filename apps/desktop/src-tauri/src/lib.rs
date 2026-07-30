@@ -56,7 +56,8 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_deep_link::init());
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_ios_glass_tabbar::init());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let builder = builder
         .plugin(tauri_plugin_process::init())
@@ -116,10 +117,9 @@ pub fn run() {
         app.manage(SftpManager::default());
         app.manage(SnippetRunManager::default());
 
-        // Lets the native tab bar and menu Swift callbacks emit into the frontend.
+        // Lets native menu Swift callbacks emit into the frontend.
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
-            commands::register_tab_bar(app.handle());
             commands::register_menu(app.handle());
         }
 
@@ -330,9 +330,6 @@ pub fn run() {
         commands::tunnel_start,
         commands::tunnel_stop,
         commands::tunnels_list,
-        commands::tab_bar_attach,
-        commands::tab_bar_update,
-        commands::tab_bar_set_visible,
         commands::menu_present,
         commands::sftp_connect,
         commands::sftp_disconnect,

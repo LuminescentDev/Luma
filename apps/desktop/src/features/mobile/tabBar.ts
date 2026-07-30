@@ -1,34 +1,29 @@
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import {
+  onTabSelected,
+  setActiveTab,
+  setBadge,
+  setHidden,
+  setItems,
+} from "tauri-plugin-ios-glass-tabbar-api";
 import { useMobileNavStore, type MobileTab } from "../../stores/mobileNavStore";
-import { getResolvedAppAppearance } from "../../lib/appTheme";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 import { TAB_ITEMS } from "./MobileTabBar";
 
 /*
- * Bridge to the native iOS tab bar (see src-tauri/src/mobile/tab_bar.rs and the
- * Swift side in gen/apple). The bar is a real UIKit/SwiftUI view pinned over the
- * webview, so on iOS 26 it renders in genuine Liquid Glass — a material the
- * webview itself can never draw, since WebKit exposes no CSS primitive for it.
- *
- * Contract:
- *  - We push the tab list and the selected tab down; the bar pushes taps back up
- *    as a `mobile-tab-bar://selected` event.
- *  - The bar measures itself and reports its height so web content can reserve
- *    room for it (--mobile-tabbar-height, consumed by the .pb-tabbar utility).
- *  - `attach` resolves to false wherever the native bar is unavailable (Android,
- *    older iOS, desktop, tests). Callers then render the web capsule instead, so
- *    exactly one bar is ever on screen.
+ * Bridge to tauri-plugin-ios-glass-tabbar. The plugin installs a stock UITabBar
+ * over the webview, which automatically adopts Liquid Glass when the app is
+ * built with the iOS 26 SDK.
  */
 
 /** Height used for the web capsule; the native bar overwrites this on attach. */
 const WEB_TAB_BAR_HEIGHT = 68;
 
 type NativeTabItem = {
-  id: MobileTab;
-  label: string;
+  key: MobileTab;
+  title: string;
   sfSymbol: string;
-  /** Badge count; 0 renders no badge. */
-  badge: number;
 };
 
 function setTabBarHeight(height: number): void {
@@ -69,21 +64,20 @@ export function isNativeTabBarActive(): boolean {
 export async function attachNativeTabBar(
   sessionCount: number,
 ): Promise<boolean> {
+  // Plugin calls deliberately no-op on Android, so a resolved setItems call is
+  // not enough to prove a native bar exists there.
+  if (useCapabilityStore.getState().capabilities.os !== "ios") {
+    nativeActive = false;
+    status = { kind: "web", reason: "native plugin is iOS-only" };
+    setTabBarHeight(WEB_TAB_BAR_HEIGHT);
+    return false;
+  }
+
   try {
-    const height = await invoke<number>("tab_bar_attach", {
-      tabs: nativeTabs(sessionCount),
-      selected: useMobileNavStore.getState().tab,
-      appearance: getResolvedAppAppearance(),
-    });
-    // Treat anything but a real positive height as "no native bar". A resolved
-    // call is not proof of one: a stub or mock invoke can answer null, and
-    // trusting that would hide the web capsule and leave NO tab bar at all.
-    if (typeof height !== "number" || !Number.isFinite(height) || height <= 0) {
-      nativeActive = false;
-      status = { kind: "web", reason: `attach returned ${JSON.stringify(height)}` };
-      setTabBarHeight(WEB_TAB_BAR_HEIGHT);
-      return false;
-    }
+    const selectedIndex = tabIndex(useMobileNavStore.getState().tab);
+    await setItems(nativeTabs(), selectedIndex);
+    await Promise.all([syncBadges(sessionCount), syncTintColor()]);
+    const height = WEB_TAB_BAR_HEIGHT;
     nativeActive = true;
     status = { kind: "native", height };
     setTabBarHeight(height);
@@ -102,13 +96,35 @@ export async function attachNativeTabBar(
   }
 }
 
-function nativeTabs(sessionCount: number): NativeTabItem[] {
+function nativeTabs(): NativeTabItem[] {
   return TAB_ITEMS.map((item) => ({
-    id: item.tab,
-    label: item.label,
+    key: item.tab,
+    title: item.label,
     sfSymbol: item.sfSymbol,
-    badge: item.tab === "connections" ? sessionCount : 0,
   }));
+}
+
+function tabIndex(tab: MobileTab): number {
+  return TAB_ITEMS.findIndex((item) => item.tab === tab);
+}
+
+function resolvedAccentColor(): string {
+  return getComputedStyle(document.documentElement)
+    .getPropertyValue("--accent")
+    .trim();
+}
+
+async function syncTintColor(): Promise<void> {
+  await invoke("plugin:ios-glass-tabbar|set_tint_color", {
+    payload: { color: resolvedAccentColor() },
+  });
+}
+
+async function syncBadges(sessionCount: number): Promise<void> {
+  await setBadge(
+    tabIndex("connections"),
+    sessionCount > 0 ? String(sessionCount) : null,
+  );
 }
 
 /** Mirror the store's selected tab into the native bar. No-op when inactive. */
@@ -118,11 +134,11 @@ export async function syncNativeTabBar(
 ): Promise<void> {
   if (!nativeActive) return;
   try {
-    await invoke("tab_bar_update", {
-      tabs: nativeTabs(sessionCount),
-      selected: tab,
-      appearance: getResolvedAppAppearance(),
-    });
+    await Promise.all([
+      setActiveTab(tabIndex(tab)),
+      syncBadges(sessionCount),
+      syncTintColor(),
+    ]);
   } catch {
     // A failed mirror leaves the bar showing a stale selection for one frame;
     // not worth tearing the bar down over.
@@ -136,7 +152,7 @@ export async function syncNativeTabBar(
 export async function setNativeTabBarVisible(visible: boolean): Promise<void> {
   if (!nativeActive) return;
   try {
-    await invoke("tab_bar_set_visible", { visible });
+    await setHidden(!visible);
   } catch {
     // Ignore: visibility is cosmetic, and the next state change retries.
   }
@@ -144,10 +160,10 @@ export async function setNativeTabBarVisible(visible: boolean): Promise<void> {
 
 /** Subscribe to native tab selections, routing them into the nav store. */
 export async function listenNativeTabBar(): Promise<UnlistenFn> {
-  return listen<{ id: MobileTab }>("mobile-tab-bar://selected", (event) => {
-    const { id } = event.payload;
-    if (id === "vaults" || id === "connections" || id === "profile") {
-      useMobileNavStore.getState().selectTab(id);
+  const listener = await onTabSelected(({ key }) => {
+    if (key === "vaults" || key === "connections" || key === "profile") {
+      useMobileNavStore.getState().selectTab(key);
     }
   });
+  return () => listener.unregister();
 }

@@ -52,6 +52,7 @@
     "react-dom": "^19.1.0",
     "simple-icons": "^16.26.0",
     "tailwind-merge": "^3.6.0",
+    "tauri-plugin-ios-glass-tabbar-api": "0.1.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

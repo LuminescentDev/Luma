@@ -9,6 +9,7 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "opener:default",
+    "ios-glass-tabbar:default",
     "allow-mobile-commands",
     "allow-derive-public-key"
   ]

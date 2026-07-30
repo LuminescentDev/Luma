@@ -2,10 +2,9 @@ import Foundation
 import UIKit
 
 /*
- * Native menu bridge, sibling to LumaTabBar.swift. A UIMenu presented over the
- * webview renders in real Liquid Glass on iOS 26 — with the system's own
- * material, checkmarks, symbol layout and dismissal behaviour — none of which
- * web content can reproduce.
+ * Native menu bridge. A UIMenu presented over the webview renders in real Liquid
+ * Glass on iOS 26 — with the system's own material, checkmarks, symbol layout
+ * and dismissal behaviour — none of which web content can reproduce.
  *
  * A UIMenu has no public "present at a point" API, so this uses the supported
  * route: a zero-alpha UIButton parked at the anchor rect with the menu attached
