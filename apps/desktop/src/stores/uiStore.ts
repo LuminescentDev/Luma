@@ -66,6 +66,12 @@ type UiState = {
   vaultJoinLink: VaultJoinLink | null;
   openVaultJoin: (link?: VaultJoinLink) => void;
   closeVaultJoin: () => void;
+  /** Web-preview dialog: the host whose listeners are being previewed, and an
+   * optional label for the dialog subtitle. Null host means closed. */
+  webPreviewHostId: string | null;
+  webPreviewHostLabel: string | null;
+  openWebPreview: (hostId: string, hostLabel?: string) => void;
+  closeWebPreview: () => void;
 };
 
 export type CollabIntent = {
@@ -126,6 +132,12 @@ export const useUiStore = create<UiState>((set) => ({
   serialConnectOpen: false,
   openSerialConnect: () => set({ serialConnectOpen: true }),
   closeSerialConnect: () => set({ serialConnectOpen: false }),
+  webPreviewHostId: null,
+  webPreviewHostLabel: null,
+  openWebPreview: (hostId, hostLabel) =>
+    set({ webPreviewHostId: hostId, webPreviewHostLabel: hostLabel ?? null }),
+  closeWebPreview: () =>
+    set({ webPreviewHostId: null, webPreviewHostLabel: null }),
   paletteOpen: false,
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),

@@ -20,6 +20,9 @@ use crate::ssh::{
 };
 
 pub use parse::ServerStatsSnapshot;
+// Shared with web_preview: both run the same `===LUMA:<name>===` batched-script
+// convention over an exec channel.
+pub(crate) use parse::split_sections;
 
 /// Whole-script budget: the batch is cheap (`cat`s plus `ps`/`df`), so a slow
 /// answer means a wedged connection rather than a busy server.

@@ -20,6 +20,8 @@ export type TunnelEntry = {
   portForwardId: string;
   hostId: string;
   status: TunnelStatus;
+  /** Device-side port; only set for local/dynamic forwards. */
+  localPort?: number | null;
   errorMessage?: string;
 };
 
@@ -47,7 +49,7 @@ export const useTunnelStore = create<TunnelState>((set) => ({
       startErrors: omit(state.startErrors, portForward.id),
     }));
     try {
-      const { tunnelId } = await startTunnel(portForward.id, (exit) => {
+      const { tunnelId, localPort } = await startTunnel(portForward.id, (exit) => {
         set((state) => {
           const entry = state.tunnels[tunnelId];
           if (!entry) return {};
@@ -74,6 +76,7 @@ export const useTunnelStore = create<TunnelState>((set) => ({
             portForwardId: portForward.id,
             hostId: portForward.hostId,
             status: "running",
+            localPort,
           },
         },
       }));
@@ -104,6 +107,7 @@ export const useTunnelStore = create<TunnelState>((set) => ({
           portForwardId: info.portForwardId,
           hostId: info.hostId,
           status: info.status === "running" ? "running" : "stopped",
+          localPort: info.localPort,
         };
       }
       set({ tunnels });

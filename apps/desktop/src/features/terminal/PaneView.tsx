@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, KeyRound, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, Globe, KeyRound, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
 import { attachFileToSession, canAttachFile } from "./attachFile";
 import { useSessionStore } from "../../stores/sessionStore";
@@ -56,6 +56,7 @@ export function PaneView({
   const setTransportNotice = useSessionStore((s) => s.setTransportNotice);
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   const openCollab = useUiStore((s) => s.openCollab);
+  const openWebPreview = useUiStore((s) => s.openWebPreview);
   const startLog = useSessionLogStore((s) => s.start);
   const stopLog = useSessionLogStore((s) => s.stop);
   const logEntry = useSessionLogStore((s) => s.logs[session.id]);
@@ -236,6 +237,21 @@ export function PaneView({
       onSelect: () => {
         onFocus();
         void attachFileToSession(session);
+      },
+    });
+  }
+
+  // Discover HTTP servers on the remote host and preview one through a
+  // temporary loopback forward. Per-host, so it needs an SSH session's hostId.
+  if (isSsh && session.hostId) {
+    const previewHostId = session.hostId;
+    paneActions.push({
+      label: "Preview web server…",
+      icon: <Globe size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openWebPreview(previewHostId, session.title);
       },
     });
   }

@@ -54,12 +54,11 @@ pub async fn tunnel_start(
         .ok_or_else(|| LumaError::InvalidInput("unknown port forward".into()))?;
     let config =
         ssh::tunnel_connection_config(&state.pool, &keystore_state, &port_forward.host_id).await?;
-    let tunnel_id = tunnels
+    tunnels
         .start(config, port_forward, move |exit| {
             let _ = on_exit.send(exit);
         })
-        .await?;
-    Ok(TunnelStartResponse { tunnel_id })
+        .await
 }
 
 #[tauri::command]

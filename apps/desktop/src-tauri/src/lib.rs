@@ -19,6 +19,7 @@ mod storage;
 mod sync;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod terminal;
+mod web_preview;
 
 use std::path::PathBuf;
 
@@ -38,6 +39,7 @@ use ssh::EmbeddedSshManager;
 use ssh::TunnelManager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use terminal::PtyManager;
+use web_preview::WebPreviewManager;
 
 pub struct AppState {
     pub pool: SqlitePool,
@@ -120,6 +122,9 @@ pub fn run() {
         app.manage(TunnelManager::default());
         app.manage(SftpManager::default());
         app.manage(ServerStatsManager::default());
+        // Preview tunnels live in TunnelManager; this only tracks the
+        // host/port → tunnel mapping so re-opening a preview reuses it.
+        app.manage(WebPreviewManager::default());
         app.manage(SnippetRunManager::default());
 
         // Lets native menu Swift callbacks emit into the frontend.
@@ -225,6 +230,10 @@ pub fn run() {
         commands::terminal_attach_upload,
         commands::server_stats_fetch,
         commands::server_stats_close,
+        commands::web_preview_discover,
+        commands::web_preview_open,
+        commands::web_preview_close,
+        commands::web_previews_list,
         commands::pty_spawn,
         commands::pty_write,
         commands::pty_resize,
@@ -354,6 +363,10 @@ pub fn run() {
         commands::terminal_attach_upload,
         commands::server_stats_fetch,
         commands::server_stats_close,
+        commands::web_preview_discover,
+        commands::web_preview_open,
+        commands::web_preview_close,
+        commands::web_previews_list,
         commands::keystore_status,
         commands::keystore_setup,
         commands::keystore_unlock,

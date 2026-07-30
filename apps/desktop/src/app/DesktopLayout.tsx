@@ -12,6 +12,7 @@ import { CommandPalette } from "../features/palette/CommandPalette";
 import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
 import { CollaborationDialog } from "../features/collaboration/CollaborationDialog";
 import { CollaborationViewer } from "../features/collaboration/CollaborationViewer";
+import { WebPreviewDialog } from "../features/webPreview/WebPreviewDialog";
 
 /*
  * Desktop application shell — the original Luma layout, unchanged. Heavier,
@@ -65,6 +66,9 @@ export function DesktopLayout() {
   const navOpen = useUiStore((s) => s.navOpen);
   const collabOpen = useUiStore((s) => s.collabOpen);
   const closeCollab = useUiStore((s) => s.closeCollab);
+  const webPreviewHostId = useUiStore((s) => s.webPreviewHostId);
+  const webPreviewHostLabel = useUiStore((s) => s.webPreviewHostLabel);
+  const closeWebPreview = useUiStore((s) => s.closeWebPreview);
 
   return (
     <div className="flex h-full flex-col">
@@ -123,6 +127,12 @@ export function DesktopLayout() {
       <CommandPalette />
       <CollaborationDialog open={collabOpen} onOpenChange={(o) => !o && closeCollab()} />
       <SerialConnectDialog />
+      <WebPreviewDialog
+        open={webPreviewHostId !== null}
+        onOpenChange={(o) => !o && closeWebPreview()}
+        hostId={webPreviewHostId}
+        hostLabel={webPreviewHostLabel ?? undefined}
+      />
       <SnippetRunner />
       <MultiHostRunDialog />
       {/* Always mounted but idle until triggered; a null fallback keeps them

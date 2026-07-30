@@ -6,6 +6,7 @@ import { useUiStore } from "../stores/uiStore";
 import { setAutoReconnectEnabled, useSessionStore } from "../stores/sessionStore";
 import { useTemplateStore } from "../stores/templateStore";
 import { useTunnelStore } from "../stores/tunnelStore";
+import { useWebPreviewStore } from "../stores/webPreviewStore";
 import { useSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { parseShellRef } from "../lib/terminal";
@@ -184,6 +185,9 @@ export function useAppInit(): void {
   useEffect(() => {
     if (!portForwardingAvailable) return;
     void useTunnelStore.getState().hydrate();
+    // Preview tunnels are ordinary tunnels behind the same capability, so the
+    // preview dialog can list ones opened before this reload.
+    void useWebPreviewStore.getState().hydrate();
   }, [portForwardingAvailable]);
 
   // Load saved workspace templates once.
