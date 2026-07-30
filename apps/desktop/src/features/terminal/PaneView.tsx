@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, KeyRound, LoaderCircle, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, KeyRound, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
+import { attachFileToSession, canAttachFile } from "./attachFile";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useSessionLogStore } from "../../stores/sessionLogStore";
@@ -224,6 +225,20 @@ export function PaneView({
       },
     },
   ];
+
+  // Attach a local file: uploaded to the SSH host over SFTP, escaped remote
+  // path inserted at the prompt. Only offered for SSH-backed sessions.
+  if (canAttachFile(session)) {
+    paneActions.push({
+      label: "Attach file…",
+      icon: <Paperclip size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        void attachFileToSession(session);
+      },
+    });
+  }
 
   // Shell integration (OSC 133 / OSC 7). Only offered when the shell has emitted
   // the relevant sequences, so plain shells never see dead menu entries.

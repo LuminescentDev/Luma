@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -7,6 +8,7 @@ use crate::sftp::{
     self, DirectoryListing, SftpConnectResponse, SftpManager, SftpSessionInfo, TransferProgress,
     TransferStartResponse,
 };
+use crate::ssh;
 use crate::AppState;
 
 #[tauri::command]
@@ -137,6 +139,42 @@ pub async fn sftp_download(
 #[tauri::command]
 pub async fn sftp_cancel(manager: State<'_, SftpManager>, transfer_id: String) -> Result<()> {
     manager.cancel_transfer(&transfer_id)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalAttachUploadResponse {
+    pub remote_path: String,
+}
+
+/// Upload a local file to a private staging directory on an SSH host so the
+/// terminal UI can insert the returned remote path at the prompt. Opens a
+/// dedicated SFTP session for the transfer and always closes it afterwards.
+#[tauri::command]
+pub async fn terminal_attach_upload(
+    state: State<'_, AppState>,
+    keystore_state: State<'_, KeystoreState>,
+    manager: State<'_, SftpManager>,
+    host_id: String,
+    local_path: String,
+    file_name: Option<String>,
+) -> Result<TerminalAttachUploadResponse> {
+    ssh::validate_host_id(&host_id)?;
+    let session = manager
+        .connect(&state.pool, &keystore_state, &host_id)
+        .await?;
+    let upload_result = sftp::upload_attachment(
+        &manager,
+        &session.sftp_session_id,
+        &session.initial_path,
+        &local_path,
+        file_name.as_deref(),
+    )
+    .await;
+    if let Err(error) = manager.disconnect(&session.sftp_session_id).await {
+        tracing::warn!(%error, "failed to close SFTP session after attachment upload");
+    }
+    upload_result.map(|remote_path| TerminalAttachUploadResponse { remote_path })
 }
 
 #[tauri::command]

@@ -6,12 +6,14 @@ import {
   ArrowUp,
   ClipboardCopy,
   ClipboardPaste,
+  Paperclip,
   Plug,
   RotateCw,
   Search,
   TextSelect,
 } from "lucide-react";
 import { terminalManager } from "../terminal/terminalManager";
+import { attachFileToSession, canAttachFile } from "../terminal/attachFile";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { cn } from "../../lib/utils";
@@ -54,6 +56,9 @@ const KEYS: KeyDef[] = [
 export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
   const restartSession = useSessionStore((s) => s.restartSession);
   const closeSession = useSessionStore((s) => s.closeSession);
+  const session = useSessionStore((s) =>
+    s.sessions.find((candidate) => candidate.id === sessionId),
+  );
   const setSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   // Which sticky modifier is visually armed. Cleared when consumed (via the
   // manager callback) or toggled off.
@@ -119,6 +124,14 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
         <ActionKey aria="Select all" onPress={() => terminalManager.selectAll(sessionId)}>
           <TextSelect size={16} />
         </ActionKey>
+        {canAttachFile(session) && session && (
+          <ActionKey
+            aria="Attach file"
+            onPress={() => void attachFileToSession(session)}
+          >
+            <Paperclip size={16} />
+          </ActionKey>
+        )}
         <ActionKey aria="Search terminal" onPress={() => setSearchOpen(true)}>
           <Search size={16} />
         </ActionKey>

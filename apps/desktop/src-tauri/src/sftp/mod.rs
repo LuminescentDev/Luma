@@ -1,3 +1,4 @@
+mod attach;
 mod local;
 mod transfer;
 
@@ -16,6 +17,7 @@ use crate::errors::{LumaError, Result};
 use crate::keystore::KeystoreState;
 use crate::ssh::{authenticated_handle, connection_config, AuthenticatedConnection};
 
+pub use attach::upload_attachment;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use local::{local_delete, local_list, local_mkdir, local_rename};
 pub use transfer::{
@@ -640,7 +642,7 @@ fn remote_entry(parent: &str, name: String, metadata: RemoteMetadata) -> Result<
     })
 }
 
-fn join_remote_path(parent: &str, name: &str) -> String {
+pub(super) fn join_remote_path(parent: &str, name: &str) -> String {
     if parent == "/" {
         format!("/{name}")
     } else if parent.ends_with('/') {
