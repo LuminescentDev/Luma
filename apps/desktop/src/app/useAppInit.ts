@@ -144,6 +144,11 @@ export function useAppInit(): void {
       defaultShell: parseShellRef(settings[SETTING_KEYS.defaultShell]),
     });
     setAutoReconnectEnabled(settings[SETTING_KEYS.autoReconnect] !== false);
+    // Off unless explicitly enabled: while it is off the manager neither tracks
+    // the input line nor records any command history.
+    terminalManager.setAutocompleteEnabled(
+      settings[SETTING_KEYS.terminalAutocomplete] === true,
+    );
   }, [settings]);
 
   // Poll connection health (latency) for connected SSH sessions.

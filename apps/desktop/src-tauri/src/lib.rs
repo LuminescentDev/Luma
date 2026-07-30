@@ -13,6 +13,7 @@ mod server_stats;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod session_logging;
 mod sftp;
+mod shell_completions;
 mod snippet_runs;
 mod ssh;
 mod storage;
@@ -34,6 +35,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use serial::SerialManager;
 use server_stats::ServerStatsManager;
 use sftp::SftpManager;
+use shell_completions::ShellCompletionsManager;
 use snippet_runs::SnippetRunManager;
 use ssh::EmbeddedSshManager;
 use ssh::TunnelManager;
@@ -122,6 +124,9 @@ pub fn run() {
         app.manage(TunnelManager::default());
         app.manage(SftpManager::default());
         app.manage(ServerStatsManager::default());
+        // Completion probes reuse one cached SSH session per host, like the
+        // server dashboard; the caches are memory-only.
+        app.manage(ShellCompletionsManager::default());
         // Preview tunnels live in TunnelManager; this only tracks the
         // host/port → tunnel mapping so re-opening a preview reuses it.
         app.manage(WebPreviewManager::default());
@@ -230,6 +235,10 @@ pub fn run() {
         commands::terminal_attach_upload,
         commands::server_stats_fetch,
         commands::server_stats_close,
+        commands::command_history_record,
+        commands::command_history_query,
+        commands::shell_completions_executables,
+        commands::shell_completions_paths,
         commands::web_preview_discover,
         commands::web_preview_open,
         commands::web_preview_close,
@@ -363,6 +372,10 @@ pub fn run() {
         commands::terminal_attach_upload,
         commands::server_stats_fetch,
         commands::server_stats_close,
+        commands::command_history_record,
+        commands::command_history_query,
+        commands::shell_completions_executables,
+        commands::shell_completions_paths,
         commands::web_preview_discover,
         commands::web_preview_open,
         commands::web_preview_close,
@@ -417,6 +430,7 @@ pub fn run() {
             app_handle.state::<SerialManager>().kill_all();
             app_handle.state::<SftpManager>().kill_all();
             app_handle.state::<ServerStatsManager>().kill_all();
+            app_handle.state::<ShellCompletionsManager>().kill_all();
             app_handle.state::<SnippetRunManager>().kill_all();
             app_handle.state::<EmbeddedSshManager>().kill_all();
             app_handle.state::<TunnelManager>().kill_all();

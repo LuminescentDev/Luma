@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, Globe, KeyRound, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
+import { AutocompleteOverlay } from "./AutocompleteOverlay";
 import { attachFileToSession, canAttachFile } from "./attachFile";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
@@ -355,6 +356,11 @@ export function PaneView({
       {/* The xterm host keeps its own padding and stays the terminal's direct
           parent: dropOverflowingRow measures this element's content box. */}
       <div ref={hostRef} className="min-h-0 w-full flex-1 pl-2 pt-1.5" />
+
+      {/* Opt-in completion overlay. Absolutely positioned over the pane so it
+          never affects the terminal's layout or grid size, and self-hiding when
+          the feature is off or the input line is not known. */}
+      <AutocompleteOverlay sessionId={session.id} />
 
       {/* Broadcast indicator: a distinct accent-tinted inset border plus a
           corner badge on every pane currently receiving fanned-out input.

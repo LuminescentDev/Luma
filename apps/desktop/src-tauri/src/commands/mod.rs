@@ -22,6 +22,7 @@ use crate::terminal::{PtyManager, ResolvedShell};
 use crate::AppState;
 
 mod collaboration;
+mod completions;
 mod hosts;
 mod import;
 mod keystore;
@@ -45,6 +46,7 @@ mod vaults;
 mod web_preview;
 
 pub use collaboration::*;
+pub use completions::*;
 pub use hosts::*;
 pub use import::*;
 pub use keystore::*;

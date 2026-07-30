@@ -42,6 +42,14 @@ import {
   writeSerial,
   type SerialConfig,
 } from "../../lib/serial";
+import { recordCommandHistory } from "../../lib/completions";
+import {
+  applyInput,
+  promptsForSecret,
+  EMPTY_INPUT_BUFFER,
+  type InputBufferState,
+} from "./inputBuffer";
+import { completionSuffix, MAX_SUGGESTIONS, type Suggestion } from "./completions";
 
 /** What a managed session should launch. Local shells resolve a ShellRef;
  * SSH and Mosh sessions send only a hostId (the backend owns the connection
@@ -219,6 +227,246 @@ export type CommandMarkInfo = {
   failed: boolean;
 };
 
+/*
+ * Local terminal autocomplete (opt-in — see SETTING_KEYS.terminalAutocomplete).
+ *
+ * The manager tracks the CURRENT INPUT LINE per session by folding the bytes
+ * the user types through ./inputBuffer, entirely outside React. That buffer is a
+ * short string of metadata, not terminal output: no terminal bytes cross into
+ * React here either. The overlay component subscribes for `{ buffer,
+ * suggestions, selectedIndex }`, computes suggestions from local sources, and
+ * pushes the ranked list back in.
+ *
+ * Ownership split: the manager owns the buffer, the open/selected state and
+ * every key that must not reach the shell; React owns only rendering and the
+ * asynchronous fetching.
+ */
+
+/** Where a session's typed input is currently going, as far as OSC 133 shell
+ * integration can tell. "output" means a command is running, so keystrokes
+ * belong to that program (a pager, an editor, a password prompt) rather than to
+ * a prompt line. */
+type PromptPhase = "unknown" | "prompt" | "output";
+
+type AutocompleteSession = {
+  input: InputBufferState;
+  suggestions: Suggestion[];
+  selectedIndex: number;
+  /** Set by Escape; suppresses the overlay until the line is next emptied. */
+  dismissed: boolean;
+  phase: PromptPhase;
+  /** True when the command just submitted is one that typically asks for a
+   * credential, so the NEXT submitted line must not be recorded. */
+  awaitingSecretPrompt: boolean;
+  /** Bumped on every buffer change so the overlay knows to recompute. */
+  revision: number;
+};
+
+/** The lightweight snapshot handed to the overlay component. */
+export type AutocompleteView = {
+  /** The feature's global setting. False keeps the overlay component inert, so
+   * a disabled feature costs nothing at all. */
+  enabled: boolean;
+  buffer: string;
+  desynced: boolean;
+  /** Whether the overlay should be on screen (and therefore whether it owns
+   * Up/Down/Tab/Escape). */
+  open: boolean;
+  suggestions: Suggestion[];
+  selectedIndex: number;
+  revision: number;
+};
+
+/** What the source layer needs to fetch suggestions for a session. */
+export type AutocompleteContext = {
+  scopeKey: string;
+  hostId: string | null;
+  cwd: string | null;
+};
+
+/** Off by default; flipped from the persisted setting via
+ * terminalManager.setAutocompleteEnabled. */
+let autocompleteEnabled = false;
+const autocompleteSubscribers = new Map<string, Set<(view: AutocompleteView) => void>>();
+
+function newAutocompleteSession(): AutocompleteSession {
+  return {
+    input: EMPTY_INPUT_BUFFER,
+    suggestions: [],
+    selectedIndex: 0,
+    dismissed: false,
+    phase: "unknown",
+    awaitingSecretPrompt: false,
+    revision: 0,
+  };
+}
+
+/** The history partition for a session. Serial consoles return null: they are
+ * not a shell this feature models, so nothing is recorded or suggested. */
+function autocompleteScope(descriptor: SpawnDescriptor): string | null {
+  if (descriptor.kind === "ssh" || descriptor.kind === "mosh") {
+    return `host:${descriptor.hostId}`;
+  }
+  if (descriptor.kind === "local") {
+    const ref = descriptor.ref;
+    return ref ? `local:${ref.kind}:${ref.id}` : "local:default";
+  }
+  return null;
+}
+
+/** The host to run remote completion probes against, or null when the session
+ * has no SSH host (local shells and serial consoles complete from history and
+ * snippets only). */
+function autocompleteHostId(descriptor: SpawnDescriptor): string | null {
+  return descriptor.kind === "ssh" || descriptor.kind === "mosh" ? descriptor.hostId : null;
+}
+
+function isAutocompleteOpen(session: ManagedSession): boolean {
+  const state = session.autocomplete;
+  return (
+    autocompleteEnabled &&
+    !state.dismissed &&
+    !state.input.desynced &&
+    state.phase !== "output" &&
+    state.suggestions.length > 0
+  );
+}
+
+function autocompleteView(session: ManagedSession): AutocompleteView {
+  const state = session.autocomplete;
+  const open = isAutocompleteOpen(session);
+  return {
+    enabled: autocompleteEnabled,
+    buffer: state.input.text,
+    desynced: state.input.desynced || state.phase === "output",
+    open,
+    // Never publish rows while closed, so a click cannot land on a stale list.
+    suggestions: open ? state.suggestions : [],
+    selectedIndex: state.selectedIndex,
+    revision: state.revision,
+  };
+}
+
+function notifyAutocomplete(session: ManagedSession): void {
+  const subscribers = autocompleteSubscribers.get(session.id);
+  if (!subscribers?.size) return;
+  const view = autocompleteView(session);
+  for (const subscriber of subscribers) subscriber(view);
+}
+
+/** Begin a fresh, trusted input line (prompt mark, restart, or teardown). */
+function resetAutocompleteLine(session: ManagedSession): void {
+  const state = session.autocomplete;
+  state.input = EMPTY_INPUT_BUFFER;
+  state.suggestions = [];
+  state.selectedIndex = 0;
+  state.dismissed = false;
+  state.revision += 1;
+  notifyAutocomplete(session);
+}
+
+/** Declare the line unknown. Cheap and always safe — the overlay hides until
+ * the next reset rather than risking a wrong completion. */
+function desyncAutocomplete(session: ManagedSession): void {
+  const state = session.autocomplete;
+  if (state.input.desynced && state.suggestions.length === 0) return;
+  state.input = { text: "", desynced: true };
+  state.suggestions = [];
+  state.selectedIndex = 0;
+  state.revision += 1;
+  notifyAutocomplete(session);
+}
+
+/**
+ * Persist one submitted command line, unless anything suggests it might be a
+ * secret rather than a command.
+ *
+ * Three independent gates, because we reconstruct the line from keystrokes and
+ * therefore cannot see echo suppression: the OSC 133 phase (a line typed while
+ * a command is running is not history), the credential-prompt heuristic (the
+ * line after `sudo` may be its password), and the backend's own filter for
+ * leading spaces and secret-looking text.
+ */
+function recordSubmittedCommand(session: ManagedSession, command: string): void {
+  const state = session.autocomplete;
+  const followsCredentialPrompt = state.awaitingSecretPrompt;
+  state.awaitingSecretPrompt = promptsForSecret(command);
+  if (state.phase === "output" || followsCredentialPrompt) return;
+  const scope = autocompleteScope(session.descriptor);
+  if (!scope) return;
+  // Commands are user data: recorded only while the feature is on, and never
+  // written to the log.
+  void recordCommandHistory(scope, command).catch(() => {});
+}
+
+/**
+ * Fold a chunk of typed bytes into a session's input buffer.
+ *
+ * Called from every path that delivers user keystrokes to a backend session,
+ * including broadcast fan-out (peers receive the identical bytes, so their
+ * reconstruction stays identical too). Deliberately NOT called for SSH
+ * credential replies or injected collaboration input.
+ */
+function observeAutocompleteInput(session: ManagedSession, data: string): void {
+  if (!autocompleteEnabled || session.display || !data) return;
+  const state = session.autocomplete;
+  const before = state.input;
+  const { state: next, submitted } = applyInput(before, data);
+  state.input = next;
+  for (const command of submitted) recordSubmittedCommand(session, command);
+
+  const changed =
+    submitted.length > 0 ||
+    next.text !== before.text ||
+    next.desynced !== before.desynced;
+  if (!changed) return;
+  // Any change invalidates the current list; clearing it here means a stale row
+  // can never be accepted against a line it no longer matches.
+  state.suggestions = [];
+  state.selectedIndex = 0;
+  // An emptied line (Enter, Ctrl+C, Ctrl+U, or backspacing it away) lifts an
+  // earlier Escape, so dismissing is scoped to the line it was aimed at.
+  if (next.text === "" && !next.desynced) state.dismissed = false;
+  state.revision += 1;
+  notifyAutocomplete(session);
+}
+
+function moveAutocompleteSelection(session: ManagedSession, delta: number): void {
+  const state = session.autocomplete;
+  const count = state.suggestions.length;
+  if (count === 0) return;
+  state.selectedIndex = (state.selectedIndex + delta + count) % count;
+  notifyAutocomplete(session);
+}
+
+/**
+ * Accept the selected row by writing ONLY the text missing from the current
+ * line — never a rewrite, never a newline. Returns false (and writes nothing)
+ * whenever the completion is not an exact continuation of what is typed, so the
+ * caller can pass the key through to the shell untouched.
+ */
+function acceptAutocomplete(session: ManagedSession): boolean {
+  if (!isAutocompleteOpen(session)) return false;
+  // A one-shot mobile modifier would transform the suffix's first character.
+  if (session.pendingModifier) return false;
+  const state = session.autocomplete;
+  const suggestion = state.suggestions[state.selectedIndex];
+  if (!suggestion) return false;
+  const suffix = completionSuffix(state.input.text, suggestion);
+  if (suffix === null) return false;
+  // Through the normal typed-input path: the shell echoes it exactly as if it
+  // had been typed, and the reconstruction above stays in sync.
+  routeUserInput(session, suffix);
+  return true;
+}
+
+function dismissAutocompleteSession(session: ManagedSession): void {
+  const state = session.autocomplete;
+  state.dismissed = true;
+  state.selectedIndex = 0;
+  notifyAutocomplete(session);
+}
+
 // Bound the retained marks so a long-lived session can't grow unbounded. xterm
 // disposes markers when their line is trimmed from scrollback; we also drop the
 // oldest here once the cap is exceeded.
@@ -348,6 +596,10 @@ type ManagedSession = {
   marks: CommandMark[];
   /** Last working directory reported via OSC 7 / OSC 1337, or null. */
   lastReportedCwd: string | null;
+  /** Reconstructed input line + overlay state for the autocomplete feature.
+   * Metadata only (a short string and a handful of suggestion strings); the
+   * byte stream never enters it. */
+  autocomplete: AutocompleteSession;
   /** A one-shot sticky modifier armed from the mobile accessory bar (Ctrl/Alt).
    * The NEXT user-typed chunk is transformed into the matching control/meta
    * sequence and the modifier releases. Null when no modifier is armed. Metadata
@@ -563,13 +815,20 @@ function routeUserInput(session: ManagedSession, data: string): void {
     session.onModifierConsumed = null;
     notify?.();
   }
+  // Track the input line for the autocomplete overlay before the bytes leave.
+  // This reads the same chunk the backend receives; it does not intercept,
+  // rewrite or delay it.
+  observeAutocompleteInput(session, data);
   enqueueInput(session, data);
   const peers = session.broadcastPeers;
   if (!peers) return;
   for (const peerId of peers) {
     if (peerId === session.id) continue;
     const peer = sessions.get(peerId);
-    if (peer) enqueueInput(peer, data);
+    if (!peer) continue;
+    // Peers receive identical bytes, so their reconstruction stays identical.
+    observeAutocompleteInput(peer, data);
+    enqueueInput(peer, data);
   }
 }
 
@@ -606,6 +865,36 @@ function installKeyHandlers(session: ManagedSession): void {
   term.attachCustomKeyEventHandler((event) => {
     if (event.type !== "keydown") return true;
     const mod = isMac() ? event.metaKey : event.ctrlKey;
+
+    // Autocomplete overlay navigation. These keys are consumed ONLY while the
+    // overlay is genuinely open with rows to choose from; the moment it closes
+    // (Escape, a keystroke that empties the list, the setting turned off) they
+    // go straight back to the shell with their normal meaning. Tab in
+    // particular is only swallowed when a row is actually accepted, so shell
+    // completion keeps working everywhere else.
+    if (
+      isAutocompleteOpen(session) &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey
+    ) {
+      if (event.key === "ArrowDown") {
+        moveAutocompleteSelection(session, 1);
+        return false;
+      }
+      if (event.key === "ArrowUp") {
+        moveAutocompleteSelection(session, -1);
+        return false;
+      }
+      if (event.key === "Escape") {
+        // Closes the overlay and sends nothing to the shell.
+        dismissAutocompleteSession(session);
+        return false;
+      }
+      if (event.key === "Tab" && !event.shiftKey && acceptAutocomplete(session)) {
+        return false;
+      }
+    }
 
     // Copy on plain Ctrl+C only when text is selected (Windows Terminal
     // behavior); otherwise let it through as SIGINT.
@@ -677,6 +966,21 @@ function handleOsc133(session: ManagedSession, data: string): void {
   const { term } = session;
   const semi = data.indexOf(";");
   const kind = (semi === -1 ? data : data.slice(0, semi)).trim();
+
+  // Shell integration is the only trustworthy signal for WHERE typed input is
+  // going, so the autocomplete input tracker is driven off it: a prompt mark
+  // starts a fresh, trusted line, and an output mark means keystrokes now
+  // belong to a running program — a pager, an editor, or a password prompt —
+  // and must neither be completed nor recorded.
+  if (kind === "A" || kind === "B") {
+    session.autocomplete.phase = "prompt";
+    session.autocomplete.awaitingSecretPrompt = false;
+    resetAutocompleteLine(session);
+  } else if (kind === "C") {
+    session.autocomplete.phase = "output";
+    desyncAutocomplete(session);
+  }
+
   switch (kind) {
     case "A": {
       // Prompt start: begin a new command mark at the current line.
@@ -1173,6 +1477,110 @@ export const terminalManager = {
       }));
   },
 
+  /**
+   * Turn the autocomplete overlay on or off globally (persisted setting; off by
+   * default). Turning it off immediately hides every overlay and stops the
+   * manager observing input, so no command is recorded while it is disabled.
+   */
+  setAutocompleteEnabled(enabled: boolean): void {
+    if (autocompleteEnabled === enabled) return;
+    autocompleteEnabled = enabled;
+    for (const session of sessions.values()) {
+      session.autocomplete = newAutocompleteSession();
+      notifyAutocomplete(session);
+    }
+  },
+
+  /** Whether the autocomplete overlay is enabled. */
+  autocompleteEnabled(): boolean {
+    return autocompleteEnabled;
+  },
+
+  /** What the suggestion sources need in order to complete for this session, or
+   * null when the session cannot be completed for (unknown, display-only, or a
+   * serial console). */
+  autocompleteContext(sessionId: string): AutocompleteContext | null {
+    const session = sessions.get(sessionId);
+    if (!session || session.display) return null;
+    const scopeKey = autocompleteScope(session.descriptor);
+    if (!scopeKey) return null;
+    return {
+      scopeKey,
+      hostId: autocompleteHostId(session.descriptor),
+      cwd: session.lastReportedCwd,
+    };
+  },
+
+  /** Observe a session's input buffer and overlay state. The payload is small
+   * metadata (the typed line and the ranked suggestion strings) — terminal
+   * output never flows through it. */
+  subscribeAutocomplete(
+    sessionId: string,
+    subscriber: (view: AutocompleteView) => void,
+  ): () => void {
+    const subscribers = autocompleteSubscribers.get(sessionId) ?? new Set();
+    subscribers.add(subscriber);
+    autocompleteSubscribers.set(sessionId, subscribers);
+    return () => {
+      subscribers.delete(subscriber);
+      if (subscribers.size === 0) autocompleteSubscribers.delete(sessionId);
+    };
+  },
+
+  /** Current overlay snapshot for a session. */
+  autocompleteState(sessionId: string): AutocompleteView {
+    const session = sessions.get(sessionId);
+    if (!session) {
+      return {
+        enabled: autocompleteEnabled,
+        buffer: "",
+        desynced: false,
+        open: false,
+        suggestions: [],
+        selectedIndex: 0,
+        revision: 0,
+      };
+    }
+    return autocompleteView(session);
+  },
+
+  /**
+   * Publish a freshly computed suggestion list. `buffer` is the line the list
+   * was computed FOR: a result that raced a keystroke is dropped, because a
+   * list built for a different line could complete into the wrong text.
+   */
+  setAutocompleteSuggestions(
+    sessionId: string,
+    buffer: string,
+    suggestions: Suggestion[],
+  ): void {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    const state = session.autocomplete;
+    if (state.input.desynced || state.input.text !== buffer) return;
+    state.suggestions = suggestions.slice(0, MAX_SUGGESTIONS);
+    state.selectedIndex = 0;
+    notifyAutocomplete(session);
+  },
+
+  /** Accept a suggestion row by index (an overlay click), writing only the
+   * missing suffix. Returns whether anything was written. */
+  acceptAutocompleteSuggestion(sessionId: string, index: number): boolean {
+    const session = sessions.get(sessionId);
+    if (!session || !isAutocompleteOpen(session)) return false;
+    if (index < 0 || index >= session.autocomplete.suggestions.length) return false;
+    session.autocomplete.selectedIndex = index;
+    const accepted = acceptAutocomplete(session);
+    session.term.focus();
+    return accepted;
+  },
+
+  /** Close the overlay for the current line (Escape, or clicking away). */
+  dismissAutocomplete(sessionId: string): void {
+    const session = sessions.get(sessionId);
+    if (session) dismissAutocompleteSession(session);
+  },
+
   /** Whether this session has any live prompt marks (drives enabled state of the
    * prompt-jump / copy-output affordances). */
   hasCommandMarks(sessionId: string): boolean {
@@ -1276,6 +1684,7 @@ export const terminalManager = {
       resizeTimer: null,
       marks: [],
       lastReportedCwd: null,
+      autocomplete: newAutocompleteSession(),
       pendingModifier: null,
       onModifierConsumed: null,
       outputTap: null,
@@ -1459,6 +1868,7 @@ export const terminalManager = {
   sendInput(sessionId: string, data: string): void {
     const session = sessions.get(sessionId);
     if (!session) return;
+    observeAutocompleteInput(session, data);
     enqueueInput(session, data);
     session.term.focus();
   },
@@ -1499,6 +1909,7 @@ export const terminalManager = {
       session.onModifierConsumed = null;
       notify?.();
     }
+    observeAutocompleteInput(session, out);
     enqueueInput(session, out);
     session.term.focus();
   },
@@ -1511,6 +1922,10 @@ export const terminalManager = {
     if (!session || session.descriptor.kind !== "ssh") return;
     session.lastPromptSignature = "";
     session.sshTranscript = "";
+    // Deliberately NOT observed: this is a password or key passphrase, and the
+    // input tracker would see it as a line being submitted. Reset instead, so
+    // nothing of it can reach the history table.
+    resetAutocompleteLine(session);
     enqueueInput(session, `${value}\r`);
   },
 
@@ -1540,6 +1955,10 @@ export const terminalManager = {
     session.queuedInput.length = 0;
     session.pendingInput.length = 0;
     session.lastReportedCwd = null;
+    // A new backend means a new shell: nothing about the old input line, or the
+    // shell-integration phase we inferred for it, still holds.
+    session.autocomplete = newAutocompleteSession();
+    notifyAutocomplete(session);
     if (options.preserveBuffer) {
       // Keep scrollback + marks; write a dim separator so the reconnect reads as
       // a continuation of the same pane rather than a wiped terminal.
@@ -1645,6 +2064,9 @@ export const terminalManager = {
   injectInput(sessionId: string, data: string): void {
     const session = sessions.get(sessionId);
     if (!session || session.display) return;
+    // A remote controller edits the same line from somewhere we cannot model
+    // (their cursor, their history recall), so stop trusting the buffer.
+    desyncAutocomplete(session);
     enqueueInput(session, data);
   },
 
@@ -1716,6 +2138,7 @@ export const terminalManager = {
       resizeTimer: null,
       marks: [],
       lastReportedCwd: null,
+      autocomplete: newAutocompleteSession(),
       pendingModifier: null,
       onModifierConsumed: null,
       outputTap: null,
@@ -1791,6 +2214,7 @@ export const terminalManager = {
     session.term.dispose();
     sessions.delete(sessionId);
     outputSubscribers.delete(sessionId);
+    autocompleteSubscribers.delete(sessionId);
   },
 };
 

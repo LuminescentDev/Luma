@@ -176,6 +176,10 @@ export const SETTING_KEYS = {
   terminalCustomThemes: "terminal.customThemes",
   /** Terminal font family (CSS font stack); empty falls back to the default. */
   terminalFontFamily: "terminal.fontFamily",
+  /** Device-local toggle: the local-data completion overlay for the terminal
+   * prompt. Default OFF — enabling it also starts recording command history,
+   * which is why it is opt-in. Never synced. */
+  terminalAutocomplete: "terminal.autocomplete",
   /** iOS-only toggle: mirror open connections and transfers to a Live Activity on
    * the lock screen and Dynamic Island. Default on; ignored elsewhere. */
   liveActivity: "mobile.liveActivity",

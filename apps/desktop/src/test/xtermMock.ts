@@ -126,6 +126,8 @@ export class Terminal {
   element: HTMLElement | undefined = undefined;
   options: Record<string, unknown>;
   private dataHandlers: Array<(data: string) => void> = [];
+  /** The manager's custom key handler, replayed by emitKey(). */
+  private keyHandler: ((event: KeyboardEvent) => boolean) | undefined = undefined;
 
   /** Line the next registerMarker() lands on (tests bump this between OSCs). */
   markerLine = 0;
@@ -206,7 +208,9 @@ export class Terminal {
   }
 
   loadAddon(_addon: unknown): void {}
-  attachCustomKeyEventHandler(_handler: unknown): void {}
+  attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void {
+    this.keyHandler = handler;
+  }
   onTitleChange(_cb: (title: string) => void): { dispose(): void } {
     return { dispose() {} };
   }
@@ -261,6 +265,25 @@ export class Terminal {
   /** Test hook: fire a registered OSC handler as xterm's parser would. */
   emitOsc(ident: number, data: string): void {
     this.oscHandlers.get(ident)?.(data);
+  }
+
+  /**
+   * Test hook: run a keydown through the manager's custom key handler, exactly
+   * as xterm does before deciding whether to turn the key into input. Returns
+   * what the handler returned: true means "xterm handles it normally" (i.e. it
+   * reaches the shell), false means the manager consumed it.
+   */
+  emitKey(init: { key: string } & Partial<KeyboardEventInit>): boolean {
+    const event = {
+      type: "keydown",
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      code: init.key,
+      ...init,
+    } as unknown as KeyboardEvent;
+    return this.keyHandler?.(event) ?? true;
   }
 
   /** Test hook: seed a buffer line's text for output-extraction tests, with

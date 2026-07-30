@@ -52,6 +52,8 @@ export function SettingsScreen() {
   const scrollback = Number(settings?.[SETTING_KEYS.scrollback] ?? 5000);
   const restoreSessions = settings?.[SETTING_KEYS.restoreSessions] !== false;
   const autoReconnect = settings?.[SETTING_KEYS.autoReconnect] !== false;
+  // Default OFF: enabling it starts recording command history locally.
+  const autocomplete = settings?.[SETTING_KEYS.terminalAutocomplete] === true;
   const defaultShell = parseShellRef(settings?.[SETTING_KEYS.defaultShell]);
   const defaultShellValue = defaultShell ? serializeShellRef(defaultShell) : "";
 
@@ -115,6 +117,21 @@ export function SettingsScreen() {
                     setSetting.mutate({
                       key: SETTING_KEYS.restoreSessions,
                       value: !restoreSessions,
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label="Command autocomplete"
+                hint="Local only — history, snippets and remote paths. Nothing is sent anywhere."
+              >
+                <Toggle
+                  checked={autocomplete}
+                  label="Command autocomplete"
+                  onClick={() =>
+                    setSetting.mutate({
+                      key: SETTING_KEYS.terminalAutocomplete,
+                      value: !autocomplete,
                     })
                   }
                 />
