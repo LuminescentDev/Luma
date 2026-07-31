@@ -17,6 +17,7 @@ commands.allow = [
   "vault_remove_member",
   "hosts_list",
   "host_get",
+  "host_effective_config",
   "host_create",
   "host_update",
   "host_delete",

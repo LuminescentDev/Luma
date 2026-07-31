@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 use crate::errors::{LumaError, Result};
 use crate::keystore::{self, KeystoreState};
 use crate::platform::home_dir;
+use crate::storage::host_inheritance;
 use crate::storage::hosts::{self, Host};
 use crate::storage::identities;
 use crate::storage::key_references;
@@ -201,13 +202,20 @@ struct ResolvedConnectionRoute {
     proxy_jumps: Vec<Host>,
 }
 
+/// Every connection runs the host as its group chain resolves it, never the
+/// raw row: a field the host leaves unset may be supplied by its group.
+pub(crate) async fn effective_host(pool: &SqlitePool, host_id: &str) -> Result<Host> {
+    let host = hosts::get(pool, host_id)
+        .await?
+        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
+    Ok(host_inheritance::effective_host(pool, host).await?.host)
+}
+
 async fn resolve_connection_route(
     pool: &SqlitePool,
     host_id: &str,
 ) -> Result<ResolvedConnectionRoute> {
-    let host = hosts::get(pool, host_id)
-        .await?
-        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
+    let host = effective_host(pool, host_id).await?;
 
     let mut proxy_jumps = Vec::new();
     let mut next = host.proxy_jump_host_id.clone();
@@ -223,9 +231,12 @@ async fn resolve_connection_route(
                 "proxy jump chain may contain at most {MAX_PROXY_JUMP_DEPTH} hosts"
             )));
         }
+        // A jump host resolves through its own group chain too, so a bastion
+        // inherits the group's identity exactly as a directly opened host does.
         let proxy = hosts::get(pool, &proxy_id)
             .await?
             .ok_or_else(|| LumaError::InvalidInput("proxy jump host no longer exists".into()))?;
+        let proxy = host_inheritance::effective_host(pool, proxy).await?.host;
         next = proxy.proxy_jump_host_id.clone();
         proxy_jumps.push(proxy);
     }

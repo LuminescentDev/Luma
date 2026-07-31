@@ -95,8 +95,12 @@ pub(crate) fn default_transport() -> String {
     "ssh".into()
 }
 
-fn default_authentication_type() -> String {
-    "interactive".into()
+/// The `auth_type` a host row carries when nobody has chosen one. Inheritance
+/// reads this as "the host has not configured credentials of its own".
+pub(crate) const DEFAULT_AUTHENTICATION_TYPE: &str = "interactive";
+
+pub(crate) fn default_authentication_type() -> String {
+    DEFAULT_AUTHENTICATION_TYPE.into()
 }
 
 fn optional_trimmed(value: Option<String>) -> Option<String> {
@@ -136,7 +140,7 @@ pub(crate) fn validate_safe_hostname(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_safe_username(value: &str) -> Result<()> {
+pub(crate) fn validate_safe_username(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > MAX_USERNAME_LENGTH {
         return Err(LumaError::InvalidInput(format!(
             "username must be 1-{MAX_USERNAME_LENGTH} characters"
@@ -259,6 +263,70 @@ pub(crate) fn validate_tab_color(tab_color: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_startup_command(value: &str) -> Result<()> {
+    if value.len() > MAX_STARTUP_COMMAND_LENGTH || value.contains('\0') {
+        return Err(LumaError::InvalidInput(
+            "startup command is too large or contains a null character".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_working_directory(value: &str) -> Result<()> {
+    if value.len() > MAX_PATH_LENGTH || value.contains('\0') {
+        return Err(LumaError::InvalidInput(
+            "working directory is too large or contains a null character".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_environment(environment: &HashMap<String, String>) -> Result<()> {
+    if environment.len() > MAX_ENVIRONMENT_ENTRIES {
+        return Err(LumaError::InvalidInput(
+            "too many environment variables".into(),
+        ));
+    }
+    for (key, value) in environment {
+        if key.is_empty()
+            || key.len() > 128
+            || key.contains('=')
+            || key.contains('\0')
+            || value.contains('\0')
+            || value.len() > 16 * 1024
+        {
+            return Err(LumaError::InvalidInput(format!(
+                "invalid environment variable: {key:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Transport settings shared by hosts and by the defaults a host group can
+/// supply, so a group default can never smuggle in a value a host would have
+/// rejected.
+pub(crate) fn validate_transport_settings(
+    transport: Option<&str>,
+    mosh_server_path: Option<&str>,
+    mosh_port_range: Option<&str>,
+) -> Result<()> {
+    if let Some(transport) = transport {
+        crate::mosh::validate_transport(transport)?;
+    }
+    if let Some(path) = mosh_server_path.map(str::trim) {
+        if !path.is_empty() {
+            crate::mosh::validate_server_path(path)?;
+        }
+    }
+    if let Some(range) = mosh_port_range.map(str::trim) {
+        if !range.is_empty() {
+            crate::mosh::validate_port_range(range)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
     let name = input.name.trim();
     if name.is_empty() || name.len() > MAX_NAME_LENGTH {
@@ -294,44 +362,15 @@ pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
         ));
     }
 
-    if input
-        .startup_command
-        .as_ref()
-        .is_some_and(|value| value.len() > MAX_STARTUP_COMMAND_LENGTH || value.contains('\0'))
-    {
-        return Err(LumaError::InvalidInput(
-            "startup command is too large or contains a null character".into(),
-        ));
+    if let Some(startup_command) = input.startup_command.as_deref() {
+        validate_startup_command(startup_command)?;
     }
-    if input
-        .working_directory
-        .as_ref()
-        .is_some_and(|value| value.len() > MAX_PATH_LENGTH || value.contains('\0'))
-    {
-        return Err(LumaError::InvalidInput(
-            "working directory is too large or contains a null character".into(),
-        ));
+    if let Some(working_directory) = input.working_directory.as_deref() {
+        validate_working_directory(working_directory)?;
     }
 
     if let Some(environment) = &input.environment {
-        if environment.len() > MAX_ENVIRONMENT_ENTRIES {
-            return Err(LumaError::InvalidInput(
-                "too many environment variables".into(),
-            ));
-        }
-        for (key, value) in environment {
-            if key.is_empty()
-                || key.len() > 128
-                || key.contains('=')
-                || key.contains('\0')
-                || value.contains('\0')
-                || value.len() > 16 * 1024
-            {
-                return Err(LumaError::InvalidInput(format!(
-                    "invalid environment variable: {key:?}"
-                )));
-            }
-        }
+        validate_environment(environment)?;
     }
 
     if input.tags.len() > MAX_TAGS
@@ -348,17 +387,11 @@ pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
 
     validate_tab_color(input.tab_color.as_deref())?;
 
-    crate::mosh::validate_transport(&input.transport)?;
-    if let Some(path) = input.mosh_server_path.as_deref().map(str::trim) {
-        if !path.is_empty() {
-            crate::mosh::validate_server_path(path)?;
-        }
-    }
-    if let Some(range) = input.mosh_port_range.as_deref().map(str::trim) {
-        if !range.is_empty() {
-            crate::mosh::validate_port_range(range)?;
-        }
-    }
+    validate_transport_settings(
+        Some(&input.transport),
+        input.mosh_server_path.as_deref(),
+        input.mosh_port_range.as_deref(),
+    )?;
 
     Ok(())
 }
@@ -1244,6 +1277,7 @@ mod tests {
                 name: "Personal".into(),
                 parent_id: None,
                 sort_order: 0,
+                defaults: Default::default(),
             },
         )
         .await

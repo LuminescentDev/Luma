@@ -50,6 +50,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::errors::{LumaError, Result};
 use crate::keystore::{self, KeystoreState};
+use crate::storage::host_groups::HostGroupDefaults;
 use crate::storage::vaults::PERSONAL_VAULT_ID;
 use crate::storage::{host_groups, hosts, identities, key_references, settings, snippets, vaults};
 
@@ -194,6 +195,13 @@ pub struct SyncHostGroup {
     pub name: String,
     pub parent_id: Option<String>,
     pub sort_order: i32,
+    // Inheritable group defaults, nested rather than flattened because serde
+    // cannot flatten under `deny_unknown_fields`. Defaulted AND skipped while
+    // the group configures nothing, so bundles from vaults that never used
+    // group defaults stay byte-identical for older clients (SyncHostGroup is
+    // deny_unknown_fields on the receiving side).
+    #[serde(default, skip_serializing_if = "HostGroupDefaults::is_empty")]
+    pub defaults: HostGroupDefaults,
     pub updated_at: i64,
 }
 
@@ -1531,20 +1539,42 @@ async fn assemble_bundle_inner(
     .collect::<Result<Vec<_>>>()?;
 
     let host_groups = sqlx::query(
-        "SELECT id,name,parent_id,sort_order,updated_at FROM host_groups WHERE vault_id = ?1",
+        "SELECT id,name,parent_id,sort_order,username,identity_id,proxy_jump_host_id,
+                startup_command,working_directory,environment,tab_color,transport,
+                mosh_server_path,mosh_port_range,updated_at FROM host_groups WHERE vault_id = ?1",
     )
     .bind(vault_id)
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|row| SyncHostGroup {
-        id: row.get("id"),
-        name: row.get("name"),
-        parent_id: row.get("parent_id"),
-        sort_order: row.get("sort_order"),
-        updated_at: row.get("updated_at"),
+    .map(|row| {
+        let environment: Option<String> = row.get("environment");
+        Ok(SyncHostGroup {
+            id: row.get("id"),
+            name: row.get("name"),
+            parent_id: row.get("parent_id"),
+            sort_order: row.get("sort_order"),
+            defaults: HostGroupDefaults {
+                username: row.get("username"),
+                identity_id: row.get("identity_id"),
+                proxy_jump_host_id: row.get("proxy_jump_host_id"),
+                startup_command: row.get("startup_command"),
+                working_directory: row.get("working_directory"),
+                environment: environment
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()
+                    .map_err(|_| {
+                        LumaError::InvalidInput("stored group environment is invalid".into())
+                    })?,
+                tab_color: row.get("tab_color"),
+                transport: row.get("transport"),
+                mosh_server_path: row.get("mosh_server_path"),
+                mosh_port_range: row.get("mosh_port_range"),
+            },
+            updated_at: row.get("updated_at"),
+        })
     })
-    .collect();
+    .collect::<Result<Vec<_>>>()?;
 
     let mut key_references = Vec::new();
     let mut private_key_reference_timestamps = Vec::new();
@@ -2245,6 +2275,7 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
             "host_group" => {
                 let group: SyncHostGroup = payload_as(item)?;
                 host_groups::validate_name(&group.name)?;
+                host_groups::validate_defaults(&group.defaults)?;
                 group_ids.insert(group.id.clone());
                 group_parents.insert(group.id, group.parent_id);
             }
@@ -2739,11 +2770,29 @@ async fn apply_object(
     match item.object_type.as_str() {
         "host_group" => {
             let value: SyncHostGroup = payload_as(item)?;
+            let environment = value
+                .defaults
+                .environment
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|_| {
+                    LumaError::InvalidInput("group environment cannot be serialized".into())
+                })?;
             sqlx::query(
-                "INSERT INTO host_groups(id,name,parent_id,sort_order,vault_id,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?6)
+                "INSERT INTO host_groups(id,name,parent_id,sort_order,vault_id,created_at,updated_at,
+                 username,identity_id,proxy_jump_host_id,startup_command,working_directory,
+                 environment,tab_color,transport,mosh_server_path,mosh_port_range)
+                 VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,parent_id=excluded.parent_id,
-                 sort_order=excluded.sort_order,updated_at=excluded.updated_at
+                 sort_order=excluded.sort_order,updated_at=excluded.updated_at,
+                 username=excluded.username,identity_id=excluded.identity_id,
+                 proxy_jump_host_id=excluded.proxy_jump_host_id,
+                 startup_command=excluded.startup_command,
+                 working_directory=excluded.working_directory,environment=excluded.environment,
+                 tab_color=excluded.tab_color,transport=excluded.transport,
+                 mosh_server_path=excluded.mosh_server_path,
+                 mosh_port_range=excluded.mosh_port_range
                  WHERE host_groups.vault_id=excluded.vault_id",
             )
             .bind(value.id)
@@ -2752,6 +2801,16 @@ async fn apply_object(
             .bind(value.sort_order)
             .bind(vault_id)
             .bind(value.updated_at)
+            .bind(value.defaults.username)
+            .bind(value.defaults.identity_id)
+            .bind(value.defaults.proxy_jump_host_id)
+            .bind(value.defaults.startup_command)
+            .bind(value.defaults.working_directory)
+            .bind(environment)
+            .bind(value.defaults.tab_color)
+            .bind(value.defaults.transport)
+            .bind(value.defaults.mosh_server_path)
+            .bind(value.defaults.mosh_port_range)
             .execute(&mut **transaction)
             .await?;
         }

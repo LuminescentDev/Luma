@@ -34,9 +34,9 @@ pub async fn mosh_spawn(
             "terminal dimensions must be greater than zero".into(),
         ));
     }
-    let host = hosts::get(&state.pool, &request.host_id)
-        .await?
-        .ok_or_else(|| LumaError::InvalidInput("unknown host".into()))?;
+    // Group defaults apply here exactly as they do to the SSH path: the
+    // mosh-server path and port range may come from the host's group.
+    let host = ssh::effective_host(&state.pool, &request.host_id).await?;
 
     // Fail fast on the local prerequisite before any network work.
     let client_path = mosh::find_mosh_client().ok_or_else(mosh::missing_client_error)?;

@@ -3,6 +3,7 @@ use tauri::State;
 use crate::errors::Result;
 use crate::keystore::{self, KeystoreState};
 use crate::storage::host_groups::{self, HostGroup, HostGroupInput};
+use crate::storage::host_inheritance::{self, EffectiveHost};
 use crate::storage::hosts::{self, Host, HostInput};
 use crate::storage::identities::{self, Identity, IdentityInput};
 use crate::storage::key_references::{self, DerivedPublicKey, KeyReference, KeyReferenceInput};
@@ -26,6 +27,36 @@ pub async fn hosts_list(state: State<'_, AppState>, vault_id: Option<String>) ->
 #[tauri::command]
 pub async fn host_get(state: State<'_, AppState>, id: String) -> Result<Option<Host>> {
     hosts::get(&state.pool, &id).await
+}
+
+/// A host's effective configuration plus the provenance of every field.
+///
+/// With `id`, this resolves the stored host through its own group chain: what a
+/// connection will actually use. With `id` omitted it resolves a host that sets
+/// nothing at all against `groupId`, which answers the editor's question —
+/// "what would a host in this group inherit?" — for whichever group is selected
+/// in the form, including one the host has not been saved into yet.
+///
+/// `host_get` deliberately keeps returning the raw row: the editor has to show
+/// what this host actually stores, or saving the form would bake inherited
+/// values into the host and quietly break the link to its group.
+#[tauri::command]
+pub async fn host_effective_config(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    group_id: Option<String>,
+) -> Result<Option<EffectiveHost>> {
+    if let Some(id) = id {
+        let Some(host) = hosts::get(&state.pool, &id).await? else {
+            return Ok(None);
+        };
+        return host_inheritance::effective_host(&state.pool, host)
+            .await
+            .map(Some);
+    }
+    host_inheritance::group_defaults_preview(&state.pool, group_id.as_deref())
+        .await
+        .map(Some)
 }
 
 #[tauri::command]

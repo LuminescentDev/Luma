@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { Ban, KeyRound, Plus, Trash2 } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { KeyRound } from "lucide-react";
 import { Modal } from "../../components/Modal";
-import { cn } from "../../lib/utils";
 import {
   createHost,
+  groupInheritedDefaults,
+  inheritedGroupId,
   parseLumaError,
   updateHost,
   type AuthenticationType,
   type Host,
+  type HostFieldOrigins,
   type HostGroup,
   type HostInput,
   type KeyReference,
@@ -16,9 +18,19 @@ import {
   type TransportType,
 } from "../../lib/hosts";
 import { useInvalidateHosts } from "../../hooks/useHosts";
-import { CheckboxField, SelectField, TextField } from "./fields";
+import {
+  CheckboxField,
+  EnvironmentEditor,
+  SelectField,
+  TabColorField,
+  TextField,
+  type EnvRow,
+} from "./fields";
 
-type EnvRow = { key: string; value: string };
+/** Fields a group can supply when the host leaves them unset. Authentication
+ * and key stay host-only: their stored default cannot be told apart from a
+ * deliberate choice, and inheriting them would change how a host authenticates. */
+type InheritableField = Exclude<keyof HostFieldOrigins, "environment">;
 
 type FormState = {
   name: string;
@@ -41,18 +53,6 @@ type FormState = {
   moshPortRange: string;
   env: EnvRow[];
 };
-
-/** A small set of accent presets for the per-host tab color swatch row. */
-const TAB_COLOR_PRESETS = [
-  "#4cc9f0",
-  "#60a5fa",
-  "#4ade80",
-  "#facc15",
-  "#fb923c",
-  "#f87171",
-  "#c084fc",
-  "#f472b6",
-];
 
 function initialState(host: Host | null, initialGroupId: string | null = null): FormState {
   return {
@@ -263,6 +263,57 @@ export function HostEditorDialog({
     [hosts, host?.id],
   );
 
+  /* What the group selected in the form would supply for each field. Resolved
+   * by the backend against the same rules the connection path runs, so these
+   * hints can never drift from what actually happens on connect. It follows the
+   * group picker rather than the saved group, so switching groups updates the
+   * hints before anything is saved. */
+  const inherited = useQuery({
+    queryKey: ["host-inherited-defaults", state.groupId || null],
+    queryFn: () => groupInheritedDefaults(state.groupId || null),
+    enabled: open,
+  });
+
+  const inheritedFor = (field: InheritableField) => {
+    const data = inherited.data;
+    if (!data) return null;
+    const groupId = inheritedGroupId(data.origins[field]);
+    if (!groupId) return null;
+    const from = groups.find((g) => g.id === groupId)?.name ?? "its group";
+    const raw = data.host[field];
+    let value = typeof raw === "string" ? raw : "";
+    if (field === "identityId") value = identities.find((i) => i.id === raw)?.name ?? value;
+    if (field === "proxyJumpHostId") value = hosts.find((h) => h.id === raw)?.name ?? value;
+    if (field === "transport") {
+      value = TRANSPORT_OPTIONS.find((option) => option.value === raw)?.label ?? value;
+    }
+    return { from, value };
+  };
+
+  /** A muted label on an inherited field, and a reset affordance once the host
+   * overrides it. Nothing renders when the group supplies no default. */
+  const hint = (field: InheritableField, overridden: boolean, reset: () => void) => {
+    const info = inheritedFor(field);
+    if (!info) return undefined;
+    return overridden ? (
+      <span className="text-[11px] text-muted/80">
+        Overrides {info.from} ·{" "}
+        <button type="button" onClick={reset} className="text-accent hover:underline">
+          Reset
+        </button>
+      </span>
+    ) : (
+      <span className="text-[11px] text-muted/80">
+        Inherited from {info.from}
+        {info.value ? `: ${info.value}` : ""}
+      </span>
+    );
+  };
+
+  /** Environment variables merge per name instead of replacing wholesale, so
+   * the group's variables apply alongside the host's own. */
+  const inheritedEnv = Object.keys(inherited.data?.origins.environment ?? {});
+
   const errors = useMemo(
     () => ({
       ...validate(state),
@@ -334,7 +385,13 @@ export function HostEditorDialog({
     >
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <SelectField label="Identity (optional)" value={state.identityId} onChange={(v) => patch({ identityId: v })} error={err("identityId")}>
+          <SelectField
+            label="Identity (optional)"
+            value={state.identityId}
+            onChange={(v) => patch({ identityId: v })}
+            error={err("identityId")}
+            hint={hint("identityId", Boolean(state.identityId), () => patch({ identityId: "" }))}
+          >
             <option value="">Host-specific credentials</option>
             {identities.map((identity) => <option key={identity.id} value={identity.id}>{identity.name} ({identity.username})</option>)}
           </SelectField>
@@ -381,8 +438,9 @@ export function HostEditorDialog({
               mono
               value={state.username}
               onChange={(v) => patch({ username: v })}
-              placeholder="root"
+              placeholder={inheritedFor("username")?.value || "root"}
               error={err("username")}
+              hint={hint("username", state.username !== "", () => patch({ username: "" }))}
             />
           )}
           <SelectField
@@ -455,6 +513,9 @@ export function HostEditorDialog({
             value={state.proxyJumpHostId}
             onChange={(v) => patch({ proxyJumpHostId: v })}
             error={err("proxyJumpHostId")}
+            hint={hint("proxyJumpHostId", Boolean(state.proxyJumpHostId), () =>
+              patch({ proxyJumpHostId: "" }),
+            )}
           >
             <option value="">None</option>
             {proxyOptions.map((h) => (
@@ -467,6 +528,7 @@ export function HostEditorDialog({
             label="Transport"
             value={state.transport}
             onChange={(v) => patch({ transport: v as TransportType })}
+            hint={hint("transport", state.transport !== "ssh", () => patch({ transport: "ssh" }))}
           >
             {TRANSPORT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -483,16 +545,22 @@ export function HostEditorDialog({
               mono
               value={state.moshServerPath}
               onChange={(v) => patch({ moshServerPath: v })}
-              placeholder="mosh-server"
+              placeholder={inheritedFor("moshServerPath")?.value || "mosh-server"}
               error={err("moshServerPath")}
+              hint={hint("moshServerPath", state.moshServerPath !== "", () =>
+                patch({ moshServerPath: "" }),
+              )}
             />
             <TextField
               label="Mosh UDP port range (optional)"
               mono
               value={state.moshPortRange}
               onChange={(v) => patch({ moshPortRange: v })}
-              placeholder="60000-61000"
+              placeholder={inheritedFor("moshPortRange")?.value || "60000-61000"}
               error={err("moshPortRange")}
+              hint={hint("moshPortRange", state.moshPortRange !== "", () =>
+                patch({ moshPortRange: "" }),
+              )}
             />
           </div>
         )}
@@ -503,22 +571,39 @@ export function HostEditorDialog({
             mono
             value={state.startupCommand}
             onChange={(v) => patch({ startupCommand: v })}
-            placeholder="tmux attach"
+            placeholder={inheritedFor("startupCommand")?.value || "tmux attach"}
+            hint={hint("startupCommand", state.startupCommand !== "", () =>
+              patch({ startupCommand: "" }),
+            )}
           />
           <TextField
             label="Remote working directory (optional)"
             mono
             value={state.workingDirectory}
             onChange={(v) => patch({ workingDirectory: v })}
-            placeholder="/var/www"
+            placeholder={inheritedFor("workingDirectory")?.value || "/var/www"}
+            hint={hint("workingDirectory", state.workingDirectory !== "", () =>
+              patch({ workingDirectory: "" }),
+            )}
           />
         </div>
 
-        <EnvironmentEditor rows={state.env} onChange={(env) => patch({ env })} />
+        <EnvironmentEditor
+          rows={state.env}
+          onChange={(env) => patch({ env })}
+          hint={
+            inheritedEnv.length > 0 ? (
+              <span className="text-[11px] text-muted/80">
+                +{inheritedEnv.length} inherited ({inheritedEnv.join(", ")})
+              </span>
+            ) : undefined
+          }
+        />
 
         <TabColorField
           value={state.tabColor}
           onChange={(tabColor) => patch({ tabColor })}
+          hint={hint("tabColor", state.tabColor !== "", () => patch({ tabColor: "" }))}
         />
 
         <CheckboxField
@@ -536,113 +621,5 @@ export function HostEditorDialog({
         )}
       </div>
     </Modal>
-  );
-}
-
-/** Per-host tab accent picker: a "none" option plus preset swatches. The chosen
- * color is stored as "#RRGGBB" (or "" for none) and drives the colored tab. */
-function TabColorField({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div>
-      <span className="mb-1.5 block text-xs font-medium text-muted">Tab color</span>
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => onChange("")}
-          aria-label="No tab color"
-          aria-pressed={value === ""}
-          title="None"
-          className={cn(
-            "flex h-6 w-6 items-center justify-center rounded-full border text-muted",
-            value === "" ? "border-accent ring-1 ring-accent" : "border-border",
-          )}
-        >
-          <Ban size={13} />
-        </button>
-        {TAB_COLOR_PRESETS.map((color) => (
-          <button
-            key={color}
-            type="button"
-            onClick={() => onChange(color)}
-            aria-label={`Tab color ${color}`}
-            aria-pressed={value.toLowerCase() === color.toLowerCase()}
-            title={color}
-            style={{ backgroundColor: color }}
-            className={cn(
-              "h-6 w-6 rounded-full border transition-transform hover:scale-110",
-              value.toLowerCase() === color.toLowerCase()
-                ? "border-foreground ring-2 ring-foreground/40"
-                : "border-transparent",
-            )}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EnvironmentEditor({
-  rows,
-  onChange,
-}: {
-  rows: EnvRow[];
-  onChange: (rows: EnvRow[]) => void;
-}) {
-  const update = (index: number, partial: Partial<EnvRow>) =>
-    onChange(rows.map((row, i) => (i === index ? { ...row, ...partial } : row)));
-
-  return (
-    <div>
-      <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium text-muted">
-          Environment variables (optional)
-        </span>
-        <button
-          type="button"
-          onClick={() => onChange([...rows, { key: "", value: "" }])}
-          className="flex items-center gap-1 text-xs text-accent hover:underline"
-        >
-          <Plus size={11} /> Add
-        </button>
-      </div>
-      {rows.length === 0 ? (
-        <p className="text-xs text-muted/70">No variables set.</p>
-      ) : (
-        <div className="space-y-1.5">
-          {rows.map((row, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <input
-                aria-label={`Variable ${index + 1} name`}
-                value={row.key}
-                onChange={(e) => update(index, { key: e.target.value })}
-                placeholder="KEY"
-                className="w-2/5 rounded-md border border-border bg-background px-2 py-1 font-mono text-sm outline-none focus:border-accent"
-              />
-              <input
-                aria-label={`Variable ${index + 1} value`}
-                value={row.value}
-                onChange={(e) => update(index, { value: e.target.value })}
-                placeholder="value"
-                className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-sm outline-none focus:border-accent"
-              />
-              <button
-                type="button"
-                aria-label={`Remove variable ${index + 1}`}
-                onClick={() => onChange(rows.filter((_, i) => i !== index))}
-                className="shrink-0 rounded p-1 text-muted hover:text-danger"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

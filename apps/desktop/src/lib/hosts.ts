@@ -75,20 +75,69 @@ export type HostInput = {
   moshPortRange: string | null;
 };
 
+/** Defaults a group hands down to the hosts inside it, and through `parentId`
+ * to nested groups. Every field is optional: null/absent means the group sets
+ * no default, so resolution keeps walking up the chain. Hosts always win over
+ * groups. `authenticationType` and `keyId` are deliberately absent — see the
+ * note on `host_inheritance` in the backend. */
+export type HostGroupDefaults = {
+  username?: string | null;
+  identityId?: string | null;
+  proxyJumpHostId?: string | null;
+  startupCommand?: string | null;
+  workingDirectory?: string | null;
+  environment?: Record<string, string> | null;
+  tabColor?: string | null;
+  transport?: TransportType | null;
+  moshServerPath?: string | null;
+  moshPortRange?: string | null;
+};
+
 export type HostGroup = {
   id: string;
   vaultId: string;
   name: string;
   parentId: string | null;
   sortOrder: number;
-};
+} & HostGroupDefaults;
 
 export type HostGroupInput = {
   vaultId?: string;
   name: string;
   parentId: string | null;
   sortOrder: number;
+} & HostGroupDefaults;
+
+/** Where an effective value came from: "host", "group:<id>", or "default". */
+export type FieldOrigin = string;
+
+/** Per-field provenance for an effective host. Environment variables merge per
+ * name rather than replacing wholesale, so their origins are recorded per key. */
+export type HostFieldOrigins = {
+  username: FieldOrigin;
+  identityId: FieldOrigin;
+  proxyJumpHostId: FieldOrigin;
+  startupCommand: FieldOrigin;
+  workingDirectory: FieldOrigin;
+  tabColor: FieldOrigin;
+  transport: FieldOrigin;
+  moshServerPath: FieldOrigin;
+  moshPortRange: FieldOrigin;
+  environment: Record<string, FieldOrigin>;
 };
+
+export type EffectiveHostConfig = {
+  /** The host with group defaults applied. Never write this back through
+   * `updateHost`: it would bake inherited values into the host row. */
+  host: Host;
+  origins: HostFieldOrigins;
+};
+
+/** The group an inherited value came from, or null when the value is the
+ * host's own or is not set anywhere. */
+export function inheritedGroupId(origin: FieldOrigin | undefined): string | null {
+  return origin?.startsWith("group:") ? origin.slice("group:".length) : null;
+}
 
 export type KeyStorageMode = "local-path" | "encrypted-vault";
 
@@ -234,6 +283,29 @@ export function updateHostGroup(id: string, input: HostGroupInput): Promise<Host
 
 export function deleteHostGroup(id: string): Promise<void> {
   return invoke<void>("host_group_delete", { id });
+}
+
+// Group-level inheritance ----------------------------------------------------
+
+/** Resolve a stored host through its group chain: what a connection will
+ * actually use, plus where each field came from. */
+export function hostEffectiveConfig(hostId: string): Promise<EffectiveHostConfig | null> {
+  return invoke<EffectiveHostConfig | null>("host_effective_config", {
+    id: hostId,
+    groupId: null,
+  });
+}
+
+/** What a host that overrides nothing would inherit from `groupId`. The editor
+ * asks this for whichever group is selected in the form, so the inherited /
+ * overridden hints follow the picker instead of the last saved group. */
+export function groupInheritedDefaults(
+  groupId: string | null,
+): Promise<EffectiveHostConfig | null> {
+  return invoke<EffectiveHostConfig | null>("host_effective_config", {
+    id: null,
+    groupId,
+  });
 }
 
 // Key references ------------------------------------------------------------

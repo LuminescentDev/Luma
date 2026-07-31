@@ -1,5 +1,6 @@
 pub mod command_history;
 pub mod host_groups;
+pub mod host_inheritance;
 pub mod hosts;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod identities;
@@ -56,6 +57,7 @@ const LEGACY_CRLF_CHECKSUMS: &[(i64, &str)] = &[
     (16, "3dbb170efdee4d8ef6b0f082afa2b91e37871ca1d4abc2c1414ac4ff823be66c67aadc4428f96107b37a92f24ae18c6b"),
     (17, "4cd77c6b15dc828c48b3fe025e428c0e5fffe6a918748f9ad74267b69439591a05fdb0eb312c349379381592a96cf789"),
     (18, "d820264a06f025a1c64ae6d5e68218540d50ae0324d007183d310bcb79cd21df4e6fa8cc18270dfedd923fd97ad33e02"),
+    (19, "7818f963c2f18cbc28fd821a466b0cb9cb7de8a96ee874951cd3820d8c6c78cbe1f48eae49b674733bc20f245f116439"),
 ];
 
 fn is_allowlisted_legacy_checksum(version: i64, recorded: &[u8]) -> bool {

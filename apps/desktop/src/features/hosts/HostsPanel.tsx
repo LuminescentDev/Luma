@@ -468,6 +468,10 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
         groups={groupDialogVaultId
           ? allGroups.filter((group) => group.vaultId === groupDialogVaultId)
           : allGroups}
+        hosts={allHosts.filter((host) => host.vaultId === groupDialogVaultId)}
+        identities={(identities ?? []).filter(
+          (identity) => identity.vaultId === groupDialogVaultId,
+        )}
         initialParentId={groupId}
         vaultId={groupDialogVaultId}
       />

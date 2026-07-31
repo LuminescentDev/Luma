@@ -13,7 +13,7 @@ import {
   sshHostKeyTrust,
   type SshHostKeyStatus,
 } from "../lib/ssh";
-import { getHost, parseLumaError, type TransportType } from "../lib/hosts";
+import { hostEffectiveConfig, parseLumaError, type TransportType } from "../lib/hosts";
 import {
   withMultiplexerTitle,
   withoutMultiplexerTitle,
@@ -573,12 +573,26 @@ async function launch(
     const proceed = await runHostKeyPreflight(set, get, id, descriptor.hostId);
     if (!proceed || !sessionStillOpen(get, id)) return;
   }
-  // Resolve the host's transport preference. A lookup failure falls back to
-  // plain SSH — the spawn will surface any real problem with the host itself.
+  // Resolve the host's transport preference from its effective configuration,
+  // so a transport (or tab color) inherited from the host's group applies just
+  // as a host-level one does. A lookup failure falls back to plain SSH — the
+  // spawn will surface any real problem with the host itself.
   let transport: TransportType = "ssh";
   if (descriptor.kind === "ssh") {
     try {
-      transport = (await getHost(descriptor.hostId))?.transport ?? "ssh";
+      const effective = (await hostEffectiveConfig(descriptor.hostId))?.host;
+      transport = effective?.transport ?? "ssh";
+      // Only fill in a color the session does not already carry: the caller
+      // passed the host's own color, and the host always wins over its group.
+      if (effective?.tabColor) {
+        set((state) => ({
+          sessions: state.sessions.map((session) =>
+            session.id === id && !session.tabColor
+              ? { ...session, tabColor: effective.tabColor }
+              : session,
+          ),
+        }));
+      }
     } catch {
       transport = "ssh";
     }
