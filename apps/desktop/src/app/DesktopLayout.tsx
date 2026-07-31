@@ -13,6 +13,7 @@ import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
 import { CollaborationDialog } from "../features/collaboration/CollaborationDialog";
 import { CollaborationViewer } from "../features/collaboration/CollaborationViewer";
 import { WebPreviewDialog } from "../features/webPreview/WebPreviewDialog";
+import { DockerDialog } from "../features/docker/DockerDialog";
 import { MultiplexerDialog } from "../features/multiplexer/MultiplexerDialog";
 import { RepoDialog } from "../features/repo/RepoDialog";
 
@@ -74,6 +75,9 @@ export function DesktopLayout() {
   const multiplexerHostId = useUiStore((s) => s.multiplexerHostId);
   const multiplexerHostLabel = useUiStore((s) => s.multiplexerHostLabel);
   const closeMultiplexer = useUiStore((s) => s.closeMultiplexer);
+  const dockerHostId = useUiStore((s) => s.dockerHostId);
+  const dockerHostLabel = useUiStore((s) => s.dockerHostLabel);
+  const closeDocker = useUiStore((s) => s.closeDocker);
   const repoTarget = useUiStore((s) => s.repoTarget);
   const closeRepo = useUiStore((s) => s.closeRepo);
 
@@ -145,6 +149,12 @@ export function DesktopLayout() {
         onOpenChange={(o) => !o && closeMultiplexer()}
         hostId={multiplexerHostId}
         hostLabel={multiplexerHostLabel ?? undefined}
+      />
+      <DockerDialog
+        open={dockerHostId !== null}
+        onOpenChange={(o) => !o && closeDocker()}
+        hostId={dockerHostId}
+        hostLabel={dockerHostLabel ?? undefined}
       />
       <RepoDialog
         open={repoTarget !== null}

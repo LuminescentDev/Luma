@@ -78,6 +78,12 @@ type UiState = {
   multiplexerHostLabel: string | null;
   openMultiplexer: (hostId: string, hostLabel?: string) => void;
   closeMultiplexer: () => void;
+  /** Docker dialog: the host whose containers are being managed, plus an
+   * optional label for the subtitle. Null host means closed. */
+  dockerHostId: string | null;
+  dockerHostLabel: string | null;
+  openDocker: (hostId: string, hostLabel?: string) => void;
+  closeDocker: () => void;
   /** Repository (git status / diff) dialog: the host + working directory being
    * inspected, the session whose prompt an insertion targets, and an optional
    * label for the subtitle. Null target means closed. */
@@ -166,6 +172,11 @@ export const useUiStore = create<UiState>((set) => ({
     set({ multiplexerHostId: hostId, multiplexerHostLabel: hostLabel ?? null }),
   closeMultiplexer: () =>
     set({ multiplexerHostId: null, multiplexerHostLabel: null }),
+  dockerHostId: null,
+  dockerHostLabel: null,
+  openDocker: (hostId, hostLabel) =>
+    set({ dockerHostId: hostId, dockerHostLabel: hostLabel ?? null }),
+  closeDocker: () => set({ dockerHostId: null, dockerHostLabel: null }),
   repoTarget: null,
   openRepo: (target) => set({ repoTarget: target }),
   closeRepo: () => set({ repoTarget: null }),

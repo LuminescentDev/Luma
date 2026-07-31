@@ -1,6 +1,7 @@
 mod agent_events;
 mod collaboration;
 mod commands;
+mod docker;
 mod errors;
 mod import;
 mod keystore;
@@ -33,6 +34,7 @@ use tauri::Manager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
+use docker::DockerManager;
 use repository::RepositoryManager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serial::SerialManager;
@@ -130,6 +132,9 @@ pub fn run() {
         // Repository views reuse one cached SSH session per host too: a
         // status fetch is normally followed by several diff fetches.
         app.manage(RepositoryManager::default());
+        // Docker views reuse one cached SSH session per host: a listing is
+        // normally followed by stats, a log tail and an inspect.
+        app.manage(DockerManager::default());
         // Completion probes reuse one cached SSH session per host, like the
         // server dashboard; the caches are memory-only.
         app.manage(ShellCompletionsManager::default());
@@ -254,6 +259,12 @@ pub fn run() {
         commands::repo_diff,
         commands::repo_file,
         commands::repo_close,
+        commands::docker_list,
+        commands::docker_stats,
+        commands::docker_logs,
+        commands::docker_inspect,
+        commands::docker_action,
+        commands::docker_close,
         commands::pty_spawn,
         commands::pty_write,
         commands::pty_resize,
@@ -396,6 +407,12 @@ pub fn run() {
         commands::repo_diff,
         commands::repo_file,
         commands::repo_close,
+        commands::docker_list,
+        commands::docker_stats,
+        commands::docker_logs,
+        commands::docker_inspect,
+        commands::docker_action,
+        commands::docker_close,
         commands::keystore_status,
         commands::keystore_setup,
         commands::keystore_unlock,
@@ -447,6 +464,7 @@ pub fn run() {
             app_handle.state::<SftpManager>().kill_all();
             app_handle.state::<ServerStatsManager>().kill_all();
             app_handle.state::<RepositoryManager>().kill_all();
+            app_handle.state::<DockerManager>().kill_all();
             app_handle.state::<ShellCompletionsManager>().kill_all();
             app_handle.state::<SnippetRunManager>().kill_all();
             app_handle.state::<EmbeddedSshManager>().kill_all();

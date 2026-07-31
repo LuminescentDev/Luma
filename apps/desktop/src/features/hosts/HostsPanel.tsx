@@ -5,6 +5,7 @@ import {
   Activity,
   Cable,
   ChevronRight,
+  Container,
   Copy,
   DownloadCloud,
   FolderPlus,
@@ -76,6 +77,7 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
   const showTerminal = useUiStore((s) => s.showTerminal);
   const openServerStats = useUiStore((s) => s.openServerStats);
   const openMultiplexer = useUiStore((s) => s.openMultiplexer);
+  const openDocker = useUiStore((s) => s.openDocker);
   const selectStatsHost = useServerStatsStore((s) => s.select);
 
   const { data: hosts } = useHosts();
@@ -298,6 +300,9 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
           selectStatsHost(h);
           openServerStats();
         },
+    // Docker containers on the host. Same desktop-only rule as server stats:
+    // the dialog is mounted by the desktop shell.
+    onDocker: isMobile ? undefined : (h: Host) => openDocker(h.id, h.name),
     // Attaching from here needs no existing session — it opens a new tab
     // already inside the workspace. The dialog is mounted by the desktop shell
     // only, so mobile hides the action (same rule as server stats).
@@ -679,6 +684,7 @@ function HostRow({
   onToggleFavorite,
   onPortForwards,
   onServerStats,
+  onDocker,
   onWorkspaces,
   runningByHost,
   selectedHostIds,
@@ -696,6 +702,7 @@ function HostRow({
   onToggleFavorite: (host: Host) => void;
   onPortForwards?: (host: Host) => void;
   onServerStats?: (host: Host) => void;
+  onDocker?: (host: Host) => void;
   onWorkspaces?: (host: Host) => void;
   runningByHost: Map<string, number>;
   selectedHostIds: Set<string>;
@@ -724,6 +731,15 @@ function HostRow({
             label: "Server stats",
             icon: <Activity size={14} />,
             onSelect: () => onServerStats(host),
+          } as MenuAction,
+        ]
+      : []),
+    ...(onDocker
+      ? [
+          {
+            label: "Docker",
+            icon: <Container size={14} />,
+            onSelect: () => onDocker(host),
           } as MenuAction,
         ]
       : []),

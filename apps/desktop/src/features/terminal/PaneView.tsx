@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Container, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
 import { AutocompleteOverlay } from "./AutocompleteOverlay";
 import { attachFileToSession, canAttachFile } from "./attachFile";
@@ -60,6 +60,7 @@ export function PaneView({
   const openCollab = useUiStore((s) => s.openCollab);
   const openWebPreview = useUiStore((s) => s.openWebPreview);
   const openMultiplexer = useUiStore((s) => s.openMultiplexer);
+  const openDocker = useUiStore((s) => s.openDocker);
   const openRepo = useUiStore((s) => s.openRepo);
   const startLog = useSessionLogStore((s) => s.start);
   const stopLog = useSessionLogStore((s) => s.stop);
@@ -277,6 +278,21 @@ export function PaneView({
       onSelect: () => {
         onFocus();
         openMultiplexer(workspaceHostId, workspaceLabel);
+      },
+    });
+  }
+
+  // Docker containers on this host: read-only listing plus the three
+  // reversible lifecycle actions, all behind a confirmation.
+  if (isSsh && session.hostId) {
+    const dockerHostId = session.hostId;
+    paneActions.push({
+      label: "Docker…",
+      icon: <Container size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openDocker(dockerHostId, session.title);
       },
     });
   }
