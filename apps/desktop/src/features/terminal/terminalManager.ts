@@ -45,6 +45,10 @@ import {
 import { recordCommandHistory } from "../../lib/completions";
 import type { MultiplexerAttach } from "../../lib/multiplexer";
 import {
+  createAgentSignalTracker,
+  type AgentSignalTracker,
+} from "./agentSignals";
+import {
   applyInput,
   promptsForSecret,
   EMPTY_INPUT_BUFFER,
@@ -597,6 +601,10 @@ type ManagedSession = {
   marks: CommandMark[];
   /** Last working directory reported via OSC 7 / OSC 1337, or null. */
   lastReportedCwd: string | null;
+  /** Derives agent-inbox events from notification sequences, bells and the
+   * rendered screen, for agents that have no luma-hook installed. Created once
+   * the session exists (it observes the session's own state). */
+  agentSignals: AgentSignalTracker | null;
   /** Reconstructed input line + overlay state for the autocomplete feature.
    * Metadata only (a short string and a handful of suggestion strings); the
    * byte stream never enters it. */
@@ -820,6 +828,7 @@ function routeUserInput(session: ManagedSession, data: string): void {
   // This reads the same chunk the backend receives; it does not intercept,
   // rewrite or delay it.
   observeAutocompleteInput(session, data);
+  session.agentSignals?.onUserInput();
   enqueueInput(session, data);
   const peers = session.broadcastPeers;
   if (!peers) return;
@@ -961,6 +970,15 @@ function registerShellIntegration(session: ManagedSession): void {
     if (cwd) session.lastReportedCwd = cwd;
     return true;
   });
+  // Desktop-notification sequences: OSC 9 (iTerm2), OSC 99 (kitty), OSC 777
+  // (urxvt). Agents and long-running commands emit these already, so they feed
+  // the agent inbox without anything being installed on the host.
+  for (const ident of [9, 99, 777]) {
+    term.parser.registerOscHandler(ident, (data) => {
+      session.agentSignals?.onNotification(ident, data);
+      return true;
+    });
+  }
 }
 
 function handleOsc133(session: ManagedSession, data: string): void {
@@ -1156,6 +1174,9 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
   const generation = ++session.spawnGeneration;
   session.exited = false;
   session.backendId = null;
+  // A restart is a different agent process on a different backend id; whatever
+  // the previous one had on screen says nothing about this one.
+  session.agentSignals?.reset();
 
   /* A backend exit can arrive BEFORE its spawn invoke resolves (a command that
    * exits instantly, or an SSH connection that closes during auth). Route every
@@ -1183,6 +1204,9 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
 
   const handleData = (data: Uint8Array | string) => {
     term.write(data);
+    // Metadata only: the tracker re-reads the rendered screen from xterm once
+    // output settles. No bytes are handed to it.
+    session.agentSignals?.onOutput();
     // Collaboration tap: hand the SAME bytes to the room broadcaster (if this
     // session is being shared) before any SSH transcript scraping. Bytes go
     // manager → tap directly; they never enter React state.
@@ -1690,6 +1714,7 @@ export const terminalManager = {
       resizeTimer: null,
       marks: [],
       lastReportedCwd: null,
+      agentSignals: null,
       autocomplete: newAutocompleteSession(),
       pendingModifier: null,
       onModifierConsumed: null,
@@ -1699,8 +1724,12 @@ export const terminalManager = {
     };
     sessions.set(sessionId, session);
 
+    session.agentSignals = createAgentSignalTracker(session);
     installKeyHandlers(session);
     registerShellIntegration(session);
+    term.onBell(() => {
+      session.agentSignals?.onBell();
+    });
     term.onTitleChange((title) => {
       if (title.trim()) callbacks.onTitle(title);
     });
@@ -2144,6 +2173,7 @@ export const terminalManager = {
       resizeTimer: null,
       marks: [],
       lastReportedCwd: null,
+      agentSignals: null,
       autocomplete: newAutocompleteSession(),
       pendingModifier: null,
       onModifierConsumed: null,
@@ -2208,6 +2238,7 @@ export const terminalManager = {
     session.disposed = true;
     session.queuedInput.length = 0;
     session.pendingInput.length = 0;
+    session.agentSignals?.dispose();
     clearMarks(session);
     if (session.resizeTimer !== null) {
       window.clearTimeout(session.resizeTimer);

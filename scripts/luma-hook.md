@@ -58,6 +58,7 @@ ESC ] 7791 ; luma-agent ; <base64(JSON)> BEL
 | `turn-completed`    | The agent finished a turn                 | passive update      |
 | `session-started`   | Agent session began                       | passive update      |
 | `session-ended`     | Agent session ended                       | item marked done    |
+| `notification`      | Something wants the human's attention     | attention (unread)  |
 
 Unknown event strings are accepted and treated as passive updates, so the
 vocabulary can grow without breaking older Luma versions.
@@ -129,3 +130,27 @@ printf '\033]7791;luma-agent;%s\007' "$(printf '%s' "$payload" | base64 | tr -d 
 
 Works over SSH, mosh, and local shells alike — the sequence just travels the
 terminal byte stream.
+
+## Without a hook
+
+An agent running on a remote host can only emit this sequence if `luma-hook` is
+installed there, which is not always possible or wanted. Luma therefore also
+derives inbox events from what any terminal can already see, with nothing
+installed anywhere:
+
+- **Notification sequences** — `OSC 9` (iTerm2), `OSC 777;notify` (urxvt) and
+  `OSC 99` (kitty), which agents and long-running commands already emit, plus a
+  plain `BEL`. These become `notification` items. A bell that follows a
+  keystroke within two seconds is treated as input feedback and ignored.
+- **Screen signatures** — Luma matches the rendered screen against a small
+  table of agent TUI markers (`apps/desktop/src/features/terminal/agentSignals.ts`)
+  shortly after output settles. Watching the busy indicator and the approval
+  prompt appear and disappear yields `tool-started`, `needs-approval` and
+  `waiting-for-input`. Claude Code is covered today; other agents are added by
+  appending a signature.
+
+Both are heuristics: an unrecognised screen produces no event rather than a
+guess. Events from the terminal you are currently typing into are still logged
+but raise no unread badge — that terminal is already showing you the same thing.
+A session that reports even one hook event stops accepting heuristics entirely,
+so wiring up `luma-hook` always wins over Luma guessing.

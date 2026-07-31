@@ -59,6 +59,10 @@ type AgentInboxState = {
   items: AgentInboxItem[];
   /** Number of unread (attention) items. */
   unreadCount: number;
+  /** Terminal sessions that have reported a real hook event. Their heuristic
+   * events are dropped: an agent that describes itself precisely must not also
+   * be guessed at from its own screen. */
+  hookSessions: ReadonlySet<string>;
   /** Ingest one backend event, upserting its item. */
   recordEvent: (payload: AgentEventPayload) => void;
   /** Acknowledge one item (clear its unread flag). */
@@ -121,9 +125,19 @@ function enforceItemLimit(items: AgentInboxItem[]): AgentInboxItem[] {
 export const useAgentInboxStore = create<AgentInboxState>((set) => ({
   items: [],
   unreadCount: 0,
+  hookSessions: new Set<string>(),
 
   recordEvent: (payload) => {
     set((state) => {
+      const source = payload.source ?? "hook";
+      if (source === "heuristic" && state.hookSessions.has(payload.terminalSessionId)) {
+        return {};
+      }
+      const hookSessions =
+        source === "hook" && !state.hookSessions.has(payload.terminalSessionId)
+          ? new Set(state.hookSessions).add(payload.terminalSessionId)
+          : state.hookSessions;
+
       const key = itemKey(payload.terminalSessionId, payload.agentSessionId);
       const ts = resolveTs(payload);
       const entry: AgentEventEntry = {
@@ -149,8 +163,10 @@ export const useAgentInboxStore = create<AgentInboxState>((set) => ({
         ts,
         // Attention states raise the unread flag; other states preserve it so a
         // prior unacknowledged alert is not silently cleared by a later
-        // non-attention event.
-        unread: attention ? true : (existing?.unread ?? false),
+        // non-attention event. A silent event is still recorded — it just does
+        // not demand attention the user has already given.
+        unread:
+          attention && !payload.silent ? true : (existing?.unread ?? false),
         done: done || (existing?.done ?? false),
         // A fresh event proves the terminal session is alive again.
         stale: false,
@@ -160,7 +176,7 @@ export const useAgentInboxStore = create<AgentInboxState>((set) => ({
       // Move the touched item to the front; keep the rest in order.
       const rest = state.items.filter((item) => item.key !== key);
       const items = enforceItemLimit([updated, ...rest]);
-      return { items, unreadCount: countUnread(items) };
+      return { items, unreadCount: countUnread(items), hookSessions };
     });
   },
 
@@ -215,8 +231,14 @@ export const useAgentInboxStore = create<AgentInboxState>((set) => ({
         changed = true;
         return { ...item, stale };
       });
-      if (!changed) return {};
-      return { items };
+      // Hook-source tracking only matters while a session can still produce
+      // output, so a closed session drops out of the set with it.
+      const hookSessions = new Set(
+        [...state.hookSessions].filter((id) => live.has(id)),
+      );
+      const prunedHooks = hookSessions.size !== state.hookSessions.size;
+      if (!changed && !prunedHooks) return {};
+      return changed ? { items, hookSessions } : { hookSessions };
     });
   },
 }));
@@ -236,7 +258,8 @@ export function startAgentInboxListener(): () => void {
         const payload = event.payload;
         // Defensive: ignore malformed payloads missing their identifying ids.
         if (!payload?.terminalSessionId || !payload?.agentSessionId) return;
-        useAgentInboxStore.getState().recordEvent(payload);
+        // The wire carries no source; anything arriving here is a real hook.
+        useAgentInboxStore.getState().recordEvent({ ...payload, source: "hook" });
       },
     );
     if (cancelled) un();

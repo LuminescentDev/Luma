@@ -124,8 +124,12 @@ export class Terminal {
   cols = 80;
   rows = 24;
   element: HTMLElement | undefined = undefined;
+  /** Real xterm exposes the hidden input it focuses; the agent-signal tracker
+   * compares it against document.activeElement. Left unset (unfocused). */
+  textarea: HTMLTextAreaElement | undefined = undefined;
   options: Record<string, unknown>;
   private dataHandlers: Array<(data: string) => void> = [];
+  private bellHandlers: Array<() => void> = [];
   /** The manager's custom key handler, replayed by emitKey(). */
   private keyHandler: ((event: KeyboardEvent) => boolean) | undefined = undefined;
 
@@ -218,6 +222,10 @@ export class Terminal {
     this.dataHandlers.push(cb);
     return { dispose() {} };
   }
+  onBell(cb: () => void): { dispose(): void } {
+    this.bellHandlers.push(cb);
+    return { dispose() {} };
+  }
   onResize(_cb: (size: { cols: number; rows: number }) => void): {
     dispose(): void;
   } {
@@ -265,6 +273,11 @@ export class Terminal {
   /** Test hook: fire a registered OSC handler as xterm's parser would. */
   emitOsc(ident: number, data: string): void {
     this.oscHandlers.get(ident)?.(data);
+  }
+
+  /** Test hook: ring the bell as xterm does on a BEL byte. */
+  emitBell(): void {
+    for (const handler of this.bellHandlers) handler();
   }
 
   /**

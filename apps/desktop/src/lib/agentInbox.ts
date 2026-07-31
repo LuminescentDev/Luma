@@ -9,7 +9,7 @@
  * back to the local clock when it is absent.
  */
 export type AgentEventPayload = {
-  /** Luma terminal session id — the same id the session store uses. */
+  /** Luma BACKEND terminal session id (what pty_spawn / ssh_spawn returned). */
   terminalSessionId: string;
   /** The agent's own session id (distinct from the terminal session). */
   agentSessionId: string;
@@ -21,7 +21,22 @@ export type AgentEventPayload = {
   detail?: string;
   /** Unix SECONDS. May be absent; fall back to Date.now(). */
   ts?: number;
+  /** Set by the frontend, never on the wire. Defaults to "hook". */
+  source?: AgentEventSource;
+  /** Record the event but do not raise an unread badge for it. Set when the
+   * user is already watching the terminal it came from. Frontend-only. */
+  silent?: boolean;
 };
+
+/**
+ * Where an event came from. `hook` is the OSC 7791 protocol — the agent said so
+ * itself. `heuristic` is Luma reading notification sequences, bells and the
+ * rendered screen (features/terminal/agentSignals.ts), which needs nothing
+ * installed on the host but can only ever approximate. A terminal session that
+ * has reported a hook event stops accepting heuristics, so a properly wired
+ * agent is never described twice.
+ */
+export type AgentEventSource = "hook" | "heuristic";
 
 /** The known event vocabulary. Unknown strings are handled as a neutral state. */
 export type AgentEventKind =
@@ -33,7 +48,8 @@ export type AgentEventKind =
   | "session-failed"
   | "limit-warning"
   | "session-started"
-  | "session-ended";
+  | "session-ended"
+  | "notification";
 
 /**
  * States that demand the user's attention — an item in one of these states is
@@ -44,6 +60,7 @@ export const ATTENTION_STATES: ReadonlySet<string> = new Set<AgentEventKind>([
   "waiting-for-input",
   "session-failed",
   "limit-warning",
+  "notification",
 ]);
 
 /** Whether an event kind should mark its item unread/highlighted. */
@@ -65,6 +82,7 @@ export function agentStateTone(event: string): AgentStateTone {
     case "needs-approval":
     case "waiting-for-input":
     case "limit-warning":
+    case "notification":
       return "warning";
     case "tool-started":
     case "session-started":
@@ -98,6 +116,8 @@ export function agentStateLabel(event: string): string {
       return "Session started";
     case "session-ended":
       return "Session ended";
+    case "notification":
+      return "Notification";
     default:
       return event;
   }
@@ -114,6 +134,8 @@ export function agentDisplayName(agent: string): string {
       return "Gemini";
     case "opencode":
       return "OpenCode";
+    case "terminal":
+      return "Terminal";
     default:
       return agent;
   }

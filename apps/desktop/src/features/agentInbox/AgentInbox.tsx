@@ -1,6 +1,6 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { CheckCheck, Inbox, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   agentDisplayName,
   agentStateLabel,
@@ -15,6 +15,7 @@ import {
 } from "../../stores/agentInboxStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
+import { terminalManager } from "../terminal/terminalManager";
 
 /** Dot colour per tone, using the app's semantic tokens and Tailwind accents. */
 const TONE_DOT: Record<AgentStateTone, string> = {
@@ -54,18 +55,23 @@ export function AgentInbox() {
 
   const [open, setOpen] = useState(false);
 
+  // Items are keyed by the BACKEND session id (what the PTY/SSH spawn returned
+  // and what agent events carry), which is not the store's session id. Resolve
+  // one to the other here rather than memoising: a session's backend id is
+  // assigned asynchronously after the store already knows about the session, so
+  // a cached map would miss the window an event actually arrives in.
+  const owners = new Map<string, { id: string; title: string }>();
+  for (const session of sessions) {
+    const backendId = terminalManager.getBackendId(session.id);
+    if (backendId) owners.set(backendId, { id: session.id, title: session.title });
+  }
+
   // Keep item staleness in sync with the live session list: an item whose
   // terminal session has closed becomes muted and non-navigable.
-  const sessionIds = useMemo(() => sessions.map((s) => s.id), [sessions]);
+  const liveKey = [...owners.keys()].join(" ");
   useEffect(() => {
-    markStale(sessionIds);
-  }, [sessionIds, markStale]);
-
-  const sessionTitle = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const session of sessions) map.set(session.id, session.title);
-    return map;
-  }, [sessions]);
+    markStale(liveKey ? liveKey.split(" ") : []);
+  }, [liveKey, markStale]);
 
   const hasDone = items.some((item) => item.done);
 
@@ -74,9 +80,10 @@ export function AgentInbox() {
     // Deep-link: reuse the exact focus mechanism the command palette / tab bar
     // use — switch to the terminal workspace, then focus the owning pane. A
     // missing session (stale item) simply does nothing.
-    if (!sessionTitle.has(item.terminalSessionId)) return;
+    const owner = owners.get(item.terminalSessionId);
+    if (!owner) return;
     showTerminal();
-    focusSession(item.terminalSessionId);
+    focusSession(owner.id);
     setOpen(false);
   };
 
@@ -160,7 +167,7 @@ export function AgentInbox() {
                 <InboxRow
                   key={item.key}
                   item={item}
-                  tabName={sessionTitle.get(item.terminalSessionId)}
+                  tabName={owners.get(item.terminalSessionId)?.title}
                   onActivate={() => activate(item)}
                 />
               ))}

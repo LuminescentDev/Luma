@@ -22,7 +22,38 @@ const record = (overrides: Partial<AgentEventPayload> = {}) =>
 
 describe("agentInboxStore", () => {
   beforeEach(() => {
-    useAgentInboxStore.setState({ items: [], unreadCount: 0 });
+    useAgentInboxStore.setState({
+      items: [],
+      unreadCount: 0,
+      hookSessions: new Set(),
+    });
+  });
+
+  it("lets a session's own hook events silence Luma's screen heuristics", () => {
+    record({ terminalSessionId: "t1", agentSessionId: "claude-1", event: "tool-started" });
+    record({
+      terminalSessionId: "t1",
+      agentSessionId: "screen",
+      event: "waiting-for-input",
+      source: "heuristic",
+    });
+    // A different session has no hook of its own, so its heuristics stand.
+    record({
+      terminalSessionId: "t2",
+      agentSessionId: "screen",
+      event: "waiting-for-input",
+      source: "heuristic",
+    });
+
+    const { items } = useAgentInboxStore.getState();
+    expect(items.map((item) => item.terminalSessionId)).toEqual(["t2", "t1"]);
+    expect(items.some((item) => item.agentSessionId === "screen" && item.terminalSessionId === "t1")).toBe(false);
+  });
+
+  it("stops tracking hook sessions once they close", () => {
+    record({ terminalSessionId: "t1", agentSessionId: "claude-1", event: "tool-started" });
+    useAgentInboxStore.getState().markStale([]);
+    expect(useAgentInboxStore.getState().hookSessions.size).toBe(0);
   });
 
   it("caps the item count and evicts finished items before live ones", () => {

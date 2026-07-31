@@ -1,3 +1,5 @@
 # SQLx migration checksums hash raw bytes; enforce stable bytes on every platform.
 apps/desktop/src-tauri/migrations/*.sql text eol=lf
 apps/desktop/src-tauri/gen/apple/ci_scripts/*.sh text eol=lf
+# `sh` chokes on CRLF in a script it is asked to run ("set: Illegal option -").
+scripts/luma-hook text eol=lf
