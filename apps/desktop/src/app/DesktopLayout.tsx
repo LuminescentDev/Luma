@@ -14,6 +14,7 @@ import { CollaborationDialog } from "../features/collaboration/CollaborationDial
 import { CollaborationViewer } from "../features/collaboration/CollaborationViewer";
 import { WebPreviewDialog } from "../features/webPreview/WebPreviewDialog";
 import { MultiplexerDialog } from "../features/multiplexer/MultiplexerDialog";
+import { RepoDialog } from "../features/repo/RepoDialog";
 
 /*
  * Desktop application shell — the original Luma layout, unchanged. Heavier,
@@ -73,6 +74,8 @@ export function DesktopLayout() {
   const multiplexerHostId = useUiStore((s) => s.multiplexerHostId);
   const multiplexerHostLabel = useUiStore((s) => s.multiplexerHostLabel);
   const closeMultiplexer = useUiStore((s) => s.closeMultiplexer);
+  const repoTarget = useUiStore((s) => s.repoTarget);
+  const closeRepo = useUiStore((s) => s.closeRepo);
 
   return (
     <div className="flex h-full flex-col">
@@ -142,6 +145,14 @@ export function DesktopLayout() {
         onOpenChange={(o) => !o && closeMultiplexer()}
         hostId={multiplexerHostId}
         hostLabel={multiplexerHostLabel ?? undefined}
+      />
+      <RepoDialog
+        open={repoTarget !== null}
+        onOpenChange={(o) => !o && closeRepo()}
+        hostId={repoTarget?.hostId ?? null}
+        cwd={repoTarget?.cwd ?? null}
+        sessionId={repoTarget?.sessionId ?? null}
+        label={repoTarget?.label}
       />
       <SnippetRunner />
       <MultiHostRunDialog />

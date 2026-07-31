@@ -78,6 +78,22 @@ type UiState = {
   multiplexerHostLabel: string | null;
   openMultiplexer: (hostId: string, hostLabel?: string) => void;
   closeMultiplexer: () => void;
+  /** Repository (git status / diff) dialog: the host + working directory being
+   * inspected, the session whose prompt an insertion targets, and an optional
+   * label for the subtitle. Null target means closed. */
+  repoTarget: {
+    hostId: string;
+    cwd: string;
+    sessionId: string;
+    label?: string;
+  } | null;
+  openRepo: (target: {
+    hostId: string;
+    cwd: string;
+    sessionId: string;
+    label?: string;
+  }) => void;
+  closeRepo: () => void;
 };
 
 export type CollabIntent = {
@@ -150,6 +166,9 @@ export const useUiStore = create<UiState>((set) => ({
     set({ multiplexerHostId: hostId, multiplexerHostLabel: hostLabel ?? null }),
   closeMultiplexer: () =>
     set({ multiplexerHostId: null, multiplexerHostLabel: null }),
+  repoTarget: null,
+  openRepo: (target) => set({ repoTarget: target }),
+  closeRepo: () => set({ repoTarget: null }),
   paletteOpen: false,
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),

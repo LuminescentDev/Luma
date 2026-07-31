@@ -36,6 +36,7 @@ mod mosh;
 mod multiplexer;
 mod platform;
 mod port_forwards;
+mod repository;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
 mod server_stats;
@@ -61,6 +62,7 @@ pub use mosh::*;
 pub use multiplexer::*;
 pub use platform::*;
 pub use port_forwards::*;
+pub use repository::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use serial::*;
 pub use server_stats::*;

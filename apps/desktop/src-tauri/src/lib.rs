@@ -8,6 +8,7 @@ mod logging;
 mod mosh;
 mod multiplexer;
 mod platform;
+mod repository;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
 mod server_stats;
@@ -32,6 +33,7 @@ use tauri::Manager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
+use repository::RepositoryManager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serial::SerialManager;
 use server_stats::ServerStatsManager;
@@ -125,6 +127,9 @@ pub fn run() {
         app.manage(TunnelManager::default());
         app.manage(SftpManager::default());
         app.manage(ServerStatsManager::default());
+        // Repository views reuse one cached SSH session per host too: a
+        // status fetch is normally followed by several diff fetches.
+        app.manage(RepositoryManager::default());
         // Completion probes reuse one cached SSH session per host, like the
         // server dashboard; the caches are memory-only.
         app.manage(ShellCompletionsManager::default());
@@ -245,6 +250,10 @@ pub fn run() {
         commands::web_preview_close,
         commands::web_previews_list,
         commands::multiplexer_list,
+        commands::repo_status,
+        commands::repo_diff,
+        commands::repo_file,
+        commands::repo_close,
         commands::pty_spawn,
         commands::pty_write,
         commands::pty_resize,
@@ -383,6 +392,10 @@ pub fn run() {
         commands::web_preview_close,
         commands::web_previews_list,
         commands::multiplexer_list,
+        commands::repo_status,
+        commands::repo_diff,
+        commands::repo_file,
+        commands::repo_close,
         commands::keystore_status,
         commands::keystore_setup,
         commands::keystore_unlock,
@@ -433,6 +446,7 @@ pub fn run() {
             app_handle.state::<SerialManager>().kill_all();
             app_handle.state::<SftpManager>().kill_all();
             app_handle.state::<ServerStatsManager>().kill_all();
+            app_handle.state::<RepositoryManager>().kill_all();
             app_handle.state::<ShellCompletionsManager>().kill_all();
             app_handle.state::<SnippetRunManager>().kill_all();
             app_handle.state::<EmbeddedSshManager>().kill_all();

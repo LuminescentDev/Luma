@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, Globe, KeyRound, LayoutGrid, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
 import { AutocompleteOverlay } from "./AutocompleteOverlay";
 import { attachFileToSession, canAttachFile } from "./attachFile";
@@ -60,6 +60,7 @@ export function PaneView({
   const openCollab = useUiStore((s) => s.openCollab);
   const openWebPreview = useUiStore((s) => s.openWebPreview);
   const openMultiplexer = useUiStore((s) => s.openMultiplexer);
+  const openRepo = useUiStore((s) => s.openRepo);
   const startLog = useSessionLogStore((s) => s.start);
   const stopLog = useSessionLogStore((s) => s.stop);
   const logEntry = useSessionLogStore((s) => s.logs[session.id]);
@@ -276,6 +277,28 @@ export function PaneView({
       onSelect: () => {
         onFocus();
         openMultiplexer(workspaceHostId, workspaceLabel);
+      },
+    });
+  }
+
+  // Repository browser (git status / diff) of the session's working directory.
+  // Only meaningful once the shell has reported a cwd (OSC 7), so it stays
+  // hidden entirely until then rather than showing a dead entry.
+  if (isSsh && session.hostId && cwd) {
+    const repoHostId = session.hostId;
+    const repoCwd = cwd;
+    paneActions.push({
+      label: "Repository…",
+      icon: <GitBranch size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openRepo({
+          hostId: repoHostId,
+          cwd: repoCwd,
+          sessionId: session.id,
+          label: session.title,
+        });
       },
     });
   }
