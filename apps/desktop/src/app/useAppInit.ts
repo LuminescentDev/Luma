@@ -7,6 +7,7 @@ import { setAutoReconnectEnabled, useSessionStore } from "../stores/sessionStore
 import { useTemplateStore } from "../stores/templateStore";
 import { useTunnelStore } from "../stores/tunnelStore";
 import { useWebPreviewStore } from "../stores/webPreviewStore";
+import { useMultiplexerStore } from "../stores/multiplexerStore";
 import { useSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { parseShellRef } from "../lib/terminal";
@@ -198,6 +199,12 @@ export function useAppInit(): void {
   // Load saved workspace templates once.
   useEffect(() => {
     void useTemplateStore.getState().load();
+  }, []);
+
+  // Load per-host "resume this tmux/zellij workspace on connect" preferences
+  // once, before any host is connected from the UI.
+  useEffect(() => {
+    void useMultiplexerStore.getState().loadResume();
   }, []);
 
   // Load the persisted keymap once and push the chord set into terminalManager.

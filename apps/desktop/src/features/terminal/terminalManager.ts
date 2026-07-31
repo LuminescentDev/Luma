@@ -43,6 +43,7 @@ import {
   type SerialConfig,
 } from "../../lib/serial";
 import { recordCommandHistory } from "../../lib/completions";
+import type { MultiplexerAttach } from "../../lib/multiplexer";
 import {
   applyInput,
   promptsForSecret,
@@ -59,7 +60,7 @@ import { completionSuffix, MAX_SUGGESTIONS, type Suggestion } from "./completion
  */
 export type SpawnDescriptor =
   | { kind: "local"; ref: ShellRef | undefined }
-  | { kind: "ssh"; hostId: string }
+  | { kind: "ssh"; hostId: string; multiplexer?: MultiplexerAttach }
   | { kind: "mosh"; hostId: string }
   | { kind: "serial"; config: SerialConfig };
 
@@ -1248,7 +1249,12 @@ async function spawnBackend(sessionId: string): Promise<ManagedSpawnResult> {
     result = { sessionId: spawned.sessionId, title: spawned.portName };
   } else if (descriptor.kind === "ssh") {
     const spawned = await spawnSsh(
-      { hostId: descriptor.hostId, cols: term.cols, rows: term.rows },
+      {
+        hostId: descriptor.hostId,
+        cols: term.cols,
+        rows: term.rows,
+        multiplexer: descriptor.multiplexer,
+      },
       handleData,
       (payload: SshExitPayload) =>
         handleExit({

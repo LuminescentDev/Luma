@@ -87,6 +87,7 @@ commands.allow = [
   "web_preview_open",
   "web_preview_close",
   "web_previews_list",
+  "multiplexer_list",
   "keystore_status",
   "keystore_setup",
   "keystore_unlock",

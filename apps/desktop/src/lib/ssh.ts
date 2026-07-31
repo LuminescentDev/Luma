@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { queryClient } from "./queryClient";
 import type { Host } from "./hosts";
+import type { MultiplexerAttach } from "./multiplexer";
 
 /*
  * SSH session spawn wrapper. Mirrors spawnPty in src/lib/terminal.ts: the
@@ -208,7 +209,14 @@ export function spawnMosh(
 }
 
 export async function spawnSsh(
-  request: { hostId: string; cols: number; rows: number },
+  request: {
+    hostId: string;
+    cols: number;
+    rows: number;
+    /** Land inside a tmux/zellij workspace. The backend builds the attach
+     * command from the validated session name — never a command string. */
+    multiplexer?: MultiplexerAttach;
+  },
   onData: (data: Uint8Array | string) => void,
   onExit: (payload: SshExitPayload) => void,
   onRemoteOs?: (osId: SshRemoteOsId, prettyName: string | null) => void,
@@ -287,6 +295,7 @@ export async function spawnSsh(
         hostId: request.hostId,
         cols: request.cols,
         rows: request.rows,
+        multiplexer: request.multiplexer ?? null,
       },
       onData: dataChannel,
       onExit: exitChannel,

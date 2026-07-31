@@ -33,6 +33,7 @@ mod live_activity;
 mod menu;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod mosh;
+mod multiplexer;
 mod platform;
 mod port_forwards;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -57,6 +58,7 @@ pub use live_activity::*;
 pub use menu::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use mosh::*;
+pub use multiplexer::*;
 pub use platform::*;
 pub use port_forwards::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

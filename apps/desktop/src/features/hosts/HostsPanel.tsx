@@ -11,6 +11,7 @@ import {
   Folder,
   Home,
   KeyRound,
+  LayoutGrid,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -74,6 +75,7 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
   const queryClient = useQueryClient();
   const showTerminal = useUiStore((s) => s.showTerminal);
   const openServerStats = useUiStore((s) => s.openServerStats);
+  const openMultiplexer = useUiStore((s) => s.openMultiplexer);
   const selectStatsHost = useServerStatsStore((s) => s.select);
 
   const { data: hosts } = useHosts();
@@ -296,6 +298,12 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
           selectStatsHost(h);
           openServerStats();
         },
+    // Attaching from here needs no existing session — it opens a new tab
+    // already inside the workspace. The dialog is mounted by the desktop shell
+    // only, so mobile hides the action (same rule as server stats).
+    onWorkspaces: isMobile
+      ? undefined
+      : (h: Host) => openMultiplexer(h.id, h.name),
     runningByHost,
     selectedHostIds,
     onSelect: (host: Host, additive: boolean) => setSelectedHostIds((previous) => {
@@ -671,6 +679,7 @@ function HostRow({
   onToggleFavorite,
   onPortForwards,
   onServerStats,
+  onWorkspaces,
   runningByHost,
   selectedHostIds,
   onSelect,
@@ -687,6 +696,7 @@ function HostRow({
   onToggleFavorite: (host: Host) => void;
   onPortForwards?: (host: Host) => void;
   onServerStats?: (host: Host) => void;
+  onWorkspaces?: (host: Host) => void;
   runningByHost: Map<string, number>;
   selectedHostIds: Set<string>;
   onSelect: (host: Host, additive: boolean) => void;
@@ -714,6 +724,15 @@ function HostRow({
             label: "Server stats",
             icon: <Activity size={14} />,
             onSelect: () => onServerStats(host),
+          } as MenuAction,
+        ]
+      : []),
+    ...(onWorkspaces
+      ? [
+          {
+            label: "Workspaces…",
+            icon: <LayoutGrid size={14} />,
+            onSelect: () => onWorkspaces(host),
           } as MenuAction,
         ]
       : []),

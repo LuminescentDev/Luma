@@ -72,6 +72,12 @@ type UiState = {
   webPreviewHostLabel: string | null;
   openWebPreview: (hostId: string, hostLabel?: string) => void;
   closeWebPreview: () => void;
+  /** Multiplexer workspace dialog: the host whose tmux/zellij sessions are being
+   * managed, plus an optional label for the subtitle. Null host means closed. */
+  multiplexerHostId: string | null;
+  multiplexerHostLabel: string | null;
+  openMultiplexer: (hostId: string, hostLabel?: string) => void;
+  closeMultiplexer: () => void;
 };
 
 export type CollabIntent = {
@@ -138,6 +144,12 @@ export const useUiStore = create<UiState>((set) => ({
     set({ webPreviewHostId: hostId, webPreviewHostLabel: hostLabel ?? null }),
   closeWebPreview: () =>
     set({ webPreviewHostId: null, webPreviewHostLabel: null }),
+  multiplexerHostId: null,
+  multiplexerHostLabel: null,
+  openMultiplexer: (hostId, hostLabel) =>
+    set({ multiplexerHostId: hostId, multiplexerHostLabel: hostLabel ?? null }),
+  closeMultiplexer: () =>
+    set({ multiplexerHostId: null, multiplexerHostLabel: null }),
   paletteOpen: false,
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),

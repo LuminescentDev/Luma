@@ -105,6 +105,22 @@ export function serializeWorkspace(
 
 // --- Validation (first-run / corrupt snapshots must fail closed) ---
 
+/** A persisted workspace attach. The name is re-validated by the backend on
+ * every spawn; this only rejects structurally wrong snapshots. */
+function isMultiplexerAttach(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const attach = value as {
+    multiplexer?: unknown;
+    sessionName?: unknown;
+    create?: unknown;
+  };
+  if (attach.multiplexer !== "tmux" && attach.multiplexer !== "zellij") return false;
+  if (typeof attach.sessionName !== "string" || attach.sessionName.length === 0) {
+    return false;
+  }
+  return attach.create === undefined || typeof attach.create === "boolean";
+}
+
 function isRestoreDescriptor(value: unknown): value is RestoreDescriptor {
   if (!value || typeof value !== "object") return false;
   const kind = (value as { kind?: unknown }).kind;
@@ -117,6 +133,7 @@ function isRestoreDescriptor(value: unknown): value is RestoreDescriptor {
       title?: unknown;
       connectionTarget?: unknown;
       tabColor?: unknown;
+      multiplexer?: unknown;
     };
     if (typeof ssh.hostId !== "string") return false;
     if (ssh.title !== undefined && typeof ssh.title !== "string") return false;
@@ -125,6 +142,11 @@ function isRestoreDescriptor(value: unknown): value is RestoreDescriptor {
     }
     // tabColor is optional; when present it must be a string or null.
     if (ssh.tabColor !== undefined && ssh.tabColor !== null && typeof ssh.tabColor !== "string") {
+      return false;
+    }
+    // The workspace attach is optional, but a malformed one must fail closed:
+    // it is replayed into a spawn on restore.
+    if (ssh.multiplexer !== undefined && !isMultiplexerAttach(ssh.multiplexer)) {
       return false;
     }
     return true;

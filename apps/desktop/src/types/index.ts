@@ -1,6 +1,7 @@
 import type { ShellRef } from "../lib/terminal";
 import type { SerialConfig } from "../lib/serial";
 import type { HostKeyFingerprint } from "../lib/ssh";
+import type { MultiplexerAttach } from "../lib/multiplexer";
 
 export type ThemeMode = "dark" | "light" | "system";
 
@@ -28,6 +29,10 @@ export type RestoreDescriptor =
       /** Per-host tab accent color ("#RRGGBB") so a restored pane shows the same
        * tab color immediately. Optional; older snapshots simply have no color. */
       tabColor?: string | null;
+      /** Multiplexer workspace this pane was attached to, so a restored pane
+       * lands back in the same tmux/zellij session instead of a bare shell.
+       * Optional; snapshots that predate the workspace manager have none. */
+      multiplexer?: MultiplexerAttach;
     }
   | { kind: "serial"; config: SerialConfig };
 
@@ -183,4 +188,7 @@ export const SETTING_KEYS = {
   /** iOS-only toggle: mirror open connections and transfers to a Live Activity on
    * the lock screen and Dynamic Island. Default on; ignored elsewhere. */
   liveActivity: "mobile.liveActivity",
+  /** Device-local map of hostId -> { multiplexer, sessionName } to re-attach
+   * automatically when connecting to that host. Never synced. */
+  multiplexerResume: "multiplexer.resume",
 } as const;

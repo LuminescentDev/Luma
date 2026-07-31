@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::errors::{LumaError, Result};
 use crate::keystore::KeystoreState;
+use crate::multiplexer::MultiplexerAttach;
 use crate::sftp::{self, SftpManager};
 use crate::ssh::{self, EmbeddedSshManager, SshExit, SshHostKeyStatus, SshRemoteOs};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -22,6 +23,12 @@ pub struct SshSpawnRequest {
     pub host_id: String,
     pub cols: u16,
     pub rows: u16,
+    /// Optional multiplexer workspace to land in. The frontend names a
+    /// multiplexer and a session, never a command: `attach_command` builds the
+    /// actual `tmux`/`zellij` invocation from a validated name, so this cannot
+    /// become an arbitrary-command channel.
+    #[serde(default)]
+    pub multiplexer: Option<MultiplexerAttach>,
 }
 
 #[derive(Debug, Serialize)]
@@ -329,8 +336,13 @@ async fn ssh_spawn_impl(
             "terminal dimensions must be greater than zero".into(),
         ));
     }
-    let (config, title) =
+    let (mut config, title) =
         ssh::connection_config(&state.pool, &keystore_state, &request.host_id).await?;
+    // A multiplexer attach replaces the host's own startup command for this
+    // spawn only; the built command is validated here, never supplied verbatim.
+    if let Some(attach) = &request.multiplexer {
+        config.startup_command = Some(crate::multiplexer::attach_command(attach)?);
+    }
     let pending_remote_os = Arc::new(Mutex::new(PendingRemoteOsEvent {
         host_id: request.host_id.clone(),
         ..PendingRemoteOsEvent::default()

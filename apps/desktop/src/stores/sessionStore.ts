@@ -15,6 +15,12 @@ import {
 } from "../lib/ssh";
 import { getHost, parseLumaError, type TransportType } from "../lib/hosts";
 import {
+  withMultiplexerTitle,
+  withoutMultiplexerTitle,
+  type MultiplexerAttach,
+} from "../lib/multiplexer";
+import { resumeAttachFor } from "./multiplexerStore";
+import {
   terminalManager,
   isSpawnAbandoned,
   type SessionExit,
@@ -61,6 +67,9 @@ type SessionState = {
     hostname?: string,
     ephemeral?: boolean,
     tabColor?: string | null,
+    /** Land the new session inside a tmux/zellij workspace. Omitted connects
+     * fall back to the host's saved "resume on connect" workspace, if any. */
+    multiplexer?: MultiplexerAttach,
   ) => Promise<void>;
   openSerialSession: (config: SerialConfig, title?: string) => Promise<void>;
   /** Restart a session's backend. `reconnect` marks an auto-reconnect attempt:
@@ -550,6 +559,11 @@ async function launch(
   descriptor: SpawnDescriptor,
   title: string | undefined,
 ): Promise<void> {
+  // A workspace attach rides the SSH startup command, which the Mosh bootstrap
+  // has no equivalent for — so an attaching session stays on SSH, and this is
+  // also what the automatic Mosh→SSH fallback re-attaches with.
+  const moshFallbackAttach =
+    descriptor.kind === "ssh" ? descriptor.multiplexer : undefined;
   // SSH sessions must clear the host-key preflight before any spawn. This
   // covers first-open, split-pane duplication, and workspace restore alike —
   // an unknown host on restore prompts, it is never silently auto-trusted.
@@ -569,7 +583,9 @@ async function launch(
       transport = "ssh";
     }
     if (!sessionStillOpen(get, id)) return;
-    if (transport !== "ssh") descriptor = { kind: "mosh", hostId: descriptor.hostId };
+    if (transport !== "ssh" && !moshFallbackAttach) {
+      descriptor = { kind: "mosh", hostId: descriptor.hostId };
+    }
   }
   try {
     const result = await terminalManager.createSession(
@@ -600,7 +616,11 @@ async function launch(
           transportNotice: `Mosh unavailable — connected over SSH instead. (${message})`,
         }),
       }));
-      const sshDescriptor: SpawnDescriptor = { kind: "ssh", hostId: descriptor.hostId };
+      const sshDescriptor: SpawnDescriptor = {
+        kind: "ssh",
+        hostId: descriptor.hostId,
+        multiplexer: moshFallbackAttach,
+      };
       terminalManager.setDescriptor(id, sshDescriptor);
       try {
         const result = await terminalManager.restart(id);
@@ -686,7 +706,11 @@ function sessionFromRestore(
         activePaneId: id,
         restore,
       },
-      descriptor: { kind: "ssh", hostId: restore.hostId },
+      descriptor: {
+        kind: "ssh",
+        hostId: restore.hostId,
+        multiplexer: restore.multiplexer,
+      },
       title: undefined,
     };
   }
@@ -764,11 +788,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await openInNewTab(set, get, session, { kind: "local", ref }, title);
   },
 
-  openSshSession: async (hostId, title, hostname, ephemeral, tabColor) => {
+  openSshSession: async (hostId, title, hostname, ephemeral, tabColor, multiplexer) => {
     const id = crypto.randomUUID();
+    // An explicit workspace wins; otherwise the host may have one saved to
+    // resume. Either way the title carries the workspace it landed in.
+    const attach = multiplexer ?? resumeAttachFor(hostId);
+    const displayTitle = withMultiplexerTitle(title ?? "SSH", attach);
     const session: TerminalSession = {
       id,
-      title: title ?? "SSH",
+      title: displayTitle,
       type: "ssh",
       hostId,
       connectionTarget: hostname ?? title ?? "SSH host",
@@ -780,12 +808,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       restore: {
         kind: "ssh",
         hostId,
-        title: title ?? "SSH",
+        title: displayTitle,
         connectionTarget: hostname ?? title ?? "SSH host",
         tabColor: tabColor ?? null,
+        multiplexer: attach,
       },
     };
-    await openInNewTab(set, get, session, { kind: "ssh", hostId }, title);
+    await openInNewTab(
+      set,
+      get,
+      session,
+      { kind: "ssh", hostId, multiplexer: attach },
+      displayTitle,
+    );
   },
 
   openSerialSession: async (config, title) => {
@@ -1045,11 +1080,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     let title: string | undefined;
     // Duplicate the source pane's SSH host; otherwise open the default shell.
     if (source?.type === "ssh" && source.hostId) {
+      // A split duplicates the HOST, not the workspace: two clients attached to
+      // the same tmux session would mirror each other and fight over the size.
+      // Drop the workspace suffix so the new pane's title matches what it is.
+      const sourceAttach =
+        source.restore?.kind === "ssh" ? source.restore.multiplexer : undefined;
+      const splitTitle = withoutMultiplexerTitle(source.title, sourceAttach);
       descriptor = { kind: "ssh", hostId: source.hostId };
-      title = source.title;
+      title = splitTitle;
       session = {
         id,
-        title: source.title,
+        title: splitTitle,
         type: "ssh",
         hostId: source.hostId,
         connectionTarget: source.connectionTarget,
@@ -1060,7 +1101,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         restore: {
           kind: "ssh",
           hostId: source.hostId,
-          title: source.title,
+          title: splitTitle,
           connectionTarget: source.connectionTarget,
           tabColor: source.tabColor ?? null,
         },

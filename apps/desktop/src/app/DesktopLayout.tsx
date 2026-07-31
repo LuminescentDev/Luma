@@ -13,6 +13,7 @@ import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
 import { CollaborationDialog } from "../features/collaboration/CollaborationDialog";
 import { CollaborationViewer } from "../features/collaboration/CollaborationViewer";
 import { WebPreviewDialog } from "../features/webPreview/WebPreviewDialog";
+import { MultiplexerDialog } from "../features/multiplexer/MultiplexerDialog";
 
 /*
  * Desktop application shell — the original Luma layout, unchanged. Heavier,
@@ -69,6 +70,9 @@ export function DesktopLayout() {
   const webPreviewHostId = useUiStore((s) => s.webPreviewHostId);
   const webPreviewHostLabel = useUiStore((s) => s.webPreviewHostLabel);
   const closeWebPreview = useUiStore((s) => s.closeWebPreview);
+  const multiplexerHostId = useUiStore((s) => s.multiplexerHostId);
+  const multiplexerHostLabel = useUiStore((s) => s.multiplexerHostLabel);
+  const closeMultiplexer = useUiStore((s) => s.closeMultiplexer);
 
   return (
     <div className="flex h-full flex-col">
@@ -132,6 +136,12 @@ export function DesktopLayout() {
         onOpenChange={(o) => !o && closeWebPreview()}
         hostId={webPreviewHostId}
         hostLabel={webPreviewHostLabel ?? undefined}
+      />
+      <MultiplexerDialog
+        open={multiplexerHostId !== null}
+        onOpenChange={(o) => !o && closeMultiplexer()}
+        hostId={multiplexerHostId}
+        hostLabel={multiplexerHostLabel ?? undefined}
       />
       <SnippetRunner />
       <MultiHostRunDialog />

@@ -6,6 +6,7 @@ mod import;
 mod keystore;
 mod logging;
 mod mosh;
+mod multiplexer;
 mod platform;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
@@ -243,6 +244,7 @@ pub fn run() {
         commands::web_preview_open,
         commands::web_preview_close,
         commands::web_previews_list,
+        commands::multiplexer_list,
         commands::pty_spawn,
         commands::pty_write,
         commands::pty_resize,
@@ -380,6 +382,7 @@ pub fn run() {
         commands::web_preview_open,
         commands::web_preview_close,
         commands::web_previews_list,
+        commands::multiplexer_list,
         commands::keystore_status,
         commands::keystore_setup,
         commands::keystore_unlock,

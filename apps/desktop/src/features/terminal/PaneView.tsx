@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, Globe, KeyRound, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, Globe, KeyRound, LayoutGrid, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
 import { AutocompleteOverlay } from "./AutocompleteOverlay";
 import { attachFileToSession, canAttachFile } from "./attachFile";
@@ -8,6 +8,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useSessionLogStore } from "../../stores/sessionLogStore";
 import type { TerminalSession } from "../../types";
 import { parseLumaError } from "../../lib/hosts";
+import { withoutMultiplexerTitle } from "../../lib/multiplexer";
 import { cn } from "../../lib/utils";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { describeSshError } from "../hosts/sshErrors";
@@ -58,6 +59,7 @@ export function PaneView({
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   const openCollab = useUiStore((s) => s.openCollab);
   const openWebPreview = useUiStore((s) => s.openWebPreview);
+  const openMultiplexer = useUiStore((s) => s.openMultiplexer);
   const startLog = useSessionLogStore((s) => s.start);
   const stopLog = useSessionLogStore((s) => s.stop);
   const logEntry = useSessionLogStore((s) => s.logs[session.id]);
@@ -253,6 +255,27 @@ export function PaneView({
       onSelect: () => {
         onFocus();
         openWebPreview(previewHostId, session.title);
+      },
+    });
+  }
+
+  // Manage the remote tmux/zellij workspaces of this host: attaching opens a new
+  // tab, so this is offered wherever an SSH session names a host.
+  if (isSsh && session.hostId) {
+    const workspaceHostId = session.hostId;
+    // The pane's own title may already carry a workspace suffix; the dialog
+    // labels the HOST, so strip it before passing it along.
+    const workspaceLabel =
+      session.restore?.kind === "ssh"
+        ? withoutMultiplexerTitle(session.title, session.restore.multiplexer)
+        : session.title;
+    paneActions.push({
+      label: "Workspaces…",
+      icon: <LayoutGrid size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openMultiplexer(workspaceHostId, workspaceLabel);
       },
     });
   }
