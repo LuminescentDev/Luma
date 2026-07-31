@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   HISTORY_LIMIT,
+  ITEM_LIMIT,
   itemKey,
   useAgentInboxStore,
 } from "./agentInboxStore";
@@ -22,6 +23,24 @@ const record = (overrides: Partial<AgentEventPayload> = {}) =>
 describe("agentInboxStore", () => {
   beforeEach(() => {
     useAgentInboxStore.setState({ items: [], unreadCount: 0 });
+  });
+
+  it("caps the item count and evicts finished items before live ones", () => {
+    // Anything that can write to the terminal can invent agent sessions, so the
+    // list must not grow without bound.
+    record({ agentSessionId: "needs-answer", event: "needs-approval" });
+    record({ agentSessionId: "finished", event: "session-ended" });
+    for (let i = 0; i < ITEM_LIMIT + 50; i += 1) {
+      record({ agentSessionId: `flood-${i}`, event: "tool-started" });
+    }
+
+    const { items } = useAgentInboxStore.getState();
+    expect(items).toHaveLength(ITEM_LIMIT);
+    // The finished item was evicted; the one still waiting on the user was not.
+    expect(items.some((item) => item.agentSessionId === "finished")).toBe(false);
+    expect(items.some((item) => item.agentSessionId === "needs-answer")).toBe(
+      true,
+    );
   });
 
   it("upserts an item keyed by terminal + agent session and replaces its state", () => {

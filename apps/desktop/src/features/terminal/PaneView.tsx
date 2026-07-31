@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Container, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Mic, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Container, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Mic, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldAlert, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
 import { AutocompleteOverlay } from "./AutocompleteOverlay";
 import { attachFileToSession, canAttachFile } from "./attachFile";
@@ -15,6 +15,9 @@ import { describeSshError } from "../hosts/sshErrors";
 import { HostKeyChangedAlert } from "../hosts/HostKeyChangedAlert";
 import { ConnectionErrorAlert } from "../hosts/ConnectionErrorAlert";
 import { MAX_RECONNECT_ATTEMPTS } from "./reconnect";
+import { enableSshAgentForwarding } from "../../lib/ssh";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 
 /*
  * A single split-pane leaf. Owns the host element for one managed terminal and
@@ -56,6 +59,7 @@ export function PaneView({
   const closeActivePane = useSessionStore((s) => s.closeActivePane);
   const setPaneBroadcast = useSessionStore((s) => s.setPaneBroadcast);
   const setTransportNotice = useSessionStore((s) => s.setTransportNotice);
+  const setAgentForwarding = useSessionStore((s) => s.setAgentForwarding);
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   const openCollab = useUiStore((s) => s.openCollab);
   const openWebPreview = useUiStore((s) => s.openWebPreview);
@@ -75,6 +79,10 @@ export function PaneView({
   const [logNotice, setLogNotice] = useState<string | null>(null);
   const [logError, setLogError] = useState<string | null>(null);
   const [noticeCopied, setNoticeCopied] = useState(false);
+  const [forwardingConfirm, setForwardingConfirm] = useState(false);
+  const [forwardingBusy, setForwardingBusy] = useState(false);
+  const [forwardingError, setForwardingError] = useState<string | null>(null);
+  const isMobile = useCapabilityStore((state) => state.capabilities.isMobile);
 
   const beginLogging = (mode: "raw" | "asciicast") => {
     setLogError(null);
@@ -86,6 +94,23 @@ export function PaneView({
   const endLogging = () => {
     setLogNotice(null);
     void stopLog(session.id);
+  };
+  const enableForwarding = () => {
+    const backendId = terminalManager.getBackendId(session.id);
+    if (!backendId) {
+      setForwardingError("This SSH session is no longer connected.");
+      setForwardingConfirm(false);
+      return;
+    }
+    setForwardingBusy(true);
+    setForwardingError(null);
+    enableSshAgentForwarding(backendId)
+      .then(() => {
+        setAgentForwarding(session.id, true);
+        setForwardingConfirm(false);
+      })
+      .catch((error) => setForwardingError(parseLumaError(error).message))
+      .finally(() => setForwardingBusy(false));
   };
 
   useEffect(() => {
@@ -247,6 +272,18 @@ export function PaneView({
     });
   }
 
+  if (isSsh && !isMobile && !session.agentForwarding) {
+    paneActions.push({
+      label: "Restart shell with SSH agent…",
+      icon: <ShieldAlert size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        setForwardingConfirm(true);
+      },
+    });
+  }
+
   // Compose a command as a reviewable draft (dictated, typed, or both) instead
   // of typing straight into the live shell. Offered for every connected
   // session; attachments inside it need SSH, which the composer handles.
@@ -270,7 +307,7 @@ export function PaneView({
       disabled: session.status !== "connected",
       onSelect: () => {
         onFocus();
-        openWebPreview(previewHostId, session.title);
+        openWebPreview(previewHostId, session.title, session.id);
       },
     });
   }
@@ -402,6 +439,7 @@ export function PaneView({
   }
 
   return (
+    <>
     <ContextMenu
       actions={paneActions}
       minWidth="min-w-52"
@@ -461,6 +499,16 @@ export function PaneView({
         </div>
       )}
 
+      {session.agentForwarding && (
+        <div
+          title="The remote host can use your local SSH agent while this session is active"
+          className="pointer-events-none absolute bottom-1.5 left-2 z-6 flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400 shadow-sm backdrop-blur-sm"
+        >
+          <ShieldAlert size={11} />
+          Agent forwarded
+        </div>
+      )}
+
       {/* Resolved-path notice shown once logging starts. */}
       {logNotice && logEntry?.active && (
         <div className="absolute inset-x-2 top-2 z-8 flex items-start gap-2 rounded-lg border border-border bg-surface/95 px-3 py-2 text-xs shadow-glow backdrop-blur">
@@ -515,6 +563,13 @@ export function PaneView({
           >
             <X size={14} />
           </button>
+        </div>
+      )}
+
+      {forwardingError && (
+        <div role="alert" className="absolute inset-x-2 top-2 z-9 flex items-start gap-2 rounded-lg border border-danger/40 bg-surface/95 px-3 py-2 text-xs text-danger shadow-glow">
+          <span className="min-w-0 flex-1">Could not enable agent forwarding: {forwardingError}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setForwardingError(null)}><X size={14}/></button>
         </div>
       )}
 
@@ -594,6 +649,33 @@ export function PaneView({
       )}
     </div>
     </ContextMenu>
+    <ConfirmDialog
+      open={forwardingConfirm}
+      onOpenChange={setForwardingConfirm}
+      title="Restart shell with SSH agent forwarding?"
+      confirmLabel="Restart and enable"
+      busy={forwardingBusy}
+      onConfirm={enableForwarding}
+      message={
+        <div className="space-y-2">
+          <p>
+            The remote host can ask your local agent to sign authentication
+            requests for as long as this session remains connected.
+          </p>
+          <p>
+            SSH requires forwarding before a shell starts. Luma will end the
+            current remote process and start a new shell in this terminal; the
+            terminal buffer and SSH connection remain.
+          </p>
+          <p className="font-medium text-danger">
+            A compromised remote host could use every key your agent exposes.
+            Enable this only for a host you trust.
+          </p>
+          <p>This choice applies only to this live session and is not saved.</p>
+        </div>
+      }
+    />
+    </>
   );
 }
 

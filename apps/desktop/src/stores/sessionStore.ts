@@ -43,6 +43,7 @@ import {
 } from "../features/terminal/paneTree";
 import { useUiStore } from "./uiStore";
 import { useSessionLogStore } from "./sessionLogStore";
+import { useWebPreviewStore } from "./webPreviewStore";
 
 /*
  * Session METADATA and split-pane LAYOUT only. Terminal byte streams and
@@ -161,6 +162,8 @@ type SessionState = {
   /** Set or clear (undefined) a session's non-blocking transport notice (the
    * "Mosh unavailable, fell back to SSH" card). */
   setTransportNotice: (id: string, notice: string | undefined) => void;
+  /** Mark the one live session whose agent-forwarding request succeeded. */
+  setAgentForwarding: (id: string, enabled: boolean) => void;
 };
 
 /** The session ids that should currently receive broadcast for a tab: every
@@ -279,6 +282,7 @@ function handleSessionExit(
         nextRetryAt: Date.now() + plan.delayMs,
         latencyMs: null,
         connectionPrompt: undefined,
+        agentForwarding: false,
       }),
     }));
     const timer = setTimeout(() => {
@@ -301,6 +305,7 @@ function handleSessionExit(
       connectionState: exit.errorCategory ? "failed" : "disconnected",
       nextRetryAt: null,
       latencyMs: null,
+      agentForwarding: false,
     }),
   }));
 }
@@ -597,8 +602,20 @@ async function launch(
       transport = "ssh";
     }
     if (!sessionStillOpen(get, id)) return;
-    if (transport !== "ssh" && !moshFallbackAttach) {
-      descriptor = { kind: "mosh", hostId: descriptor.hostId };
+    if (transport !== "ssh") {
+      if (moshFallbackAttach) {
+        // Attaching to a workspace rides the SSH startup command, which the
+        // Mosh bootstrap has no equivalent for, so the attach forces SSH. A
+        // host pinned to Mosh must not be downgraded without saying so.
+        set((state) => ({
+          sessions: patchSession(state.sessions, id, {
+            transportNotice:
+              "Connected over SSH instead of Mosh — attaching to a workspace requires the SSH startup command.",
+          }),
+        }));
+      } else {
+        descriptor = { kind: "mosh", hostId: descriptor.hostId };
+      }
     }
   }
   try {
@@ -873,6 +890,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         hostKeyScanned: undefined,
         hostKeyKnown: undefined,
         latencyMs: null,
+        agentForwarding: false,
         ...(reconnect
           ? { connectionState: "reconnecting" as const, nextRetryAt: null }
           : { connectionState: undefined, reconnectAttempt: 0, nextRetryAt: null }),
@@ -962,6 +980,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     clearReconnectTimer(id);
     // Disposing the backend stops any active logging; clear our indicator too.
     useSessionLogStore.getState().markInactive(id);
+    // A web preview is a live forward into the remote host: it must not outlive
+    // the pane it was started from.
+    void useWebPreviewStore.getState().closeForSession(id);
     // Remember which tab owned this pane so its broadcast membership can be
     // re-synced after removal (dispose() already detached the closed session).
     const owningTabId = get().tabs.find((t) => findLeafBySession(t.root, id))?.id;
@@ -1026,6 +1047,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Stop any pending auto-reconnect for the closed sessions.
       clearReconnectTimer(sessionId);
       useSessionLogStore.getState().markInactive(sessionId);
+      void useWebPreviewStore.getState().closeForSession(sessionId);
       terminalManager.dispose(sessionId);
     }
     set((state) => {
@@ -1547,6 +1569,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setTransportNotice: (id, notice) => {
     set((state) => ({
       sessions: patchSession(state.sessions, id, { transportNotice: notice }),
+    }));
+  },
+  setAgentForwarding: (id, enabled) => {
+    set((state) => ({
+      sessions: patchSession(state.sessions, id, { agentForwarding: enabled }),
     }));
   },
 

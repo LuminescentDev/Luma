@@ -47,6 +47,10 @@ const ServerStatsScreen = named(
   () => import("../features/serverStats/ServerStatsScreen"),
   "ServerStatsScreen",
 );
+const FleetOverviewScreen = named(
+  () => import("../features/fleet/FleetOverviewScreen"),
+  "FleetOverviewScreen",
+);
 const SyncDialogs = named(
   () => import("../features/sync/SyncDialogs"),
   "SyncDialogs",
@@ -72,6 +76,7 @@ export function DesktopLayout() {
   const closeCollab = useUiStore((s) => s.closeCollab);
   const webPreviewHostId = useUiStore((s) => s.webPreviewHostId);
   const webPreviewHostLabel = useUiStore((s) => s.webPreviewHostLabel);
+  const webPreviewSessionId = useUiStore((s) => s.webPreviewSessionId);
   const closeWebPreview = useUiStore((s) => s.closeWebPreview);
   const multiplexerHostId = useUiStore((s) => s.multiplexerHostId);
   const multiplexerHostLabel = useUiStore((s) => s.multiplexerHostLabel);
@@ -131,6 +136,11 @@ export function DesktopLayout() {
                 <ServerStatsScreen />
               </Suspense>
             )}
+            {mainView === "fleet" && (
+              <Suspense fallback={<ScreenFallback />}>
+                <FleetOverviewScreen />
+              </Suspense>
+            )}
             {/* Shared-terminal viewer overlay: shown only while joining a room,
                 covering whichever main view is active (a viewer has no local
                 tabs of its own). */}
@@ -146,6 +156,7 @@ export function DesktopLayout() {
         onOpenChange={(o) => !o && closeWebPreview()}
         hostId={webPreviewHostId}
         hostLabel={webPreviewHostLabel ?? undefined}
+        sessionId={webPreviewSessionId}
       />
       <MultiplexerDialog
         open={multiplexerHostId !== null}

@@ -132,6 +132,66 @@ pub async fn key_references_list(
     key_references::list(&state.pool, vault_id.as_deref()).await
 }
 
+// Both of these serve `ssh_agent_identities`, which mobile targets do not
+// compile — without the same gate they are dead code in a mobile build.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshAgentIdentity {
+    public_key: String,
+    fingerprint: String,
+    comment: String,
+    algorithm: String,
+    hardware_backed: bool,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_hardware_backed_agent_algorithm(algorithm: &str) -> bool {
+    algorithm.starts_with("sk-") || algorithm.contains("security-key")
+}
+
+/// Lists public identities exposed by the device's SSH agent. Private material
+/// never crosses this boundary; signing remains inside the agent/provider.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn ssh_agent_identities() -> Result<Vec<SshAgentIdentity>> {
+    use russh::keys::agent::AgentIdentity;
+    use russh::keys::HashAlg;
+
+    let mut agent = crate::ssh::agent::connect_client().await?;
+    let identities = agent.request_identities().await.map_err(|error| {
+        crate::errors::LumaError::KeyUnavailable(format!(
+            "could not list SSH-agent identities: {error}"
+        ))
+    })?;
+    let mut result = Vec::new();
+    for identity in identities {
+        let AgentIdentity::PublicKey { mut key, comment } = identity else {
+            // Certificate-backed agent identities require preserving the full
+            // certificate during authentication. Do not misrepresent their
+            // underlying public key as directly usable.
+            continue;
+        };
+        let algorithm = key.algorithm().to_string();
+        let hardware_backed = is_hardware_backed_agent_algorithm(&algorithm);
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        key.set_comment("");
+        let public_key = key.to_openssh().map_err(|error| {
+            crate::errors::LumaError::KeyUnavailable(format!(
+                "could not encode SSH-agent public key: {error}"
+            ))
+        })?;
+        result.push(SshAgentIdentity {
+            public_key,
+            fingerprint,
+            comment,
+            algorithm,
+            hardware_backed,
+        });
+    }
+    Ok(result)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KeyReferenceSecrets {
@@ -691,6 +751,19 @@ pub async fn identity_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn recognizes_fido_agent_algorithms_without_mislabeling_software_keys() {
+        assert!(is_hardware_backed_agent_algorithm(
+            "sk-ssh-ed25519@openssh.com"
+        ));
+        assert!(is_hardware_backed_agent_algorithm(
+            "sk-ecdsa-sha2-nistp256@openssh.com"
+        ));
+        assert!(!is_hardware_backed_agent_algorithm("ssh-ed25519"));
+        assert!(!is_hardware_backed_agent_algorithm("rsa-sha2-512"));
+    }
 
     fn local_key_input(name: &str, passphrase: Option<&str>) -> KeyReferenceInput {
         KeyReferenceInput {

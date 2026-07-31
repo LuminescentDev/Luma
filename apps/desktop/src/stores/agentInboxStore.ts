@@ -20,6 +20,9 @@ import {
 /** How many events to retain per item. */
 export const HISTORY_LIMIT = 20;
 
+/** How many inbox items to retain in total. */
+export const ITEM_LIMIT = 200;
+
 /** One recorded event in an item's history (newest first). */
 export type AgentEventEntry = {
   event: string;
@@ -86,6 +89,35 @@ function countUnread(items: AgentInboxItem[]): number {
   return items.reduce((total, item) => total + (item.unread ? 1 : 0), 0);
 }
 
+/**
+ * Cap the inbox at `ITEM_LIMIT`, newest first.
+ *
+ * Anything that can write to a terminal can synthesize agent events, so the
+ * number of distinct sessions is attacker-influenced and must not grow without
+ * bound. Finished and stale items are evicted before live ones, so a flood of
+ * invented sessions cannot silently push out an agent that is still waiting for
+ * an answer.
+ */
+function enforceItemLimit(items: AgentInboxItem[]): AgentInboxItem[] {
+  if (items.length <= ITEM_LIMIT) return items;
+  // Finished and stale items go first, then acknowledged ones; an item still
+  // waiting on the user is only dropped when nothing else is left to drop.
+  const evictionRank = (item: AgentInboxItem): number =>
+    item.done || item.stale ? 0 : item.unread ? 2 : 1;
+  const order = items
+    .map((item, index) => ({ item, index }))
+    // Oldest first within a rank — the list is newest-first, so by index desc.
+    .sort(
+      (left, right) =>
+        evictionRank(left.item) - evictionRank(right.item) ||
+        right.index - left.index,
+    );
+  const dropped = new Set(
+    order.slice(0, items.length - ITEM_LIMIT).map(({ index }) => index),
+  );
+  return items.filter((_, index) => !dropped.has(index));
+}
+
 export const useAgentInboxStore = create<AgentInboxState>((set) => ({
   items: [],
   unreadCount: 0,
@@ -127,7 +159,7 @@ export const useAgentInboxStore = create<AgentInboxState>((set) => ({
 
       // Move the touched item to the front; keep the rest in order.
       const rest = state.items.filter((item) => item.key !== key);
-      const items = [updated, ...rest];
+      const items = enforceItemLimit([updated, ...rest]);
       return { items, unreadCount: countUnread(items) };
     });
   },

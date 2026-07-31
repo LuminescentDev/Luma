@@ -23,6 +23,9 @@ pub struct ServerStatsSnapshot {
     /// `None` when the docker CLI is unavailable (or the daemon is down);
     /// `Some(vec![])` when docker responded with zero containers.
     pub docker: Option<Vec<DockerContainer>>,
+    /// `None` when systemd/systemctl is unavailable; `Some(vec![])` when
+    /// systemd responded and no service units are failed.
+    pub failed_services: Option<Vec<FailedService>>,
     /// Milliseconds since the Unix epoch, taken client-side at fetch time so
     /// the frontend can compute rate deltas between refreshes.
     pub sampled_at_ms: i64,
@@ -127,6 +130,13 @@ pub struct DockerContainer {
     pub health: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FailedService {
+    pub unit: String,
+    pub description: String,
+}
+
 const MAX_TOP_PROCESSES: usize = 10;
 const MAX_LIST_ENTRIES: usize = 512;
 
@@ -172,6 +182,7 @@ pub(crate) fn parse_snapshot(output: &str, sampled_at_ms: i64) -> ServerStatsSna
         network: parse_network(section("netdev")),
         top_processes: parse_processes(section("ps")),
         docker: parse_docker(section("docker")),
+        failed_services: parse_failed_services(section("failedservices")),
         sampled_at_ms,
     }
 }
@@ -517,6 +528,44 @@ pub(crate) fn parse_docker(docker: &str) -> Option<Vec<DockerContainer>> {
     Some(containers)
 }
 
+pub(crate) fn parse_failed_services(output: &str) -> Option<Vec<FailedService>> {
+    let mut lines = output.lines().filter(|line| !line.trim().is_empty());
+    // Like docker, the script emits a sentinel only when systemctl completed
+    // successfully. This distinguishes a healthy system from a non-systemd OS.
+    if lines.next()?.trim() != "@ok" {
+        return None;
+    }
+    let mut services = Vec::new();
+    for line in lines {
+        if services.len() >= MAX_LIST_ENTRIES {
+            break;
+        }
+        // systemctl --plain columns are UNIT LOAD ACTIVE SUB DESCRIPTION.
+        // Preserve the remainder as the human-readable description.
+        let mut fields = line.split_whitespace();
+        let Some(unit) = fields.next() else {
+            continue;
+        };
+        let Some(_load) = fields.next() else {
+            continue;
+        };
+        let Some(active) = fields.next() else {
+            continue;
+        };
+        let Some(sub) = fields.next() else {
+            continue;
+        };
+        if active != "failed" && sub != "failed" {
+            continue;
+        }
+        services.push(FailedService {
+            unit: unit.to_string(),
+            description: fields.collect::<Vec<_>>().join(" "),
+        });
+    }
+    Some(services)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +733,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_failed_systemd_services() {
+        let failed = "@ok\n\
+                      nginx.service loaded failed failed A high performance web server\n\
+                      backup.service loaded failed failed Nightly backup job\n";
+        let services = parse_failed_services(failed).unwrap();
+        assert_eq!(services.len(), 2);
+        assert_eq!(services[0].unit, "nginx.service");
+        assert_eq!(services[0].description, "A high performance web server");
+        assert_eq!(parse_failed_services("@ok\n"), Some(Vec::new()));
+        assert_eq!(parse_failed_services(""), None);
+        assert_eq!(parse_failed_services("systemctl: not found\n"), None);
+    }
+
+    #[test]
     fn full_snapshot_degrades_per_section() {
         let output = "===LUMA:system===\nos=Linux\nkernel=6.1.0\narch=aarch64\nhostname=pi\n\
                       ===LUMA:meminfo===\nMemTotal: 1024 kB\nMemFree: 512 kB\n\
@@ -696,6 +759,7 @@ mod tests {
         assert_eq!(snapshot.network, None);
         assert_eq!(snapshot.top_processes, None);
         assert_eq!(snapshot.docker, None);
+        assert_eq!(snapshot.failed_services, None);
         assert_eq!(snapshot.sampled_at_ms, 1_700_000_000_000);
     }
 }

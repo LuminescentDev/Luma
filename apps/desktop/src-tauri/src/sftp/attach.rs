@@ -134,17 +134,35 @@ fn short_id() -> String {
 }
 
 /// Reduce an arbitrary client-supplied name to a safe remote file name: keep
-/// only the last path component, drop control characters, cap the length at a
-/// UTF-8 boundary, and fall back to "attachment" for empty or dot-only names.
+/// only the last path component, reduce it to characters that are literal in
+/// every shell, cap the length at a UTF-8 boundary, and fall back to
+/// "attachment" for empty or dot-only names.
+///
+/// The character set matters beyond storage: the resulting path is typed at the
+/// user's prompt, and Luma cannot know whether that prompt is bash, fish or
+/// PowerShell. A name that needs no quoting works in all of them.
 pub(super) fn sanitize_attachment_name(name: &str) -> String {
+    // Trim before mapping, so surrounding whitespace disappears instead of
+    // becoming underscores — while an underscore the user typed is kept.
     let base = name
         .rsplit(['/', '\\'])
         .next()
         .unwrap_or_default()
+        .trim()
         .chars()
+        // Control characters carry no meaning in a name; drop them outright
+        // rather than turning a run of them into a row of underscores.
         .filter(|character| !character.is_control())
+        // Letters and digits of any script are literal to a shell; whitespace,
+        // quotes, globs and expansion characters are not.
+        .map(|character| {
+            if character.is_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
-    let base = base.trim();
     let mut capped = String::new();
     for character in base.chars() {
         if capped.len() + character.len_utf8() > MAX_NAME_BYTES {
@@ -165,7 +183,19 @@ mod tests {
     #[test]
     fn keeps_ordinary_names() {
         assert_eq!(sanitize_attachment_name("report.pdf"), "report.pdf");
-        assert_eq!(sanitize_attachment_name("a b c.txt"), "a b c.txt");
+        // Letters of any script survive; they need no quoting at a prompt.
+        assert_eq!(sanitize_attachment_name("отчёт.pdf"), "отчёт.pdf");
+        assert_eq!(sanitize_attachment_name("報告.pdf"), "報告.pdf");
+    }
+
+    #[test]
+    fn replaces_characters_that_would_need_quoting() {
+        // The remote path is typed at a prompt whose shell Luma cannot know,
+        // so the stored name must be literal everywhere.
+        assert_eq!(sanitize_attachment_name("a b c.txt"), "a_b_c.txt");
+        assert_eq!(sanitize_attachment_name("$(whoami).txt"), "__whoami_.txt");
+        assert_eq!(sanitize_attachment_name("it's a *.txt"), "it_s_a__.txt");
+        assert_eq!(sanitize_attachment_name("a;rm -rf ~"), "a_rm_-rf__");
     }
 
     #[test]
@@ -179,7 +209,7 @@ mod tests {
     fn strips_control_characters() {
         assert_eq!(
             sanitize_attachment_name("a\x00b\x1b[31mc\n.txt"),
-            "ab[31mc.txt"
+            "ab_31mc.txt"
         );
         assert_eq!(sanitize_attachment_name("\x00\x01\x02"), "attachment");
     }

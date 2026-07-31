@@ -15,8 +15,12 @@ import { parseLumaError } from "../lib/hosts";
  * Web-server discovery and preview state. The backend owns the preview tunnels
  * (they ride the normal tunnel lifecycle and are killed on app exit); this
  * store mirrors them so the dialog can list open previews and close them.
- * Previews are per-host, not per-session: closing the originating terminal
- * leaves the preview running until it is closed here.
+ *
+ * The tunnels themselves are keyed per host and port, but each one remembers
+ * the terminal session that opened it so `closeForSession` can tear it down
+ * when that pane closes — a forward from this device into a remote host must
+ * not outlive the session the user started it from. Previews recovered by
+ * `hydrate` have no known owner and stay up until closed explicitly.
  */
 
 type WebPreviewState = {
@@ -27,6 +31,8 @@ type WebPreviewState = {
   discoverError: string | null;
   /** Open previews keyed by tunnelId. */
   previews: Record<string, WebPreview>;
+  /** Terminal session that opened each preview, keyed by tunnelId. */
+  owners: Record<string, string>;
   /** Remote ports with an in-flight open request. */
   opening: Record<number, boolean>;
   openError: string | null;
@@ -35,9 +41,12 @@ type WebPreviewState = {
     hostId: string,
     port: number,
     remoteBind?: string | null,
+    sessionId?: string | null,
   ) => Promise<WebPreview | null>;
   launch: (preview: WebPreview) => Promise<void>;
   close: (tunnelId: string) => Promise<void>;
+  /** Close every preview opened from a terminal session that is going away. */
+  closeForSession: (sessionId: string) => Promise<void>;
   hydrate: () => Promise<void>;
   clearErrors: () => void;
 };
@@ -48,6 +57,7 @@ export const useWebPreviewStore = create<WebPreviewState>((set, get) => ({
   discovering: false,
   discoverError: null,
   previews: {},
+  owners: {},
   opening: {},
   openError: null,
 
@@ -70,7 +80,7 @@ export const useWebPreviewStore = create<WebPreviewState>((set, get) => ({
     }
   },
 
-  open: async (hostId, port, remoteBind) => {
+  open: async (hostId, port, remoteBind, sessionId) => {
     set((state) => ({
       opening: { ...state.opening, [port]: true },
       openError: null,
@@ -80,6 +90,9 @@ export const useWebPreviewStore = create<WebPreviewState>((set, get) => ({
       set((state) => ({
         opening: omitPort(state.opening, port),
         previews: { ...state.previews, [preview.tunnelId]: preview },
+        owners: sessionId
+          ? { ...state.owners, [preview.tunnelId]: sessionId }
+          : state.owners,
       }));
       await get().launch(preview);
       return preview;
@@ -107,11 +120,22 @@ export const useWebPreviewStore = create<WebPreviewState>((set, get) => ({
   close: async (tunnelId) => {
     await closeWebPreview(tunnelId).catch(() => {});
     set((state) => {
-      if (!(tunnelId in state.previews)) return {};
+      if (!(tunnelId in state.previews) && !(tunnelId in state.owners)) {
+        return {};
+      }
       const previews = { ...state.previews };
       delete previews[tunnelId];
-      return { previews };
+      const owners = { ...state.owners };
+      delete owners[tunnelId];
+      return { previews, owners };
     });
+  },
+
+  closeForSession: async (sessionId) => {
+    const doomed = Object.entries(get().owners)
+      .filter(([, owner]) => owner === sessionId)
+      .map(([tunnelId]) => tunnelId);
+    await Promise.all(doomed.map((tunnelId) => get().close(tunnelId)));
   },
 
   hydrate: async () => {

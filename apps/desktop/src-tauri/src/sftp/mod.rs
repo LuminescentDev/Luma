@@ -89,6 +89,16 @@ impl<T> SessionStore<T> {
         self.entries.get(session_id).map(|stored| &stored.value)
     }
 
+    /// Lowest-sorting open session for a host, so repeated lookups pick the
+    /// same one rather than an arbitrary map entry.
+    fn session_id_for_host(&self, host_id: &str) -> Option<String> {
+        self.entries
+            .iter()
+            .filter(|(_, stored)| stored.host_id == host_id)
+            .map(|(session_id, _)| session_id.clone())
+            .min()
+    }
+
     fn remove(&mut self, session_id: &str) -> Option<T> {
         self.entries.remove(session_id).map(|stored| stored.value)
     }
@@ -184,6 +194,20 @@ impl SftpManager {
 
     pub fn list(&self) -> Vec<SftpSessionInfo> {
         self.sessions.lock().unwrap().list()
+    }
+
+    /// An already-open SFTP session for this host, if the user has one.
+    pub fn session_for_host(&self, host_id: &str) -> Option<String> {
+        self.sessions.lock().unwrap().session_id_for_host(host_id)
+    }
+
+    /// The session's home directory. Doubles as a liveness check on a session
+    /// that was opened earlier and may since have died.
+    pub async fn home_directory(&self, session_id: &str) -> Result<String> {
+        let client = self.client(session_id)?;
+        let path = client.canonicalize(".").await.map_err(remote_error)?;
+        validate_remote_path(&path)?;
+        Ok(path)
     }
 
     pub(super) fn client(&self, session_id: &str) -> Result<Arc<SftpSession>> {

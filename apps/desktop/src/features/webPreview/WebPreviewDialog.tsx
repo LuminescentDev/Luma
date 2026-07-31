@@ -21,19 +21,24 @@ import { cn } from "../../lib/utils";
  * the system browser rather than an in-app webview; the local URL stays
  * visible and copyable so it also works if the system handler fails.
  *
- * Previews are per-host, not per-session: closing the terminal that started
- * one leaves it running until it is closed from the list below.
+ * A preview opened from a terminal pane is closed with that pane. Previews the
+ * app recovered on startup have no known owner and stay up until closed from
+ * the list below.
  */
 export function WebPreviewDialog({
   open,
   onOpenChange,
   hostId,
   hostLabel,
+  sessionId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   hostId: string | null;
   hostLabel?: string;
+  /** Terminal session the dialog was opened from; previews started here close
+   * with it. */
+  sessionId?: string | null;
 }) {
   const listeners = useWebPreviewStore((s) => s.listeners);
   const discovering = useWebPreviewStore((s) => s.discovering);
@@ -143,6 +148,7 @@ export function WebPreviewDialog({
                       hostId,
                       listener.port,
                       listener.bindAddress,
+                      sessionId,
                     )
                   }
                 />
@@ -160,7 +166,7 @@ export function WebPreviewDialog({
             onSubmit={(event) => {
               event.preventDefault();
               if (!manualValid) return;
-              void openPreview(hostId, manual);
+              void openPreview(hostId, manual, null, sessionId);
             }}
           >
             <input

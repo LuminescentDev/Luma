@@ -168,6 +168,10 @@ fn stats_script() -> String {
             "docker",
             r#"if LUMA_DOCKER=$(docker ps -a --format "{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Image}}"); then printf "@ok\n%s\n" "$LUMA_DOCKER"; fi"#,
         ),
+        (
+            "failedservices",
+            r#"if LUMA_FAILED=$(systemctl --failed --type=service --no-legend --plain); then printf "@ok\n%s\n" "$LUMA_FAILED"; fi"#,
+        ),
     ];
     let mut body = String::from("exec 2>/dev/null");
     for (name, command) in SECTIONS {
@@ -242,6 +246,7 @@ mod tests {
             "netdev",
             "ps",
             "docker",
+            "failedservices",
         ] {
             assert!(
                 script.contains(&format!("===LUMA:{section}===")),

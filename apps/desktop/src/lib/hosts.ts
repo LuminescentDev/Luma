@@ -139,7 +139,7 @@ export function inheritedGroupId(origin: FieldOrigin | undefined): string | null
   return origin?.startsWith("group:") ? origin.slice("group:".length) : null;
 }
 
-export type KeyStorageMode = "local-path" | "encrypted-vault";
+export type KeyStorageMode = "local-path" | "encrypted-vault" | "ssh-agent";
 
 export type KeyReference = {
   id: string;
@@ -163,6 +163,14 @@ export type KeyReferenceInput = {
   certificate: string | null;
   privateKey?: string | null;
   passphrase?: string | null;
+};
+
+export type SshAgentIdentity = {
+  publicKey: string;
+  fingerprint: string;
+  comment: string;
+  algorithm: string;
+  hardwareBacked: boolean;
 };
 
 export type Identity = { id: string; vaultId: string; name: string; username: string; keyId: string | null; hasPassword: boolean };
@@ -348,6 +356,11 @@ export function updateKeyReference(
 
 export function deleteKeyReference(id: string): Promise<void> {
   return invoke<void>("key_reference_delete", { id });
+}
+
+/** Lists public identities exposed by the device-local SSH agent. */
+export function listSshAgentIdentities(): Promise<SshAgentIdentity[]> {
+  return invoke<SshAgentIdentity[]>("ssh_agent_identities");
 }
 export function generateSshKey(name: string, localPath: string, passphrase: string, certificate: string | null, vaultId?: string): Promise<KeyReference> { return invoke<KeyReference>("ssh_key_generate", { input: { vaultId, name, localPath, passphrase, certificate } }); }
 

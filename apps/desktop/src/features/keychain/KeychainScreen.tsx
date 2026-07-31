@@ -2,21 +2,23 @@ import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, Copy, Eye, EyeOff, Fingerprint, Grid2X2, KeyRound, List, Loader2, Plus, Save, Search, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Eye, EyeOff, Fingerprint, Grid2X2, KeyRound, List, Loader2, Plus, Save, Search, ShieldCheck, X } from "lucide-react";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useIdentities, useInvalidateHosts, useKeyReferences } from "../../hooks/useHosts";
-import { createIdentity, createKeyReference, derivePublicKey, getKeyReferenceSecrets, getKeystoreStatus, parseLumaError, setKeystorePolicy, updateIdentity, updateKeyReference, type DerivedPublicKey, type Identity, type KeyReference, type KeystoreStatus } from "../../lib/hosts";
+import { createIdentity, createKeyReference, derivePublicKey, getKeyReferenceSecrets, getKeystoreStatus, parseLumaError, setKeystorePolicy, updateIdentity, updateKeyReference, type DerivedPublicKey, type Identity, type KeyReference, type KeyStorageMode, type KeystoreStatus } from "../../lib/hosts";
 import { useBrowsingVaultId, useCreationVaultId } from "../../stores/vaultStore";
 import { KeystoreGate } from "../keystore/KeystoreGate";
 import { GenerateKeyDialog } from "./GenerateKeyDialog";
 import { InstallKeyDialog } from "./InstallKeyDialog";
+import { AgentKeyDialog } from "./AgentKeyDialog";
 import { UploadCloud } from "lucide-react";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 
 // Drafts carry their vault so an edit stays in the entity's own vault and the
 // key picker can only offer keys an identity is allowed to reference.
-type KeyDraft = { id: string | null; vaultId: string; label: string; privateKey: string; passphrase: string; certificate: string };
-const blankKey = (vaultId: string): KeyDraft => ({ id: null, vaultId, label: "", privateKey: "", passphrase: "", certificate: "" });
-const editKey = (key: KeyReference): KeyDraft => ({ id: key.id, vaultId: key.vaultId, label: key.name, privateKey: "", passphrase: "", certificate: key.certificate ?? "" });
+type KeyDraft = { id: string | null; vaultId: string; label: string; storageMode: KeyStorageMode; publicKey: string; fingerprint: string; privateKey: string; passphrase: string; certificate: string };
+const blankKey = (vaultId: string): KeyDraft => ({ id: null, vaultId, label: "", storageMode: "encrypted-vault", publicKey: "", fingerprint: "", privateKey: "", passphrase: "", certificate: "" });
+const editKey = (key: KeyReference): KeyDraft => ({ id: key.id, vaultId: key.vaultId, label: key.name, storageMode: key.storageMode, publicKey: key.publicKey ?? "", fingerprint: key.fingerprint ?? "", privateKey: "", passphrase: "", certificate: key.certificate ?? "" });
 type IdentityDraft = { id: string | null; vaultId: string; label: string; username: string; keyId: string; password: string };
 const blankIdentity = (vaultId: string): IdentityDraft => ({ id: null, vaultId, label: "", username: "", keyId: "", password: "" });
 const editIdentity = (identity: Identity): IdentityDraft => ({ id: identity.id, vaultId: identity.vaultId, label: identity.name, username: identity.username, keyId: identity.keyId ?? "", password: "" });
@@ -30,6 +32,7 @@ export function KeychainScreen() {
   const [identityDraft, setIdentityDraft] = useState<IdentityDraft | null>(null);
   const [keystoreStatus, setKeystoreStatus] = useState<KeystoreStatus | null>(null);
   const [generateOpen, setGenerateOpen] = useState(false);
+  const [agentImportOpen, setAgentImportOpen] = useState(false);
   const [installKey, setInstallKey] = useState<{ id: string; name: string } | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -40,6 +43,7 @@ export function KeychainScreen() {
   const closeSearch = () => { setSearchOpen(false); setQuery(""); };
   useEffect(() => { void getKeystoreStatus().then(setKeystoreStatus); }, []);
   const invalidate = useInvalidateHosts();
+  const isMobile = useCapabilityStore((state) => state.capabilities.isMobile);
   // publicKey/fingerprint are intentionally sent as null: the backend derives
   // them authoritatively from privateKey on save, so the frontend must never
   // send a free-text public key that could mismatch the stored private key.
@@ -56,7 +60,7 @@ export function KeychainScreen() {
         {query && <button type="button" aria-label="Clear search" onClick={() => setQuery("")} className="rounded p-1 text-muted active:text-foreground"><X size={14} /></button>}
       </div>
       <div className="keychain-toolbar mx-auto flex max-w-375 items-center gap-2 md:border-b md:border-border md:pb-4">
-      <div className="flex overflow-hidden rounded-lg bg-accent text-accent-foreground"><button onClick={() => { setIdentityDraft(null); setDraft(blankKey(creationVaultId)); }} className="flex items-center gap-2 px-4 py-2 text-sm font-medium"><Plus size={15}/> New key</button><DropdownMenu.Root><DropdownMenu.Trigger asChild><button aria-label="New key options" className="border-l border-white/20 px-2 hover:bg-white/10"><ChevronDown size={14}/></button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content align="start" sideOffset={5} className="z-50 min-w-48 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"><DropdownMenu.Item onSelect={() => { setDraft(null); setIdentityDraft(null); setGenerateOpen(true); }} className="cursor-default rounded-md px-3 py-2 outline-none data-highlighted:bg-surface data-highlighted:text-accent">Generate key</DropdownMenu.Item><DropdownMenu.Item onSelect={() => { setDraft(null); setIdentityDraft(blankIdentity(creationVaultId)); }} className="cursor-default rounded-md px-3 py-2 outline-none data-highlighted:bg-surface data-highlighted:text-accent">Add new identity</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></div>
+      <div className="flex overflow-hidden rounded-lg bg-accent text-accent-foreground"><button onClick={() => { setIdentityDraft(null); setDraft(blankKey(creationVaultId)); }} className="flex items-center gap-2 px-4 py-2 text-sm font-medium"><Plus size={15}/> New key</button><DropdownMenu.Root><DropdownMenu.Trigger asChild><button aria-label="New key options" className="border-l border-white/20 px-2 hover:bg-white/10"><ChevronDown size={14}/></button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content align="start" sideOffset={5} className="z-50 min-w-48 rounded-lg border border-border bg-raised p-1 text-sm shadow-glow"><DropdownMenu.Item onSelect={() => { setDraft(null); setIdentityDraft(null); setGenerateOpen(true); }} className="cursor-default rounded-md px-3 py-2 outline-none data-highlighted:bg-surface data-highlighted:text-accent">Generate key</DropdownMenu.Item>{!isMobile&&<DropdownMenu.Item onSelect={() => { setDraft(null); setIdentityDraft(null); setAgentImportOpen(true); }} className="cursor-default rounded-md px-3 py-2 outline-none data-highlighted:bg-surface data-highlighted:text-accent">Import from SSH agent…</DropdownMenu.Item>}<DropdownMenu.Item onSelect={() => { setDraft(null); setIdentityDraft(blankIdentity(creationVaultId)); }} className="cursor-default rounded-md px-3 py-2 outline-none data-highlighted:bg-surface data-highlighted:text-accent">Add new identity</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></div>
       <div className="flex-1"/>{searchOpen ? <div className="flex items-center gap-1 rounded-lg border border-border bg-background px-2 focus-within:border-accent"><Search size={15} className="text-muted"/><input autoFocus aria-label="Search keychain" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") closeSearch(); }} placeholder="Search…" className="w-44 bg-transparent py-1.5 text-xs text-foreground outline-none placeholder:text-muted"/><button aria-label="Clear search" onClick={closeSearch} className="rounded p-0.5 text-muted hover:text-foreground"><X size={14}/></button></div> : <button aria-label="Search keychain" onClick={() => setSearchOpen(true)} className="rounded-lg p-2 text-muted hover:bg-raised hover:text-foreground"><Search size={17}/></button>}<button aria-label={viewMode === "grid" ? "Switch to list view" : "Switch to grid view"} onClick={() => setViewMode(m => m === "grid" ? "list" : "grid")} className="rounded-lg bg-raised p-2">{viewMode === "grid" ? <List size={17}/> : <Grid2X2 size={17}/>}</button>
       {keystoreStatus && <button onClick={() => void setKeystorePolicy(!keystoreStatus.rememberOnDevice).then(() => getKeystoreStatus()).then(setKeystoreStatus)} className="rounded-lg px-3 py-2 text-xs text-muted hover:bg-raised hover:text-foreground">{keystoreStatus.rememberOnDevice ? "Remembered on device" : "Lock on close"}</button>}
       </div>
@@ -66,9 +70,12 @@ export function KeychainScreen() {
       <KeychainSection title="Identities" view={viewMode}>{filteredIdentities.length ? filteredIdentities.map(identity => <KeychainCard key={identity.id} selected={identityDraft?.id === identity.id} icon={<Fingerprint size={19}/>} title={identity.name} detail={`${identity.username} · ${identity.keyId ? "password and key" : "password authentication"}`} onClick={() => { setDraft(null); setIdentityDraft(editIdentity(identity)); }}/>) : q ? <Empty text="No matching identities"/> : <Empty text="No identities yet" action="Create your first identity" onClick={() => { setDraft(null); setIdentityDraft(blankIdentity(creationVaultId)); }}/>}</KeychainSection>
     </div>
   </div>
-  {draft && <KeyInspector draft={draft} setDraft={setDraft} onClose={() => { save.reset(); setDraft(null); }} onSave={() => save.mutate(draft)} busy={save.isPending} error={save.isError ? parseLumaError(save.error).message : null} onInstall={draft.id ? () => setInstallKey({ id: draft.id!, name: draft.label }) : undefined} />}
+  {draft && (draft.storageMode === "ssh-agent"
+    ? <AgentKeyInspector draft={draft} onClose={() => setDraft(null)} />
+    : <KeyInspector draft={draft} setDraft={setDraft} onClose={() => { save.reset(); setDraft(null); }} onSave={() => save.mutate(draft)} busy={save.isPending} error={save.isError ? parseLumaError(save.error).message : null} onInstall={draft.id ? () => setInstallKey({ id: draft.id!, name: draft.label }) : undefined} />)}
   {identityDraft && <IdentityInspector draft={identityDraft} setDraft={setIdentityDraft} keys={keys.filter(key => key.vaultId === identityDraft.vaultId)} onClose={() => { saveIdentity.reset(); setIdentityDraft(null); }} onSave={() => saveIdentity.mutate(identityDraft)} busy={saveIdentity.isPending} error={saveIdentity.isError ? parseLumaError(saveIdentity.error).message : null} />}
   <GenerateKeyDialog open={generateOpen} onOpenChange={setGenerateOpen} vaultId={creationVaultId} />
+  <AgentKeyDialog open={agentImportOpen} onOpenChange={setAgentImportOpen} onImported={invalidate} />
   <InstallKeyDialog open={installKey !== null} keyReferenceId={installKey?.id ?? null} keyName={installKey?.name ?? ""} onOpenChange={(open) => { if (!open) setInstallKey(null); }} />
   </div>;
 }
@@ -108,6 +115,20 @@ function InspectorShell({title,subtitle,onClose,footer,children}:{title:string;s
 function KeychainSection({title,view,children}:{title:string;view:"grid"|"list";children:React.ReactNode}){return <section><h2 className="mb-3 text-sm font-semibold">{title}</h2><div className={view==="list"?"flex flex-col gap-2":"grid gap-3 md:grid-cols-2 xl:grid-cols-3"}>{children}</div></section>}
 function KeychainCard({icon,title,detail,onClick,selected=false}:{icon:React.ReactNode;title:string;detail:string;onClick:()=>void;selected?:boolean}){return <button onClick={onClick} className={`flex min-h-15 items-center gap-3 rounded-xl bg-raised px-3 py-2 text-left hover:ring-1 hover:ring-accent ${selected ? "ring-2 ring-accent" : ""}`}><span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/20 text-accent">{icon}</span><span className="min-w-0"><span className="block truncate text-sm font-semibold">{title}</span><span className="block truncate text-xs text-muted">{detail}</span></span></button>}
 function Empty({text,action,onClick}:{text:string;action?:string;onClick?:()=>void}){return <div className="col-span-full rounded-xl border border-dashed border-border px-5 py-8 text-center"><p className="text-sm font-medium">{text}</p>{action&&<button onClick={onClick} className="mt-1 text-xs text-accent">{action}</button>}</div>}
+
+function AgentKeyInspector({draft,onClose}:{draft:KeyDraft;onClose:()=>void}) {
+  const copy=()=>void navigator.clipboard.writeText(draft.publicKey);
+  const hardware=draft.publicKey.startsWith("sk-");
+  const footer=<button type="button" onClick={onClose} className="min-h-11 w-full rounded-lg border border-border text-sm font-medium hover:border-accent">Done</button>;
+  return <InspectorShell title={draft.label} subtitle="Device-bound SSH-agent key" onClose={onClose} footer={footer}>
+    <div className="rounded-lg border border-border bg-background px-3 py-3 text-xs">
+      <div className="flex items-center gap-2 font-medium text-foreground"><ShieldCheck size={15} className="text-accent"/>{hardware?"Hardware-backed security key":"External agent key"}</div>
+      <p className="mt-1 text-muted">The private key is never stored by Luma. Signing and any touch or biometric confirmation happen in your SSH-agent provider.</p>
+    </div>
+    <label className="block text-xs text-muted">Fingerprint<span className="mt-1 block break-all rounded-lg border border-border bg-background px-3 py-2 font-mono text-foreground">{draft.fingerprint||"Unavailable"}</span></label>
+    <label className="block text-xs text-muted">Public key<span className="relative mt-1 block"><textarea readOnly value={draft.publicKey} rows={5} className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 pr-10 font-mono text-xs text-foreground"/><button type="button" aria-label="Copy public key" onClick={copy} className="absolute right-2 top-2 rounded p-1 text-muted hover:bg-raised hover:text-foreground"><Copy size={14}/></button></span></label>
+  </InspectorShell>;
+}
 
 function KeyInspector({draft,setDraft,onClose,onSave,busy,error,onInstall}:{draft:KeyDraft;setDraft:(draft:KeyDraft)=>void;onClose:()=>void;onSave:()=>void;busy:boolean;error:string|null;onInstall?:()=>void}) {
   const [showPrivateKey,setShowPrivateKey]=useState(false);

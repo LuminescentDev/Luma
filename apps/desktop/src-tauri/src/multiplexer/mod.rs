@@ -62,12 +62,14 @@ pub fn attach_command(request: &MultiplexerAttach) -> Result<String> {
     })
 }
 
-/// Characters that would change the meaning of the built command (or of a
-/// login shell re-parsing it). Rejected outright rather than escaped.
-const FORBIDDEN_NAME_CHARACTERS: &[char] = &[
-    '\'', '"', '`', '$', '\\', ';', '&', '|', '<', '>', '(', ')', '{', '}', '[', ']', '*', '?',
-    '!', '#', '~', '=', '%', '\u{7f}',
-];
+/// The one character a single-quoted argument cannot carry.
+///
+/// The command is delivered as a single `exec` request, so the remote login
+/// shell parses it exactly once and single quotes suppress every other
+/// metacharacter. Rejecting more than this would list workspaces (discovery
+/// only drops control characters) that could never be attached — tmux names
+/// like `feat/#123` or `build[2]` are ordinary.
+const FORBIDDEN_NAME_CHARACTERS: &[char] = &['\'', '\u{7f}'];
 
 fn validate_session_name(name: &str) -> Result<&str> {
     let length = name.chars().count();
@@ -83,7 +85,7 @@ fn validate_session_name(name: &str) -> Result<&str> {
     }
     if name.chars().any(|c| FORBIDDEN_NAME_CHARACTERS.contains(&c)) {
         return Err(LumaError::InvalidInput(
-            "workspace name must not contain shell metacharacters".into(),
+            "workspace name must not contain a single quote".into(),
         ));
     }
     if name.starts_with('-') || name.trim() != name {
@@ -269,9 +271,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_shell_metacharacters() {
+    fn rejects_names_that_would_break_out_of_the_quotes() {
+        for name in ["a'b", "a'; rm -rf /; '", "'"] {
+            assert!(
+                attach(MultiplexerKind::Tmux, name, false).is_err(),
+                "{name} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_metacharacters_that_single_quotes_neutralize() {
+        // Discovery lists these, so attaching to them must work; the single
+        // quotes around the name make them inert to the remote shell.
         for name in [
-            "a'b",
+            "feat/#123",
+            "build[2]",
             "a\"b",
             "a`b`",
             "a$b",
@@ -280,22 +295,17 @@ mod tests {
             "a&b",
             "a|b",
             "a>b",
-            "a<b",
             "a(b)",
             "a{b}",
-            "a[b]",
             "a*b",
-            "a?b",
             "a!b",
-            "a#b",
             "a~b",
             "a=b",
             "a%b",
         ] {
-            assert!(
-                attach(MultiplexerKind::Tmux, name, false).is_err(),
-                "{name} should be rejected"
-            );
+            let command = attach(MultiplexerKind::Tmux, name, false)
+                .unwrap_or_else(|_| panic!("{name} should be accepted"));
+            assert_eq!(command, format!("tmux -u attach -t '{name}'"));
         }
     }
 

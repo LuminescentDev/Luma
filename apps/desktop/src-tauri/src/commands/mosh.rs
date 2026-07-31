@@ -88,10 +88,18 @@ pub async fn mosh_spawn(
             let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
         },
         move |code| {
+            // mosh-client exits non-zero when the session is gone for good (the
+            // server timed out, the key expired, the roam could not recover).
+            // Classify that as a transient connection loss so a dead Mosh
+            // session auto-reconnects like a dropped SSH one — without a
+            // category the frontend's planReconnect gives up immediately. A
+            // clean exit means the user quit the shell and must not retry.
+            let unexpected_exit = !matches!(code, Some(0));
             let _ = on_exit.send(SshExit {
                 code,
-                error_category: None,
-                error_message: None,
+                error_category: unexpected_exit.then(|| "connection-lost".to_string()),
+                error_message: unexpected_exit
+                    .then(|| "The Mosh session ended unexpectedly.".to_string()),
             });
         },
     )?;

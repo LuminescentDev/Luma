@@ -170,6 +170,22 @@ pub fn ssh_disconnect(embedded: State<'_, EmbeddedSshManager>, session_id: Strin
     }
 }
 
+/// Enables forwarding for one already-authenticated session. The frontend
+/// exposes this only behind a warning/confirmation, and there is deliberately
+/// no global or persisted toggle.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn ssh_agent_forward_enable(
+    embedded: State<'_, EmbeddedSshManager>,
+    session_id: String,
+) -> Result<()> {
+    if embedded.enable_agent_forwarding(&session_id).await? {
+        Ok(())
+    } else {
+        Err(LumaError::InvalidInput("unknown SSH session".into()))
+    }
+}
+
 #[tauri::command]
 pub async fn ssh_probe(state: State<'_, AppState>, host_id: String) -> Result<SshLatencyResponse> {
     ssh::validate_host_id(&host_id)?;

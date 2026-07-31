@@ -12,6 +12,7 @@ import {
   Network,
   RefreshCw,
   Server,
+  Wrench,
 } from "lucide-react";
 import { useHosts, useRecentHosts } from "../../hooks/useHosts";
 import { useBrowsingVaultId } from "../../stores/vaultStore";
@@ -159,11 +160,28 @@ function Dashboard({ hostId }: { hostId: string }) {
   }, [refresh]);
 
   // Foreground-only auto refresh: the interval exists only while this
-  // dashboard is mounted and is torn down on unmount or interval change.
+  // dashboard is mounted, and is torn down on unmount, on interval change, and
+  // whenever the window is hidden — each tick is a remote SSH round trip, so a
+  // backgrounded window must not keep polling the host.
   useEffect(() => {
     if (intervalMs <= 0) return;
-    const id = window.setInterval(refresh, intervalMs);
-    return () => window.clearInterval(id);
+    let id: number | undefined;
+    const start = () => {
+      if (id === undefined) id = window.setInterval(refresh, intervalMs);
+    };
+    const stop = () => {
+      if (id !== undefined) {
+        window.clearInterval(id);
+        id = undefined;
+      }
+    };
+    const sync = () => (document.hidden ? stop() : start());
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", sync);
+      stop();
+    };
   }, [intervalMs, refresh]);
 
   return (
@@ -236,6 +254,7 @@ function Dashboard({ hostId }: { hostId: string }) {
             <DisksCard snapshot={snapshot} />
             <NetworkCard snapshot={snapshot} previous={previous} />
             <DockerCard snapshot={snapshot} />
+            <FailedServicesCard snapshot={snapshot} />
             <div className="lg:col-span-2">
               <ProcessesCard snapshot={snapshot} />
             </div>
@@ -615,6 +634,38 @@ function DockerCard({ snapshot }: { snapshot: ServerStatsSnapshot }) {
               </span>
               <span className="shrink-0 text-muted">
                 {container.health ?? container.state}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function FailedServicesCard({ snapshot }: { snapshot: ServerStatsSnapshot }) {
+  const services = snapshot.failedServices;
+  return (
+    <Card icon={<Wrench size={15} />} title="Failed services">
+      {services === null ? (
+        <p className="text-xs text-muted">Systemd service status is not available.</p>
+      ) : services.length === 0 ? (
+        <p className="flex items-center gap-2 text-xs text-green-400">
+          <span className="h-2 w-2 rounded-full bg-green-400" />
+          No failed service units.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {services.map((service) => (
+            <div key={service.unit} className="flex items-start gap-2 text-xs">
+              <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-danger" />
+              <span className="min-w-0">
+                <span className="block truncate font-medium text-foreground">
+                  {service.unit}
+                </span>
+                {service.description && (
+                  <span className="block truncate text-muted">{service.description}</span>
+                )}
               </span>
             </div>
           ))}

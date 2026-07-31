@@ -15,7 +15,8 @@ export type MainView =
   | "settings"
   | "keychain"
   | "known-hosts"
-  | "server-stats";
+  | "server-stats"
+  | "fleet";
 
 type UiState = {
   /** What the main area shows to the right of the sidebar. */
@@ -36,6 +37,8 @@ type UiState = {
   openKnownHosts: () => void;
   /** Show the agentless server stats dashboard in the main area. */
   openServerStats: () => void;
+  /** Show foreground health checks across favorite hosts. */
+  openFleet: () => void;
   terminalSearchOpen: boolean;
   setTerminalSearchOpen: (open: boolean) => void;
   newTabIds: string[];
@@ -70,7 +73,14 @@ type UiState = {
    * optional label for the dialog subtitle. Null host means closed. */
   webPreviewHostId: string | null;
   webPreviewHostLabel: string | null;
-  openWebPreview: (hostId: string, hostLabel?: string) => void;
+  /** Terminal session the dialog was opened from, so previews it starts are
+   * torn down with that session. */
+  webPreviewSessionId: string | null;
+  openWebPreview: (
+    hostId: string,
+    hostLabel?: string,
+    sessionId?: string,
+  ) => void;
   closeWebPreview: () => void;
   /** Multiplexer workspace dialog: the host whose tmux/zellij sessions are being
    * managed, plus an optional label for the subtitle. Null host means closed. */
@@ -131,6 +141,7 @@ export const useUiStore = create<UiState>((set) => ({
   openKeychain: () => set({ mainView: "keychain" }),
   openKnownHosts: () => set({ mainView: "known-hosts" }),
   openServerStats: () => set({ mainView: "server-stats" }),
+  openFleet: () => set({ mainView: "fleet" }),
   terminalSearchOpen: false,
   setTerminalSearchOpen: (open) => set({ terminalSearchOpen: open }),
   newTabIds: [],
@@ -170,10 +181,19 @@ export const useUiStore = create<UiState>((set) => ({
   closeSerialConnect: () => set({ serialConnectOpen: false }),
   webPreviewHostId: null,
   webPreviewHostLabel: null,
-  openWebPreview: (hostId, hostLabel) =>
-    set({ webPreviewHostId: hostId, webPreviewHostLabel: hostLabel ?? null }),
+  webPreviewSessionId: null,
+  openWebPreview: (hostId, hostLabel, sessionId) =>
+    set({
+      webPreviewHostId: hostId,
+      webPreviewHostLabel: hostLabel ?? null,
+      webPreviewSessionId: sessionId ?? null,
+    }),
   closeWebPreview: () =>
-    set({ webPreviewHostId: null, webPreviewHostLabel: null }),
+    set({
+      webPreviewHostId: null,
+      webPreviewHostLabel: null,
+      webPreviewSessionId: null,
+    }),
   multiplexerHostId: null,
   multiplexerHostLabel: null,
   openMultiplexer: (hostId, hostLabel) =>

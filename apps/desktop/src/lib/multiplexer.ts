@@ -55,7 +55,10 @@ export function listMultiplexerSessions(
  * the create button instead of round-tripping to an error. */
 export const MAX_WORKSPACE_NAME_LENGTH = 128;
 
-const FORBIDDEN_NAME_CHARACTERS = /['"`$\\;&|<>(){}[\]*?!#~=%]/;
+// Only the single quote: the backend wraps the name in single quotes for a
+// command the remote shell parses exactly once, so every other metacharacter is
+// inert. Rejecting more would refuse workspaces that discovery happily lists.
+const FORBIDDEN_NAME_CHARACTERS = /'/;
 
 /**
  * Client-side mirror of the backend's `validate_session_name`. Advisory only —

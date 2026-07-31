@@ -18,6 +18,7 @@ import {
   Plus,
   Server,
   ShieldAlert,
+  Siren,
   Star,
   Trash2,
   Vault as VaultIcon,
@@ -58,6 +59,7 @@ import { useCapabilityStore } from "../../stores/capabilityStore";
 import { useVaultStore } from "../../stores/vaultStore";
 import { useVaults } from "../../hooks/useVaults";
 import { PERSONAL_VAULT_ID, type Vault } from "../../lib/vaults";
+import { useFleetStore } from "../../stores/fleetStore";
 
 function matchesQuery(host: Host, q: string): boolean {
   if (!q) return true;
@@ -76,6 +78,7 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
   const queryClient = useQueryClient();
   const showTerminal = useUiStore((s) => s.showTerminal);
   const openServerStats = useUiStore((s) => s.openServerStats);
+  const openFleet = useUiStore((s) => s.openFleet);
   const openMultiplexer = useUiStore((s) => s.openMultiplexer);
   const openDocker = useUiStore((s) => s.openDocker);
   const selectStatsHost = useServerStatsStore((s) => s.select);
@@ -386,6 +389,11 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
               >
                 Import hosts…
               </MenuItem>
+              {!isMobile && (
+                <MenuItem icon={<Siren size={14} />} onSelect={openFleet}>
+                  Fleet overview
+                </MenuItem>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
@@ -716,6 +724,7 @@ function HostRow({
 }) {
   const runningTunnels = runningByHost.get(host.id) ?? 0;
   const selected = selectedHostIds.has(host.id);
+  const fleetEntry = useFleetStore((state) => state.entries[host.id]);
   const hostActions: MenuAction[] = [
     { label: "Connect", icon: <Server size={14} />, onSelect: () => onConnect(host) },
     { label: "Edit", icon: <Pencil size={14} />, onSelect: () => onEdit(host) },
@@ -806,6 +815,24 @@ function HostRow({
         </span>
       )}
 
+      {fleetEntry && host.favorite && fleetEntry.status !== "checking" && (
+        <span
+          title={
+            fleetEntry.status === "offline"
+              ? "Unreachable during the last fleet check"
+              : `${fleetEntry.health?.severity ?? "Healthy"} during the last fleet check`
+          }
+          className={cn(
+            "h-2 w-2 shrink-0 rounded-full",
+            fleetEntry.status === "offline" ||
+              fleetEntry.health?.severity === "critical"
+              ? "bg-danger"
+              : fleetEntry.health?.severity === "warning"
+                ? "bg-amber-400"
+                : "bg-green-400",
+          )}
+        />
+      )}
       <button
         type="button"
         aria-label={host.favorite ? `Unfavorite ${host.name}` : `Favorite ${host.name}`}

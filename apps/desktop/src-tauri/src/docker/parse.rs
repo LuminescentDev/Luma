@@ -28,7 +28,26 @@ pub(crate) const REDACTED: &str = "••••••";
 /// case-insensitively against the whole key, so `DB_PASSWORD`, `apiKey` and
 /// `GITHUB_TOKEN` all hit. Deliberately over-broad — `MONKEY_COUNT` matching
 /// "key" costs a hidden value, while a miss would print a credential.
-const SECRET_MARKERS: [&str; 6] = ["pass", "secret", "token", "key", "credential", "auth"];
+///
+/// Key matching alone is not enough: `DATABASE_URL` and `SENTRY_DSN` name no
+/// secret but routinely carry one in their value, so `has_embedded_credentials`
+/// covers the connection-string shape as well.
+const SECRET_MARKERS: [&str; 14] = [
+    "pass",
+    "pwd",
+    "secret",
+    "token",
+    "key",
+    "credential",
+    "auth",
+    "private",
+    "salt",
+    "signature",
+    "dsn",
+    "cookie",
+    "session",
+    "otp",
+];
 
 // --- Wire types --------------------------------------------------------------
 
@@ -548,7 +567,8 @@ pub(crate) fn redact_env(env: &[String]) -> Vec<EnvVar> {
                 // A bare name with no "=" cannot carry a value.
                 None => (entry.clone(), String::new()),
             };
-            let redacted = !value.is_empty() && is_secret_key(&key);
+            let redacted =
+                !value.is_empty() && (is_secret_key(&key) || has_embedded_credentials(&value));
             EnvVar {
                 key,
                 value: if redacted {
@@ -565,6 +585,22 @@ pub(crate) fn redact_env(env: &[String]) -> Vec<EnvVar> {
 fn is_secret_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
     SECRET_MARKERS.iter().any(|marker| key.contains(marker))
+}
+
+/// Whether a value looks like a URL carrying credentials in its userinfo, e.g.
+/// `postgres://user:hunter2@db:5432/app`. The whole value is redacted rather
+/// than just the password: partial rewriting risks leaking through the cases it
+/// does not anticipate, and the variable's presence is still visible.
+fn has_embedded_credentials(value: &str) -> bool {
+    let Some((_, rest)) = value.split_once("://") else {
+        return false;
+    };
+    // Userinfo lives in the authority, before the path/query/fragment.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    match authority.rsplit_once('@') {
+        Some((userinfo, _)) => userinfo.contains(':'),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -863,6 +899,33 @@ mod tests {
     }
 
     #[test]
+    fn connection_strings_are_redacted_whatever_the_key_is_called() {
+        // These key names match no marker, but the value carries a password.
+        let vars = env(&[
+            "DATABASE_URL=postgres://app:hunter2@db:5432/app",
+            "SENTRY_DSN=https://abc:def@sentry.io/1",
+            "AMQP=amqp://guest:guest@rabbit:5672/%2f",
+        ]);
+        for var in &vars {
+            assert!(var.redacted, "{} should be redacted", var.key);
+            assert_eq!(var.value, REDACTED);
+        }
+    }
+
+    #[test]
+    fn credential_free_urls_keep_their_values() {
+        let vars = env(&[
+            "API_URL=https://api.example.com/v1",
+            "REDIS_URL=redis://cache:6379/0",
+            // A bare "user@" with no password is not a credential.
+            "REPO=ssh://git@github.com/acme/app.git",
+        ]);
+        for var in &vars {
+            assert!(!var.redacted, "{} should not be redacted", var.key);
+        }
+    }
+
+    #[test]
     fn ordinary_keys_keep_their_values() {
         let vars = env(&[
             "PATH=/usr/local/bin:/usr/bin",
@@ -910,9 +973,12 @@ mod tests {
 
     #[test]
     fn values_containing_equals_signs_are_split_only_once() {
-        let vars = env(&["DATABASE_URL=postgres://u:p@h/db?a=b&c=d"]);
+        // No userinfo in this URL, so it survives intact — see
+        // `connection_strings_are_redacted_whatever_the_key_is_called` for one
+        // that does not.
+        let vars = env(&["DATABASE_URL=postgres://h/db?a=b&c=d"]);
         assert_eq!(vars[0].key, "DATABASE_URL");
-        assert_eq!(vars[0].value, "postgres://u:p@h/db?a=b&c=d");
+        assert_eq!(vars[0].value, "postgres://h/db?a=b&c=d");
         // …and a secret key keeps the whole tail hidden.
         let vars = env(&["JWT_SECRET=a=b=c"]);
         assert!(vars[0].redacted);

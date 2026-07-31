@@ -81,6 +81,11 @@ export type DockerContainer = {
   health: "healthy" | "unhealthy" | "starting" | null;
 };
 
+export type FailedService = {
+  unit: string;
+  description: string;
+};
+
 export type ServerStatsSnapshot = {
   system: SystemInfo | null;
   cpu: CpuStats | null;
@@ -90,6 +95,8 @@ export type ServerStatsSnapshot = {
   topProcesses: TopProcesses | null;
   /** null when the docker CLI is unavailable; [] when docker has no containers. */
   docker: DockerContainer[] | null;
+  /** null on non-systemd hosts; [] when systemd reports no failed services. */
+  failedServices: FailedService[] | null;
   sampledAtMs: number;
 };
 

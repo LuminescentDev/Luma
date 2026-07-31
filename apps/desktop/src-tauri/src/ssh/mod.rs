@@ -1,3 +1,4 @@
+pub(crate) mod agent;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod config;
 mod embedded;
@@ -68,6 +69,8 @@ pub(crate) struct SshConnectionConfig {
     username: Option<String>,
     authentication_type: String,
     identity_file: Option<String>,
+    agent_public_key: Option<russh::keys::PublicKey>,
+    agent_forwarding_enabled: Arc<std::sync::atomic::AtomicBool>,
     proxy_jumps: Vec<SshConnectionConfig>,
     pub(crate) startup_command: Option<String>,
     password: Option<Arc<Zeroizing<String>>>,
@@ -84,6 +87,7 @@ impl std::fmt::Debug for SshConnectionConfig {
             .field("port", &self.port)
             .field("username", &self.username)
             .field("has_identity_file", &self.identity_file.is_some())
+            .field("uses_ssh_agent", &self.agent_public_key.is_some())
             .field("proxy_jump_count", &self.proxy_jumps.len())
             .field("has_startup_command", &self.startup_command.is_some())
             .field("has_password", &self.password.is_some())
@@ -132,13 +136,17 @@ fn normalize_private_key(value: &str) -> String {
     format!("{}\n", normalized.trim_end())
 }
 
-async fn identity_file(
+async fn identity_material(
     pool: &SqlitePool,
     keystore_state: &KeystoreState,
     host: &Host,
-) -> Result<(Option<String>, Option<Arc<EphemeralIdentityFile>>)> {
+) -> Result<(
+    Option<String>,
+    Option<Arc<EphemeralIdentityFile>>,
+    Option<russh::keys::PublicKey>,
+)> {
     if host.authentication_type != "key" {
-        return Ok((None, None));
+        return Ok((None, None, None));
     }
     let key_id = host
         .key_id
@@ -147,6 +155,17 @@ async fn identity_file(
     let key = key_references::get(pool, key_id)
         .await?
         .ok_or_else(|| LumaError::KeyUnavailable("key reference no longer exists".into()))?;
+    if key.storage_mode == "ssh-agent" {
+        let public_key = key.public_key.as_deref().ok_or_else(|| {
+            LumaError::KeyUnavailable("SSH-agent key reference has no public key".into())
+        })?;
+        let public_key = russh::keys::PublicKey::from_openssh(public_key).map_err(|error| {
+            LumaError::KeyUnavailable(format!(
+                "SSH-agent key reference has an invalid public key: {error}"
+            ))
+        })?;
+        return Ok((None, None, Some(public_key)));
+    }
     if key.storage_mode == "encrypted-vault" {
         let private_key = Zeroizing::new(
             keystore::load(pool, keystore_state, "key", key_id, "private-key")
@@ -177,7 +196,7 @@ async fn identity_file(
         }
         drop(file);
         let guard = Arc::new(EphemeralIdentityFile(path.clone()));
-        return Ok((Some(path.to_string_lossy().into_owned()), Some(guard)));
+        return Ok((Some(path.to_string_lossy().into_owned()), Some(guard), None));
     }
     if key.storage_mode != "local-path" {
         return Err(LumaError::KeyUnavailable(
@@ -194,7 +213,7 @@ async fn identity_file(
             "the configured private key file is unavailable on this device".into(),
         ));
     }
-    Ok((Some(resolved.to_string_lossy().into_owned()), None))
+    Ok((Some(resolved.to_string_lossy().into_owned()), None, None))
 }
 
 struct ResolvedConnectionRoute {
@@ -329,8 +348,8 @@ async fn resolve_host_connection_config(
     } else {
         None
     };
-    let (identity_file, _ephemeral_identity_file) =
-        identity_file(pool, keystore_state, &host).await?;
+    let (identity_file, _ephemeral_identity_file, agent_public_key) =
+        identity_material(pool, keystore_state, &host).await?;
     let mut key_passphrase = None;
     if host.authentication_type == "key" {
         if let Some(key_id) = host.key_id.as_deref() {
@@ -361,6 +380,8 @@ async fn resolve_host_connection_config(
         username: host.username,
         authentication_type: host.authentication_type,
         identity_file,
+        agent_public_key,
+        agent_forwarding_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         proxy_jumps: Vec::new(),
         startup_command: host.startup_command,
         password,

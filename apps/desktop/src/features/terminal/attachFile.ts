@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { terminalAttachUpload } from "../../lib/sftp";
-import { escapePosixShellArg } from "../../lib/shellEscape";
+import { escapeRemotePathArg } from "../../lib/shellEscape";
 import { parseLumaError } from "../../lib/hosts";
 import { useSessionStore } from "../../stores/sessionStore";
 import { terminalManager } from "./terminalManager";
@@ -46,7 +46,7 @@ export async function uploadAttachment(
   try {
     const { remotePath } = await terminalAttachUpload(hostId, localPath);
     setTransportNotice(session.id, undefined);
-    return escapePosixShellArg(remotePath);
+    return escapeRemotePathArg(remotePath);
   } catch (error) {
     setTransportNotice(
       session.id,

@@ -7,6 +7,7 @@ import {
   ClipboardCopy,
   ClipboardPaste,
   Mic,
+  MessageSquarePlus,
   Paperclip,
   Plug,
   RotateCw,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react";
 import { terminalManager } from "../terminal/terminalManager";
 import { attachFileToSession, canAttachFile } from "../terminal/attachFile";
+import { detectSpeechSupport } from "../voiceComposer/speechProvider";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { cn } from "../../lib/utils";
@@ -33,6 +35,10 @@ import { cn } from "../../lib/utils";
  */
 
 const ESC = "\x1b";
+
+/** Whether this platform can transcribe at all — a fixed capability, so it is
+ * resolved once rather than on every render. */
+const DICTATION_AVAILABLE = detectSpeechSupport().available;
 
 type KeyDef = {
   label: string;
@@ -134,13 +140,19 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
             <Paperclip size={16} />
           </ActionKey>
         )}
-        {/* Voice is a mobile-first affordance: compose a reviewable draft
-            rather than dictating straight into the live shell. */}
+        {/* Compose a reviewable draft rather than dictating straight into the
+            live shell. WKWebView exposes no speech recognition, so on Apple
+            platforms this is a typed composer — offering a microphone there
+            would promise dictation the platform cannot deliver. */}
         <ActionKey
-          aria="Voice composer"
+          aria={DICTATION_AVAILABLE ? "Voice composer" : "Compose command"}
           onPress={() => openVoice({ sessionId, label: session?.title })}
         >
-          <Mic size={16} />
+          {DICTATION_AVAILABLE ? (
+            <Mic size={16} />
+          ) : (
+            <MessageSquarePlus size={16} />
+          )}
         </ActionKey>
         <ActionKey aria="Search terminal" onPress={() => setSearchOpen(true)}>
           <Search size={16} />

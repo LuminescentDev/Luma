@@ -148,8 +148,12 @@ pub struct TerminalAttachUploadResponse {
 }
 
 /// Upload a local file to a private staging directory on an SSH host so the
-/// terminal UI can insert the returned remote path at the prompt. Opens a
-/// dedicated SFTP session for the transfer and always closes it afterwards.
+/// terminal UI can insert the returned remote path at the prompt.
+///
+/// Reuses an SFTP session the user already has open for the host — a second
+/// authenticated connection per attachment costs a full handshake and can put
+/// an interactive or 2FA prompt in the middle of attaching a file. Only a
+/// session this command opened itself is closed afterwards.
 #[tauri::command]
 pub async fn terminal_attach_upload(
     state: State<'_, AppState>,
@@ -160,19 +164,40 @@ pub async fn terminal_attach_upload(
     file_name: Option<String>,
 ) -> Result<TerminalAttachUploadResponse> {
     ssh::validate_host_id(&host_id)?;
-    let session = manager
-        .connect(&state.pool, &keystore_state, &host_id)
-        .await?;
+    // Reading the home directory doubles as the liveness check: a session that
+    // has since died falls through to opening a dedicated one.
+    let reusable = match manager.session_for_host(&host_id) {
+        Some(session_id) => match manager.home_directory(&session_id).await {
+            Ok(home) => Some((session_id, home)),
+            Err(error) => {
+                tracing::debug!(%error, "reusable SFTP session was unusable; opening a new one");
+                None
+            }
+        },
+        None => None,
+    };
+    let (session_id, home, opened_here) = match reusable {
+        Some((session_id, home)) => (session_id, home, false),
+        None => {
+            let session = manager
+                .connect(&state.pool, &keystore_state, &host_id)
+                .await?;
+            (session.sftp_session_id, session.initial_path, true)
+        }
+    };
     let upload_result = sftp::upload_attachment(
         &manager,
-        &session.sftp_session_id,
-        &session.initial_path,
+        &session_id,
+        &home,
         &local_path,
         file_name.as_deref(),
     )
     .await;
-    if let Err(error) = manager.disconnect(&session.sftp_session_id).await {
-        tracing::warn!(%error, "failed to close SFTP session after attachment upload");
+    // Never close a session the user opened; only the one this command made.
+    if opened_here {
+        if let Err(error) = manager.disconnect(&session_id).await {
+            tracing::warn!(%error, "failed to close SFTP session after attachment upload");
+        }
     }
     upload_result.map(|remote_path| TerminalAttachUploadResponse { remote_path })
 }

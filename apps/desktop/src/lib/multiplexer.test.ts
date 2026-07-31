@@ -25,7 +25,24 @@ describe("workspace name validation", () => {
       " main",
       "main ",
       "-t",
+      // The backend single-quotes the name, so a quote is the one character it
+      // cannot carry.
       "a'b",
+      "bad\nname",
+      "bad\tname",
+      "bad\u0007name",
+      "bad\u007fname",
+    ]) {
+      expect(isValidWorkspaceName(name), name).toBe(false);
+    }
+  });
+
+  it("accepts metacharacters the backend's quoting neutralizes", () => {
+    // Discovery lists workspaces with these in their names; refusing them here
+    // would offer an Attach button that could only fail.
+    for (const name of [
+      "feat/#123",
+      "build[2]",
       'a"b',
       "a`b`",
       "a$b",
@@ -37,20 +54,14 @@ describe("workspace name validation", () => {
       "a>b",
       "a(b)",
       "a{b}",
-      "a[b]",
       "a*b",
       "a?b",
       "a!b",
-      "a#b",
       "a~b",
       "a=b",
       "a%b",
-      "bad\nname",
-      "bad\tname",
-      "bad\u0007name",
-      "bad\u007fname",
     ]) {
-      expect(isValidWorkspaceName(name), name).toBe(false);
+      expect(isValidWorkspaceName(name), name).toBe(true);
     }
   });
 });

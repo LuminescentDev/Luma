@@ -30,7 +30,7 @@ import {
   type DiffHunk,
   type DiffLine,
 } from "../../lib/diff";
-import { escapePosixShellArg } from "../../lib/shellEscape";
+import { escapeRemotePathArg } from "../../lib/shellEscape";
 import { terminalManager } from "../terminal/terminalManager";
 import { cn } from "../../lib/utils";
 
@@ -135,7 +135,7 @@ export function RepoDialog({
     // executed — exactly mirroring the "Attach file" flow.
     terminalManager.insertText(
       sessionId,
-      `${escapePosixShellArg(selection.path)} `,
+      `${escapeRemotePathArg(selection.path)} `,
     );
     onOpenChange(false);
   };

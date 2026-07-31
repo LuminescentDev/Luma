@@ -234,8 +234,11 @@ export function VoiceComposerDialog({
   const requestSend = useCallback(
     (mode: SendMode) => {
       if (!draft.trim()) return;
-      // Executing a danger-level draft always needs a second, deliberate click.
-      if (mode === "enter" && report.level === "danger") {
+      // Executing a flagged draft always needs a second, deliberate click.
+      // "warn" counts: `rm -r`, `chmod 777`, `git push --force` and truncating
+      // redirects are all irreversible enough that a banner alone is too easy
+      // to send past — especially for a dictated draft the user did not type.
+      if (mode === "enter" && report.level !== "none") {
         setConfirmMode(mode);
         return;
       }
@@ -474,7 +477,11 @@ export function VoiceComposerDialog({
       <ConfirmDialog
         open={confirmMode !== null}
         onOpenChange={(value) => !value && setConfirmMode(null)}
-        title="Run a destructive command?"
+        title={
+          report.level === "danger"
+            ? "Run a destructive command?"
+            : "Run a risky command?"
+        }
         destructive
         confirmLabel="Send with Enter"
         onConfirm={() => {

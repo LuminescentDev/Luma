@@ -177,6 +177,12 @@ export function sshDisconnect(sessionId: string): Promise<void> {
   return invoke<void>("ssh_disconnect", { sessionId });
 }
 
+/** Enable SSH agent forwarding for one live session after explicit user
+ * confirmation. This setting is never persisted or applied globally. */
+export function enableSshAgentForwarding(sessionId: string): Promise<void> {
+  return invoke("ssh_agent_forward_enable", { sessionId });
+}
+
 /**
  * Spawn a Mosh session for a saved host (desktop only). The backend bootstraps
  * mosh-server over the host's embedded SSH configuration and launches a local
