@@ -1,9 +1,19 @@
-import { ChevronRight, Plus, RotateCw, Server, SquareTerminal, X } from "lucide-react";
+import {
+  ChevronRight,
+  Inbox,
+  Plus,
+  RotateCw,
+  Server,
+  SquareTerminal,
+  X,
+} from "lucide-react";
 import { useSessionStore } from "../../stores/sessionStore";
+import { useMobileNavStore } from "../../stores/mobileNavStore";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import type { PaneNode } from "../../types";
 import { cn } from "../../lib/utils";
-import { MobileScreen } from "./MobileScreen";
+import { MobileList, MobileRow, MobileScreen } from "./MobileScreen";
+import { useAgentInboxUnread } from "./MobileAgentInboxScreen";
 
 /*
  * The Connections tab in the non-full-screen state: a list of open terminal
@@ -30,6 +40,27 @@ export function MobileConnectionsScreen({
   const sessions = useSessionStore((s) => s.sessions);
   const closeTab = useSessionStore((s) => s.closeTab);
   const restartSession = useSessionStore((s) => s.restartSession);
+  const push = useMobileNavStore((s) => s.push);
+  const unreadAgents = useAgentInboxUnread();
+
+  // Agent activity is checked far more often than it is acted on, so it sits at
+  // the top of this tab with its own count rather than behind a session.
+  const agentInbox = (
+    <MobileList className="mb-3">
+      <MobileRow
+        icon={Inbox}
+        label="Agent Inbox"
+        detail={
+          unreadAgents > 0
+            ? `${unreadAgents} needing attention`
+            : "Approvals, questions and finished turns"
+        }
+        iconClassName={unreadAgents > 0 ? "text-accent" : undefined}
+        count={unreadAgents > 0 ? unreadAgents : undefined}
+        onSelect={() => push("agent-inbox")}
+      />
+    </MobileList>
+  );
 
   const newButton = (
     <button
@@ -45,7 +76,8 @@ export function MobileConnectionsScreen({
   if (tabs.length === 0) {
     return (
       <MobileScreen title="Connections" large action={newButton}>
-        <div className="flex flex-col items-center gap-4 px-8 py-20 text-center">
+        <div className="pt-1">{agentInbox}</div>
+        <div className="flex flex-col items-center gap-4 px-8 py-16 text-center">
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-surface">
             <SquareTerminal size={26} className="text-accent" />
           </div>
@@ -69,7 +101,8 @@ export function MobileConnectionsScreen({
 
   return (
     <MobileScreen title="Connections" large action={newButton}>
-      <ul className="space-y-2 pt-1">
+      <div className="pt-1">{agentInbox}</div>
+      <ul className="space-y-2">
           {tabs.map((tab) => {
             const sessionId = firstSessionId(tab.root);
             const session = sessions.find((s) => s.id === sessionId);

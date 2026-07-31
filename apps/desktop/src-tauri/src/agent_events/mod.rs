@@ -275,7 +275,11 @@ impl<R: Runtime> AgentEventSink<R> {
             detail: event.detail,
             ts: event.ts,
         };
-        let _ = self.app.emit_to("main", AGENT_EVENT_NAME, payload);
+        // Broadcast rather than target "main": the label is only implied by the
+        // window config, and the mobile shell listens from whatever window the
+        // platform gave it. Every listener is in-process, so there is nothing
+        // to leak by not naming one.
+        let _ = self.app.emit(AGENT_EVENT_NAME, payload);
     }
 }
 

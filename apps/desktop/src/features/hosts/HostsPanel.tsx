@@ -56,6 +56,7 @@ import { useUiStore } from "../../stores/uiStore";
 import { useServerStatsStore } from "../../stores/serverStatsStore";
 import { useTunnelStore } from "../../stores/tunnelStore";
 import { useCapabilityStore } from "../../stores/capabilityStore";
+import { useMobileNavStore } from "../../stores/mobileNavStore";
 import { useVaultStore } from "../../stores/vaultStore";
 import { useVaults } from "../../hooks/useVaults";
 import { PERSONAL_VAULT_ID, type Vault } from "../../lib/vaults";
@@ -295,23 +296,19 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
     onPortForwards: portForwardingEnabled
       ? (h: Host) => setPortForwardsHost(h)
       : undefined,
-    // The server stats dashboard is a desktop main view; mobile navigation has
-    // no route for it yet, so the action is hidden there.
-    onServerStats: isMobile
-      ? undefined
-      : (h: Host) => {
-          selectStatsHost(h);
-          openServerStats();
-        },
-    // Docker containers on the host. Same desktop-only rule as server stats:
-    // the dialog is mounted by the desktop shell.
-    onDocker: isMobile ? undefined : (h: Host) => openDocker(h.id, h.name),
+    // The dashboard is a desktop main view and a mobile route, so it is opened
+    // through whichever the current shell owns.
+    onServerStats: (h: Host) => {
+      selectStatsHost(h);
+      // Pushed, not navigated: back from the dashboard returns to this list.
+      if (isMobile) useMobileNavStore.getState().push("servers");
+      else openServerStats();
+    },
+    // Docker containers on the host. Both shells mount the dialog.
+    onDocker: (h: Host) => openDocker(h.id, h.name),
     // Attaching from here needs no existing session — it opens a new tab
-    // already inside the workspace. The dialog is mounted by the desktop shell
-    // only, so mobile hides the action (same rule as server stats).
-    onWorkspaces: isMobile
-      ? undefined
-      : (h: Host) => openMultiplexer(h.id, h.name),
+    // already inside the workspace.
+    onWorkspaces: (h: Host) => openMultiplexer(h.id, h.name),
     runningByHost,
     selectedHostIds,
     onSelect: (host: Host, additive: boolean) => setSelectedHostIds((previous) => {

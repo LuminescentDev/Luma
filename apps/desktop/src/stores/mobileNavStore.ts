@@ -23,6 +23,12 @@ export type MobileRoute =
   | "known-hosts"
   | "sftp"
   | "logs"
+  // Monitoring screens. "servers" is the dashboard, which picks its own host and
+  // remembers it in serverStatsStore; "fleet" is the health sweep across
+  // favorites. Neither carries route parameters.
+  | "servers"
+  | "fleet"
+  | "agent-inbox"
   | "settings-account"
   | "settings-appearance"
   | "settings-terminal"

@@ -4,8 +4,10 @@ import {
   ArrowLeft,
   Container,
   Cpu,
+  Globe,
   HardDrive,
   Info,
+  LayoutGrid,
   ListOrdered,
   Loader2,
   MemoryStick,
@@ -17,6 +19,7 @@ import {
 import { useHosts, useRecentHosts } from "../../hooks/useHosts";
 import { useBrowsingVaultId } from "../../stores/vaultStore";
 import { useServerStatsStore } from "../../stores/serverStatsStore";
+import { useUiStore } from "../../stores/uiStore";
 import { parseLumaError, type Host } from "../../lib/hosts";
 import {
   fetchServerStats,
@@ -129,6 +132,9 @@ type FetchError = { category: string; message: string };
 function Dashboard({ hostId }: { hostId: string }) {
   const hostName = useServerStatsStore((s) => s.hostName);
   const clear = useServerStatsStore((s) => s.clear);
+  const openDocker = useUiStore((s) => s.openDocker);
+  const openMultiplexer = useUiStore((s) => s.openMultiplexer);
+  const openWebPreview = useUiStore((s) => s.openWebPreview);
   const [snapshot, setSnapshot] = useState<ServerStatsSnapshot | null>(null);
   const [previous, setPrevious] = useState<ServerStatsSnapshot | null>(null);
   const [error, setError] = useState<FetchError | null>(null);
@@ -231,6 +237,26 @@ function Dashboard({ hostId }: { hostId: string }) {
           </button>
         </div>
 
+        {/* The rest of this host's remote surfaces, reachable from the host you
+            are already looking at rather than only from the hosts list. */}
+        <div className="mt-4 flex flex-wrap gap-2">
+          <HostAction
+            icon={<Container size={13} />}
+            label="Docker"
+            onSelect={() => openDocker(hostId, hostName ?? undefined)}
+          />
+          <HostAction
+            icon={<LayoutGrid size={13} />}
+            label="Workspaces"
+            onSelect={() => openMultiplexer(hostId, hostName ?? undefined)}
+          />
+          <HostAction
+            icon={<Globe size={13} />}
+            label="Web preview"
+            onSelect={() => openWebPreview(hostId, hostName ?? undefined)}
+          />
+        </div>
+
         {error && (
           <div className="mt-4 rounded-lg border border-danger/40 bg-danger/10 px-3 py-2.5 text-xs text-danger">
             <div className="font-semibold">{sshCategoryLabel(error.category)}</div>
@@ -262,6 +288,28 @@ function Dashboard({ hostId }: { hostId: string }) {
         )}
       </div>
     </div>
+  );
+}
+
+/** Pill linking the dashboard to this host's other remote surfaces. */
+function HostAction({
+  icon,
+  label,
+  onSelect,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex min-h-9 items-center gap-1.5 rounded-full border border-border bg-surface px-3 text-xs text-foreground hover:border-accent hover:text-accent active:bg-raised"
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 

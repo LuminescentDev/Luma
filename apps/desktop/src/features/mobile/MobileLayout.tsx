@@ -20,6 +20,11 @@ import { SnippetRunner } from "../snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../snippets/MultiHostRunDialog";
 import { MobileFontSizeSetup } from "./MobileFontSizeSetup";
 import { VoiceComposerDialog } from "../voiceComposer/VoiceComposerDialog";
+import { MobileAgentInboxScreen } from "./MobileAgentInboxScreen";
+import { MobileHostSurfaces } from "./MobileHostSurfaces";
+import { ServerStatsScreen } from "../serverStats/ServerStatsScreen";
+import { FleetOverviewScreen } from "../fleet/FleetOverviewScreen";
+import { useServerStatsStore } from "../../stores/serverStatsStore";
 import { useUiStore } from "../../stores/uiStore";
 import {
   MobileAboutScreen,
@@ -61,6 +66,7 @@ export function MobileLayout() {
 
   const tabCount = useSessionStore((s) => s.tabs.length);
   const setActiveTab = useSessionStore((s) => s.setActiveTab);
+  const focusSession = useSessionStore((s) => s.focusSession);
   const prevCount = useRef(tabCount);
 
   const showingSession = fullscreen && tabCount > 0;
@@ -97,6 +103,9 @@ export function MobileLayout() {
         {/* Only reachable from the terminal accessory bar, so it is mounted
             with the session view rather than the whole shell. */}
         <MobileVoiceComposer />
+        {/* The terminal's own menu offers Repository, Workspaces and Preview
+            for the session's host, so their surfaces mount here too. */}
+        <MobileHostSurfaces />
         <Suspense fallback={null}>
           <SyncDialogs />
         </Suspense>
@@ -116,7 +125,14 @@ export function MobileLayout() {
           onPop={pop}
           renderPane={(route) =>
             route ? (
-              <RouteScreen route={route as MobileRoute} onBack={pop} />
+              <RouteScreen
+                route={route as MobileRoute}
+                onBack={pop}
+                onOpenSession={(sessionId) => {
+                  focusSession(sessionId);
+                  setFullscreen(true);
+                }}
+              />
             ) : tab === "vaults" ? (
               <MobileVaultsHub />
             ) : tab === "connections" ? (
@@ -138,6 +154,7 @@ export function MobileLayout() {
       {!native && !sheetOpen && <MobileTabBar sessionCount={tabCount} />}
       <SnippetRunner />
       <MultiHostRunDialog />
+      <MobileHostSurfaces />
       <Suspense fallback={null}>
         <SyncDialogs />
       </Suspense>
@@ -161,19 +178,68 @@ function MobileVoiceComposer() {
   );
 }
 
+/**
+ * The server dashboard: CPU, memory, disk, network, processes and Docker health
+ * for one host. The screen picks its own host and remembers the choice, so back
+ * from the dashboard returns to that picker and back from the picker leaves the
+ * route — matching how a pushed stack behaves elsewhere.
+ */
+function MobileServersRoute({ onBack }: { onBack: () => void }) {
+  const clear = useServerStatsStore((s) => s.clear);
+  return (
+    <MobileScreen
+      // Leaving the route drops the dashboard's cached SSH connection; the
+      // screen's own "choose another host" control stays for switching hosts
+      // without leaving.
+      onBack={() => {
+        clear();
+        onBack();
+      }}
+      scroll={false}
+      padded={false}
+    >
+      <ServerStatsScreen />
+    </MobileScreen>
+  );
+}
+
+/** Fleet health across favorite hosts. "Details" hands off to the dashboard
+ * route rather than the desktop's section navigation. */
+function MobileFleetRoute({ onBack }: { onBack: () => void }) {
+  const push = useMobileNavStore((s) => s.push);
+  return (
+    <MobileScreen onBack={onBack} scroll={false} padded={false}>
+      <FleetOverviewScreen
+        onOpenHost={() => push("servers")}
+        onChooseHosts={() => push("hosts")}
+      />
+    </MobileScreen>
+  );
+}
+
 /** Renders the screen for a pushed route. Screens that predate the mobile shell
  * (keychain, snippets, known hosts) are desktop components, so they are wrapped
  * in MobileScreen chrome for the back button and safe-area header. */
 function RouteScreen({
   route,
   onBack,
+  onOpenSession,
 }: {
   route: MobileRoute;
   onBack: () => void;
+  onOpenSession: (sessionId: string) => void;
 }) {
   switch (route) {
     case "hosts":
       return <MobileHostsScreen onBack={onBack} />;
+    case "servers":
+      return <MobileServersRoute onBack={onBack} />;
+    case "fleet":
+      return <MobileFleetRoute onBack={onBack} />;
+    case "agent-inbox":
+      return (
+        <MobileAgentInboxScreen onBack={onBack} onOpenSession={onOpenSession} />
+      );
     case "keychain":
       return (
         <MobileScreen onBack={onBack} scroll={false} padded={false}>

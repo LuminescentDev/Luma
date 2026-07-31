@@ -28,7 +28,16 @@ const REFRESH_INTERVALS = [
   { label: "5m", value: 300_000 },
 ] as const;
 
-export function FleetOverviewScreen() {
+export function FleetOverviewScreen({
+  onOpenHost,
+  onChooseHosts,
+}: {
+  /** Where "Details" goes. Defaults to the desktop dashboard section; the
+   * mobile shell passes its own push so the card opens a route instead. */
+  onOpenHost?: (host: Host) => void;
+  /** Where the empty state's "Choose hosts" goes. Same reason. */
+  onChooseHosts?: () => void;
+} = {}) {
   const { data: hosts } = useHosts();
   const favorites = useMemo(
     () =>
@@ -101,7 +110,7 @@ export function FleetOverviewScreen() {
         </div>
 
         {favorites.length === 0 ? (
-          <EmptyFleet />
+          <EmptyFleet onChooseHosts={onChooseHosts} />
         ) : (
           <>
             <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -145,7 +154,12 @@ export function FleetOverviewScreen() {
 
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {favorites.map((host) => (
-                <FleetHostCard key={host.id} host={host} entry={entries[host.id]} />
+                <FleetHostCard
+                  key={host.id}
+                  host={host}
+                  entry={entries[host.id]}
+                  onOpenHost={onOpenHost}
+                />
               ))}
             </div>
           </>
@@ -155,7 +169,7 @@ export function FleetOverviewScreen() {
   );
 }
 
-function EmptyFleet() {
+function EmptyFleet({ onChooseHosts }: { onChooseHosts?: () => void }) {
   const openHosts = useUiStore((state) => state.openSection);
   return (
     <div className="mt-8 flex min-h-64 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/40 px-6 text-center">
@@ -167,7 +181,7 @@ function EmptyFleet() {
       </p>
       <button
         type="button"
-        onClick={() => openHosts("hosts")}
+        onClick={() => (onChooseHosts ? onChooseHosts() : openHosts("hosts"))}
         className="mt-4 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground"
       >
         Choose hosts
@@ -176,7 +190,15 @@ function EmptyFleet() {
   );
 }
 
-function FleetHostCard({ host, entry }: { host: Host; entry?: FleetEntry }) {
+function FleetHostCard({
+  host,
+  entry,
+  onOpenHost,
+}: {
+  host: Host;
+  entry?: FleetEntry;
+  onOpenHost?: (host: Host) => void;
+}) {
   const selectHost = useServerStatsStore((state) => state.select);
   const openStats = useUiStore((state) => state.openServerStats);
   const severity =
@@ -271,7 +293,8 @@ function FleetHostCard({ host, entry }: { host: Host; entry?: FleetEntry }) {
           type="button"
           onClick={() => {
             selectHost(host);
-            openStats();
+            if (onOpenHost) onOpenHost(host);
+            else openStats();
           }}
           className="text-[11px] font-medium text-accent hover:underline"
         >

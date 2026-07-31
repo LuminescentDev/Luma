@@ -86,11 +86,27 @@ commands.allow = [
   "voice_history_list",
   "voice_history_delete",
   "voice_history_clear",
-  # The server dashboard, web preview, workspace picker, repository browser and
-  # Docker view are mounted only in the desktop layout. Their commands stay off
-  # the mobile allowlist until a mobile surface actually calls them — most of
-  # all `docker_action`, which mutates containers on the remote host and whose
-  # confirmation step lives entirely in the (desktop-only) store.
+  # Server monitoring and remote-development surfaces. Each has a mobile screen
+  # or sheet that calls it; `docker_action` is included because the mobile
+  # Docker sheet routes every mutation through the same confirmation the desktop
+  # one does.
+  "server_stats_fetch",
+  "server_stats_close",
+  "web_preview_discover",
+  "web_preview_open",
+  "web_preview_close",
+  "web_previews_list",
+  "multiplexer_list",
+  "repo_status",
+  "repo_diff",
+  "repo_file",
+  "repo_close",
+  "docker_list",
+  "docker_stats",
+  "docker_logs",
+  "docker_inspect",
+  "docker_action",
+  "docker_close",
   "keystore_status",
   "keystore_setup",
   "keystore_unlock",

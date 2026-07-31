@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  Activity,
   Check,
   ChevronDown,
   Cloud,
@@ -10,6 +11,7 @@ import {
   ScrollText,
   Server,
   ShieldCheck,
+  Siren,
   SquareCode,
   Users,
   Waypoints,
@@ -103,6 +105,23 @@ export function MobileVaultsHub() {
           label="Known Hosts"
           count={knownHosts?.length}
           onSelect={() => push("known-hosts")}
+        />
+      </MobileList>
+
+      {/* Monitoring is host-shaped rather than vault-shaped, and reachable
+          directly: no long-press on a host row required. */}
+      <MobileList className="mt-6">
+        <MobileRow
+          icon={Activity}
+          label="Server Stats"
+          detail="CPU, memory, disks, network and processes"
+          onSelect={() => push("servers")}
+        />
+        <MobileRow
+          icon={Siren}
+          label="Fleet Health"
+          detail="Reachability and thresholds across favorites"
+          onSelect={() => push("fleet")}
         />
       </MobileList>
 
