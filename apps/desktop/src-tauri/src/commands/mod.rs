@@ -46,6 +46,7 @@ mod snippets;
 mod ssh;
 mod sync;
 mod vaults;
+mod voice;
 mod web_preview;
 
 pub use collaboration::*;
@@ -73,6 +74,7 @@ pub use snippets::*;
 pub use ssh::*;
 pub use sync::*;
 pub use vaults::*;
+pub use voice::*;
 pub use web_preview::*;
 
 // --- Settings ---

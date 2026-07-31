@@ -16,6 +16,7 @@ import { WebPreviewDialog } from "../features/webPreview/WebPreviewDialog";
 import { DockerDialog } from "../features/docker/DockerDialog";
 import { MultiplexerDialog } from "../features/multiplexer/MultiplexerDialog";
 import { RepoDialog } from "../features/repo/RepoDialog";
+import { VoiceComposerDialog } from "../features/voiceComposer/VoiceComposerDialog";
 
 /*
  * Desktop application shell — the original Luma layout, unchanged. Heavier,
@@ -80,6 +81,8 @@ export function DesktopLayout() {
   const closeDocker = useUiStore((s) => s.closeDocker);
   const repoTarget = useUiStore((s) => s.repoTarget);
   const closeRepo = useUiStore((s) => s.closeRepo);
+  const voiceTarget = useUiStore((s) => s.voiceTarget);
+  const closeVoice = useUiStore((s) => s.closeVoice);
 
   return (
     <div className="flex h-full flex-col">
@@ -163,6 +166,12 @@ export function DesktopLayout() {
         cwd={repoTarget?.cwd ?? null}
         sessionId={repoTarget?.sessionId ?? null}
         label={repoTarget?.label}
+      />
+      <VoiceComposerDialog
+        open={voiceTarget !== null}
+        onOpenChange={(o) => !o && closeVoice()}
+        sessionId={voiceTarget?.sessionId ?? null}
+        label={voiceTarget?.label}
       />
       <SnippetRunner />
       <MultiHostRunDialog />

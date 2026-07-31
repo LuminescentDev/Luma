@@ -6,6 +6,7 @@ import {
   ArrowUp,
   ClipboardCopy,
   ClipboardPaste,
+  Mic,
   Paperclip,
   Plug,
   RotateCw,
@@ -60,6 +61,7 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
     s.sessions.find((candidate) => candidate.id === sessionId),
   );
   const setSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
+  const openVoice = useUiStore((s) => s.openVoice);
   // Which sticky modifier is visually armed. Cleared when consumed (via the
   // manager callback) or toggled off.
   const [sticky, setSticky] = useState<"ctrl" | "alt" | null>(null);
@@ -132,6 +134,14 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
             <Paperclip size={16} />
           </ActionKey>
         )}
+        {/* Voice is a mobile-first affordance: compose a reviewable draft
+            rather than dictating straight into the live shell. */}
+        <ActionKey
+          aria="Voice composer"
+          onPress={() => openVoice({ sessionId, label: session?.title })}
+        >
+          <Mic size={16} />
+        </ActionKey>
         <ActionKey aria="Search terminal" onPress={() => setSearchOpen(true)}>
           <Search size={16} />
         </ActionKey>

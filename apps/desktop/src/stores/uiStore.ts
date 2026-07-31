@@ -100,6 +100,14 @@ type UiState = {
     label?: string;
   }) => void;
   closeRepo: () => void;
+  /** Voice composer dialog: the session a composed draft is destined for, plus
+   * an optional label for the subtitle. Null target means closed. */
+  voiceTarget: {
+    sessionId: string;
+    label?: string;
+  } | null;
+  openVoice: (target: { sessionId: string; label?: string }) => void;
+  closeVoice: () => void;
 };
 
 export type CollabIntent = {
@@ -180,6 +188,9 @@ export const useUiStore = create<UiState>((set) => ({
   repoTarget: null,
   openRepo: (target) => set({ repoTarget: target }),
   closeRepo: () => set({ repoTarget: null }),
+  voiceTarget: null,
+  openVoice: (target) => set({ voiceTarget: target }),
+  closeVoice: () => set({ voiceTarget: null }),
   paletteOpen: false,
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),

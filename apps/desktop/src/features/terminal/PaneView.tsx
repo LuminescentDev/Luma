@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Container, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Container, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Mic, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
 import { AutocompleteOverlay } from "./AutocompleteOverlay";
 import { attachFileToSession, canAttachFile } from "./attachFile";
@@ -62,6 +62,7 @@ export function PaneView({
   const openMultiplexer = useUiStore((s) => s.openMultiplexer);
   const openDocker = useUiStore((s) => s.openDocker);
   const openRepo = useUiStore((s) => s.openRepo);
+  const openVoice = useUiStore((s) => s.openVoice);
   const startLog = useSessionLogStore((s) => s.start);
   const stopLog = useSessionLogStore((s) => s.stop);
   const logEntry = useSessionLogStore((s) => s.logs[session.id]);
@@ -245,6 +246,19 @@ export function PaneView({
       },
     });
   }
+
+  // Compose a command as a reviewable draft (dictated, typed, or both) instead
+  // of typing straight into the live shell. Offered for every connected
+  // session; attachments inside it need SSH, which the composer handles.
+  paneActions.push({
+    label: "Voice composer…",
+    icon: <Mic size={15} />,
+    disabled: session.status !== "connected",
+    onSelect: () => {
+      onFocus();
+      openVoice({ sessionId: session.id, label: session.title });
+    },
+  });
 
   // Discover HTTP servers on the remote host and preview one through a
   // temporary loopback forward. Per-host, so it needs an SSH session's hostId.

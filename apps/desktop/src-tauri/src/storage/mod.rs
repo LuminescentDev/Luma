@@ -19,6 +19,7 @@ pub mod profiles;
 pub mod settings;
 pub mod snippets;
 pub mod vaults;
+pub mod voice_history;
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -54,6 +55,7 @@ const LEGACY_CRLF_CHECKSUMS: &[(i64, &str)] = &[
     (15, "823105168192ac5374f1acd10901a878a19b65b37b06af20b6be7bcc26bcc3422ce9114407666adffc5dd9e303198e86"),
     (16, "3dbb170efdee4d8ef6b0f082afa2b91e37871ca1d4abc2c1414ac4ff823be66c67aadc4428f96107b37a92f24ae18c6b"),
     (17, "4cd77c6b15dc828c48b3fe025e428c0e5fffe6a918748f9ad74267b69439591a05fdb0eb312c349379381592a96cf789"),
+    (18, "d820264a06f025a1c64ae6d5e68218540d50ae0324d007183d310bcb79cd21df4e6fa8cc18270dfedd923fd97ad33e02"),
 ];
 
 fn is_allowlisted_legacy_checksum(version: i64, recorded: &[u8]) -> bool {

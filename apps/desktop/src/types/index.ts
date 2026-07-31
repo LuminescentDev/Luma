@@ -191,4 +191,13 @@ export const SETTING_KEYS = {
   /** Device-local map of hostId -> { multiplexer, sessionName } to re-attach
    * automatically when connecting to that host. Never synced. */
   multiplexerResume: "multiplexer.resume",
+  /** Device-local toggle: allow the voice composer to use the platform's speech
+   * recognition. Default OFF because the only engine reachable from a webview
+   * may transcribe in the vendor's cloud — the settings copy says so plainly.
+   * Never synced. */
+  voiceDictation: "voice.dictation",
+  /** Device-local toggle: insert the draft at the prompt as soon as dictation
+   * ends, skipping the review step this feature exists for. Default OFF. Never
+   * executes — auto-send only ever inserts, never presses Enter. */
+  voiceAutoSend: "voice.autoSend",
 } as const;

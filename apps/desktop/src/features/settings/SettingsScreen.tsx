@@ -21,6 +21,7 @@ import { AccountSection } from "../account/AccountSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
 import { VaultsSection } from "../vaults/VaultsSection";
 import { UpdatesSection } from "../updater/UpdatesSection";
+import { detectSpeechSupport } from "../voiceComposer/speechProvider";
 
 type CategoryId =
   | "appearance"
@@ -54,6 +55,11 @@ export function SettingsScreen() {
   const autoReconnect = settings?.[SETTING_KEYS.autoReconnect] !== false;
   // Default OFF: enabling it starts recording command history locally.
   const autocomplete = settings?.[SETTING_KEYS.terminalAutocomplete] === true;
+  // Both default OFF. Dictation because the only engine a webview can reach may
+  // be cloud-backed; auto-send because it skips the review step.
+  const voiceDictation = settings?.[SETTING_KEYS.voiceDictation] === true;
+  const voiceAutoSend = settings?.[SETTING_KEYS.voiceAutoSend] === true;
+  const speechSupport = detectSpeechSupport();
   const defaultShell = parseShellRef(settings?.[SETTING_KEYS.defaultShell]);
   const defaultShellValue = defaultShell ? serializeShellRef(defaultShell) : "";
 
@@ -137,6 +143,59 @@ export function SettingsScreen() {
                 />
               </Field>
             </div>
+
+            <Subsection title="Voice composer">
+              {/* The composer itself always works (type or paste a draft,
+                  review it, send it). These toggles only govern dictation. */}
+              <p className="rounded-lg border border-border bg-background p-2.5 text-xs text-muted">
+                {speechSupport.available
+                  ? speechSupport.privacyNote
+                  : `${speechSupport.reason} ${speechSupport.privacyNote}`}
+              </p>
+              <Field
+                label="Enable dictation"
+                hint={
+                  speechSupport.available
+                    ? "Off by default. Read the note above before turning it on."
+                    : "Unavailable on this platform."
+                }
+              >
+                <Toggle
+                  checked={voiceDictation && speechSupport.available}
+                  disabled={!speechSupport.available}
+                  label="Enable dictation"
+                  onClick={() =>
+                    setSetting.mutate({
+                      key: SETTING_KEYS.voiceDictation,
+                      value: !voiceDictation,
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label="Auto-send after dictation"
+                hint="Skips the review step. Inserts at the prompt only — never presses Enter."
+              >
+                <Toggle
+                  checked={voiceAutoSend}
+                  disabled={!speechSupport.available || !voiceDictation}
+                  label="Auto-send after dictation"
+                  onClick={() =>
+                    setSetting.mutate({
+                      key: SETTING_KEYS.voiceAutoSend,
+                      value: !voiceAutoSend,
+                    })
+                  }
+                />
+              </Field>
+              {voiceAutoSend && voiceDictation && speechSupport.available && (
+                <p className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-2.5 text-xs text-amber-400">
+                  Auto-send puts transcribed text at your prompt without you
+                  reading it first. It still never presses Enter, so nothing runs
+                  until you do.
+                </p>
+              )}
+            </Subsection>
 
             <Subsection title="SSH">
               <Field
@@ -257,10 +316,12 @@ function Toggle({
   checked,
   onClick,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onClick: () => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -268,9 +329,10 @@ function Toggle({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={onClick}
       className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent",
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50",
         checked ? "bg-accent" : "bg-surface",
       )}
     >
