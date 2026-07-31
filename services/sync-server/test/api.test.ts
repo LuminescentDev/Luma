@@ -99,6 +99,26 @@ class FakeBucket {
   }
 }
 
+/** Matches SQLite's numbered placeholders (`?1`), which every query here uses. */
+const NUMBERED_PARAMETER = /\?\d/;
+
+/**
+ * Adapt D1's positional binding to what `node:sqlite` accepts.
+ *
+ * D1 binds `?1`-style placeholders positionally. Node 22's `node:sqlite`
+ * classifies them as NAMED parameters instead, so passing values positionally
+ * fails with "column index out of range" — Node 23 added positional support,
+ * which is why this only breaks on the CI runner's Node. Both versions accept
+ * an object keyed by parameter number, so send that whenever the query uses
+ * numbered placeholders and bind positionally otherwise.
+ */
+function bindValues(query: string, values: unknown[]): unknown[] {
+  if (values.length === 0 || !NUMBERED_PARAMETER.test(query)) return values;
+  return [
+    Object.fromEntries(values.map((value, index) => [index + 1, value])),
+  ];
+}
+
 /**
  * D1 is SQLite, so the shipped migrations run against an in-memory database
  * rather than being approximated by a query matcher: the tests then cover the
@@ -118,25 +138,29 @@ class TestDatabase {
 
   prepare(query: string): D1PreparedStatement {
     const statement = this.db.prepare(query);
-    const build = (values: unknown[]): D1PreparedStatement =>
-      ({
-        bind: (...bound: unknown[]) => build(bound),
+    const build = (values: unknown[]): D1PreparedStatement => {
+      const bound = () => bindValues(query, values) as never[];
+      return {
+        bind: (...next: unknown[]) => build(next),
         run: async () => {
-          statement.run(...(values as never[]));
+          statement.run(...bound());
           return { success: true, meta: {} } as D1Result;
         },
-        first: async () => (statement.get(...(values as never[])) as unknown) ?? null,
+        first: async () => (statement.get(...bound()) as unknown) ?? null,
         all: async () => ({
-          results: statement.all(...(values as never[])),
+          results: statement.all(...bound()),
           success: true,
           meta: {},
         }),
-      }) as unknown as D1PreparedStatement;
+      } as unknown as D1PreparedStatement;
+    };
     return build([]);
   }
 
   query<T>(sql: string, ...values: unknown[]): T[] {
-    return this.db.prepare(sql).all(...(values as never[])) as T[];
+    return this.db
+      .prepare(sql)
+      .all(...(bindValues(sql, values) as never[])) as T[];
   }
 }
 
