@@ -14,6 +14,8 @@ import { Modal } from "../../components/Modal";
 import { useCollabStore } from "../../stores/collabStore";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
+import { useCapabilityStore } from "../../stores/capabilityStore";
+import { useMobileNavStore } from "../../stores/mobileNavStore";
 import {
   collabCreateInvite,
   parseCollaborationError,
@@ -47,6 +49,7 @@ export function CollaborationDialog({
   const hydrate = useCollabStore((s) => s.hydrate);
   const openSettings = useUiStore((s) => s.openSettings);
   const collabIntent = useUiStore((s) => s.collabIntent);
+  const isMobile = useCapabilityStore((s) => s.capabilities.isMobile);
   const signedIn = auth?.status === "signedIn";
 
   useEffect(() => {
@@ -73,7 +76,13 @@ export function CollaborationDialog({
         <SignInPrompt
           pendingJoin={Boolean(collabIntent?.joinToken)}
           onOpenSettings={() => {
-            openSettings();
+            // Signing in is an Account concern in both shells, but each owns its
+            // own navigation: a main view on desktop, a tab + route on mobile.
+            if (isMobile) {
+              useMobileNavStore.getState().navigate("profile", "settings-account");
+            } else {
+              openSettings();
+            }
             onOpenChange(false);
           }}
         />

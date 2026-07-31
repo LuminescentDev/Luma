@@ -409,8 +409,10 @@ export function PaneView({
   }
 
   // Session logging — pty (local) and SSH only; the backend has no serial
-  // logging registry, so the affordance is hidden for serial sessions.
-  if (!isSerial) {
+  // logging registry, so the affordance is hidden for serial sessions. It writes
+  // to a local file the user picks, which mobile has no command surface for, so
+  // it is hidden there rather than offered as an action that always fails.
+  if (!isSerial && !isMobile) {
     paneActions.push({ separator: true });
     if (logEntry?.active) {
       paneActions.push({

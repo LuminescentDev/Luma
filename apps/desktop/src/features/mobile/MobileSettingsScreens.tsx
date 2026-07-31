@@ -1,10 +1,13 @@
+import { Users } from "lucide-react";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
 import { useCapabilityStore } from "../../stores/capabilityStore";
+import { useUiStore } from "../../stores/uiStore";
 import { SETTING_KEYS } from "../../types";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { VaultsSection } from "../vaults/VaultsSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
 import { AccountSection } from "../account/AccountSection";
+import { detectSpeechSupport } from "../voiceComposer/speechProvider";
 import { MobileScreen } from "./MobileScreen";
 import { Field, Section, Toggle } from "./MobileFormControls";
 import { tabBarStatus } from "./tabBar";
@@ -31,6 +34,13 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
   const setSetting = useSetSetting();
   const scrollback = Number(settings?.[SETTING_KEYS.scrollback] ?? 5000);
   const restoreSessions = settings?.[SETTING_KEYS.restoreSessions] !== false;
+  // Default OFF: enabling it starts recording command history locally.
+  const autocomplete = settings?.[SETTING_KEYS.terminalAutocomplete] === true;
+  // Both default OFF. Dictation because the only engine a webview can reach may
+  // be cloud-backed; auto-send because it skips the review step.
+  const voiceDictation = settings?.[SETTING_KEYS.voiceDictation] === true;
+  const voiceAutoSend = settings?.[SETTING_KEYS.voiceAutoSend] === true;
+  const speechSupport = detectSpeechSupport();
 
   return (
     <MobileScreen title="Terminal" onBack={onBack}>
@@ -66,6 +76,74 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
             }
           />
         </Field>
+        <Field
+          label="Command autocomplete"
+          hint="Local only — history, snippets and remote paths. Nothing is sent anywhere. Tab on the terminal key row accepts a suggestion."
+        >
+          <Toggle
+            checked={autocomplete}
+            label="Command autocomplete"
+            onClick={() =>
+              setSetting.mutate({
+                key: SETTING_KEYS.terminalAutocomplete,
+                value: !autocomplete,
+              })
+            }
+          />
+        </Field>
+      </Section>
+
+      {/* The composer itself always works (type a draft, review it, send it) —
+          it is on the terminal key row. These toggles only govern dictation,
+          which WKWebView cannot provide, so on iOS they stay unavailable. */}
+      <Section title="Voice composer">
+        <p className="rounded-lg border border-border bg-background p-2.5 text-xs text-muted">
+          {speechSupport.available
+            ? speechSupport.privacyNote
+            : `${speechSupport.reason} ${speechSupport.privacyNote}`}
+        </p>
+        <Field
+          label="Enable dictation"
+          hint={
+            speechSupport.available
+              ? "Off by default. Read the note above before turning it on."
+              : "Unavailable on this platform."
+          }
+        >
+          <Toggle
+            checked={voiceDictation && speechSupport.available}
+            disabled={!speechSupport.available}
+            label="Enable dictation"
+            onClick={() =>
+              setSetting.mutate({
+                key: SETTING_KEYS.voiceDictation,
+                value: !voiceDictation,
+              })
+            }
+          />
+        </Field>
+        <Field
+          label="Auto-send after dictation"
+          hint="Skips the review step. Inserts at the prompt only — never presses Enter."
+        >
+          <Toggle
+            checked={voiceAutoSend}
+            disabled={!speechSupport.available || !voiceDictation}
+            label="Auto-send after dictation"
+            onClick={() =>
+              setSetting.mutate({
+                key: SETTING_KEYS.voiceAutoSend,
+                value: !voiceAutoSend,
+              })
+            }
+          />
+        </Field>
+        {voiceAutoSend && voiceDictation && speechSupport.available && (
+          <p className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-2.5 text-xs text-amber-400">
+            Auto-send puts transcribed text at your prompt without you reading it
+            first. It still never presses Enter, so nothing runs until you do.
+          </p>
+        )}
       </Section>
     </MobileScreen>
   );
@@ -143,8 +221,22 @@ export function MobileVaultsScreen({ onBack }: { onBack: () => void }) {
 }
 
 export function MobileCollaborationScreen({ onBack }: { onBack: () => void }) {
+  const openCollab = useUiStore((s) => s.openCollab);
   return (
     <MobileScreen title="Collaboration" onBack={onBack}>
+      {/* The desktop opens this dialog from the button above the terminal tabs,
+          which the mobile shell has no room for; sharing a terminal also stays
+          on the terminal's own long-press menu. Joining one has no other entry
+          point on a phone apart from a deep link, so it lives here. */}
+      <Section>
+        <button
+          type="button"
+          onClick={() => openCollab({ mode: "join" })}
+          className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 text-sm font-medium text-accent-foreground"
+        >
+          <Users size={16} /> Share or join a terminal
+        </button>
+      </Section>
       <Section>
         <CollaborationSection />
       </Section>

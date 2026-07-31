@@ -22,6 +22,7 @@ import { MobileFontSizeSetup } from "./MobileFontSizeSetup";
 import { VoiceComposerDialog } from "../voiceComposer/VoiceComposerDialog";
 import { MobileAgentInboxScreen } from "./MobileAgentInboxScreen";
 import { MobileHostSurfaces } from "./MobileHostSurfaces";
+import { MobileCollabSurfaces, useCollabViewing } from "./MobileCollabSurfaces";
 import { ServerStatsScreen } from "../serverStats/ServerStatsScreen";
 import { FleetOverviewScreen } from "../fleet/FleetOverviewScreen";
 import { useServerStatsStore } from "../../stores/serverStatsStore";
@@ -70,11 +71,13 @@ export function MobileLayout() {
   const prevCount = useRef(tabCount);
 
   const showingSession = fullscreen && tabCount > 0;
+  // A shared terminal joined as a viewer covers the whole shell, like a session.
+  const collabViewing = useCollabViewing();
   const { native } = useNativeTabBar({
     sessionCount: tabCount,
     // A full-screen sheet is a DOM overlay, which cannot cover the native bar —
     // so the bar is told to hide for those too, not just for a session.
-    hidden: showingSession || sheetOpen,
+    hidden: showingSession || sheetOpen || collabViewing,
   });
 
   // A newly opened session (tab count rose) jumps to Connections and opens
@@ -106,6 +109,9 @@ export function MobileLayout() {
         {/* The terminal's own menu offers Repository, Workspaces and Preview
             for the session's host, so their surfaces mount here too. */}
         <MobileHostSurfaces />
+        {/* Same menu offers "Share terminal…", and a join deep link can arrive
+            while a session is open. */}
+        <MobileCollabSurfaces />
         <Suspense fallback={null}>
           <SyncDialogs />
         </Suspense>
@@ -151,10 +157,13 @@ export function MobileLayout() {
       </main>
       {/* The native bar owns the chrome when it attached; otherwise the web
           capsule renders. Never both. */}
-      {!native && !sheetOpen && <MobileTabBar sessionCount={tabCount} />}
+      {!native && !sheetOpen && !collabViewing && (
+        <MobileTabBar sessionCount={tabCount} />
+      )}
       <SnippetRunner />
       <MultiHostRunDialog />
       <MobileHostSurfaces />
+      <MobileCollabSurfaces />
       <Suspense fallback={null}>
         <SyncDialogs />
       </Suspense>
