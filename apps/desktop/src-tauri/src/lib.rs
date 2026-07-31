@@ -1,21 +1,29 @@
+mod agent_events;
 mod collaboration;
 mod commands;
+mod docker;
 mod errors;
 mod import;
 mod keystore;
 mod logging;
+mod mosh;
+mod multiplexer;
 mod platform;
+mod repository;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
+mod server_stats;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod session_logging;
 mod sftp;
+mod shell_completions;
 mod snippet_runs;
 mod ssh;
 mod storage;
 mod sync;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod terminal;
+mod web_preview;
 
 use std::path::PathBuf;
 
@@ -26,14 +34,19 @@ use tauri::Manager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
+use docker::DockerManager;
+use repository::RepositoryManager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use serial::SerialManager;
+use server_stats::ServerStatsManager;
 use sftp::SftpManager;
+use shell_completions::ShellCompletionsManager;
 use snippet_runs::SnippetRunManager;
 use ssh::EmbeddedSshManager;
 use ssh::TunnelManager;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use terminal::PtyManager;
+use web_preview::WebPreviewManager;
 
 pub struct AppState {
     pub pool: SqlitePool,
@@ -115,6 +128,19 @@ pub fn run() {
         // russh session, so mobile forwards work too (see platform.rs).
         app.manage(TunnelManager::default());
         app.manage(SftpManager::default());
+        app.manage(ServerStatsManager::default());
+        // Repository views reuse one cached SSH session per host too: a
+        // status fetch is normally followed by several diff fetches.
+        app.manage(RepositoryManager::default());
+        // Docker views reuse one cached SSH session per host: a listing is
+        // normally followed by stats, a log tail and an inspect.
+        app.manage(DockerManager::default());
+        // Completion probes reuse one cached SSH session per host, like the
+        // server dashboard; the caches are memory-only.
+        app.manage(ShellCompletionsManager::default());
+        // Preview tunnels live in TunnelManager; this only tracks the
+        // host/port → tunnel mapping so re-opening a preview reuses it.
+        app.manage(WebPreviewManager::default());
         app.manage(SnippetRunManager::default());
 
         // Lets native menu Swift callbacks emit into the frontend.
@@ -151,6 +177,7 @@ pub fn run() {
         commands::vault_remove_member,
         commands::hosts_list,
         commands::host_get,
+        commands::host_effective_config,
         commands::host_create,
         commands::host_update,
         commands::host_delete,
@@ -167,6 +194,7 @@ pub fn run() {
         commands::key_reference_update,
         commands::key_reference_delete,
         commands::ssh_key_generate,
+        commands::ssh_agent_identities,
         commands::identities_list,
         commands::identity_create,
         commands::identity_update,
@@ -177,6 +205,7 @@ pub fn run() {
         commands::ssh_write,
         commands::ssh_resize,
         commands::ssh_disconnect,
+        commands::ssh_agent_forward_enable,
         commands::ssh_probe,
         commands::ssh_key_install,
         commands::ssh_host_key_status,
@@ -184,6 +213,7 @@ pub fn run() {
         commands::known_hosts_list,
         commands::known_hosts_remove,
         commands::ssh_spawn,
+        commands::mosh_spawn,
         commands::ssh_config_preview,
         commands::ssh_config_import,
         commands::import_hosts_preview,
@@ -216,6 +246,32 @@ pub fn run() {
         commands::sftp_download,
         commands::sftp_cancel,
         commands::sftp_retry,
+        commands::terminal_attach_upload,
+        commands::server_stats_fetch,
+        commands::server_stats_close,
+        commands::command_history_record,
+        commands::command_history_query,
+        commands::shell_completions_executables,
+        commands::shell_completions_paths,
+        commands::voice_history_add,
+        commands::voice_history_list,
+        commands::voice_history_delete,
+        commands::voice_history_clear,
+        commands::web_preview_discover,
+        commands::web_preview_open,
+        commands::web_preview_close,
+        commands::web_previews_list,
+        commands::multiplexer_list,
+        commands::repo_status,
+        commands::repo_diff,
+        commands::repo_file,
+        commands::repo_close,
+        commands::docker_list,
+        commands::docker_stats,
+        commands::docker_logs,
+        commands::docker_inspect,
+        commands::docker_action,
+        commands::docker_close,
         commands::pty_spawn,
         commands::pty_write,
         commands::pty_resize,
@@ -282,6 +338,7 @@ pub fn run() {
         commands::vault_remove_member,
         commands::hosts_list,
         commands::host_get,
+        commands::host_effective_config,
         commands::host_create,
         commands::host_update,
         commands::host_delete,
@@ -342,6 +399,32 @@ pub fn run() {
         commands::sftp_download,
         commands::sftp_cancel,
         commands::sftp_retry,
+        commands::terminal_attach_upload,
+        commands::server_stats_fetch,
+        commands::server_stats_close,
+        commands::command_history_record,
+        commands::command_history_query,
+        commands::shell_completions_executables,
+        commands::shell_completions_paths,
+        commands::voice_history_add,
+        commands::voice_history_list,
+        commands::voice_history_delete,
+        commands::voice_history_clear,
+        commands::web_preview_discover,
+        commands::web_preview_open,
+        commands::web_preview_close,
+        commands::web_previews_list,
+        commands::multiplexer_list,
+        commands::repo_status,
+        commands::repo_diff,
+        commands::repo_file,
+        commands::repo_close,
+        commands::docker_list,
+        commands::docker_stats,
+        commands::docker_logs,
+        commands::docker_inspect,
+        commands::docker_action,
+        commands::docker_close,
         commands::keystore_status,
         commands::keystore_setup,
         commands::keystore_unlock,
@@ -391,6 +474,10 @@ pub fn run() {
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             app_handle.state::<SerialManager>().kill_all();
             app_handle.state::<SftpManager>().kill_all();
+            app_handle.state::<ServerStatsManager>().kill_all();
+            app_handle.state::<RepositoryManager>().kill_all();
+            app_handle.state::<DockerManager>().kill_all();
+            app_handle.state::<ShellCompletionsManager>().kill_all();
             app_handle.state::<SnippetRunManager>().kill_all();
             app_handle.state::<EmbeddedSshManager>().kill_all();
             app_handle.state::<TunnelManager>().kill_all();

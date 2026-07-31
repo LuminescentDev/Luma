@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { queryClient } from "./queryClient";
 import type { Host } from "./hosts";
+import type { MultiplexerAttach } from "./multiplexer";
 
 /*
  * SSH session spawn wrapper. Mirrors spawnPty in src/lib/terminal.ts: the
@@ -176,8 +177,52 @@ export function sshDisconnect(sessionId: string): Promise<void> {
   return invoke<void>("ssh_disconnect", { sessionId });
 }
 
-export async function spawnSsh(
+/** Enable SSH agent forwarding for one live session after explicit user
+ * confirmation. This setting is never persisted or applied globally. */
+export function enableSshAgentForwarding(sessionId: string): Promise<void> {
+  return invoke("ssh_agent_forward_enable", { sessionId });
+}
+
+/**
+ * Spawn a Mosh session for a saved host (desktop only). The backend bootstraps
+ * mosh-server over the host's embedded SSH configuration and launches a local
+ * mosh-client through the PTY infrastructure — the session key stays entirely
+ * backend-side. The returned sessionId is a PTY session id: I/O goes through
+ * pty_write / pty_resize / pty_kill, exactly like a local shell.
+ */
+export function spawnMosh(
   request: { hostId: string; cols: number; rows: number },
+  onData: (data: Uint8Array | string) => void,
+  onExit: (payload: SshExitPayload) => void,
+): Promise<SshSpawnResult> {
+  const dataChannel = new Channel<ArrayBuffer | number[] | string>();
+  dataChannel.onmessage = (message) => {
+    if (message instanceof ArrayBuffer) onData(new Uint8Array(message));
+    else if (Array.isArray(message)) onData(new Uint8Array(message));
+    else onData(message);
+  };
+  const exitChannel = new Channel<SshExitPayload>();
+  exitChannel.onmessage = onExit;
+  return invoke<SshSpawnResult>("mosh_spawn", {
+    request: {
+      hostId: request.hostId,
+      cols: request.cols,
+      rows: request.rows,
+    },
+    onData: dataChannel,
+    onExit: exitChannel,
+  });
+}
+
+export async function spawnSsh(
+  request: {
+    hostId: string;
+    cols: number;
+    rows: number;
+    /** Land inside a tmux/zellij workspace. The backend builds the attach
+     * command from the validated session name — never a command string. */
+    multiplexer?: MultiplexerAttach;
+  },
   onData: (data: Uint8Array | string) => void,
   onExit: (payload: SshExitPayload) => void,
   onRemoteOs?: (osId: SshRemoteOsId, prettyName: string | null) => void,
@@ -256,6 +301,7 @@ export async function spawnSsh(
         hostId: request.hostId,
         cols: request.cols,
         rows: request.rows,
+        multiplexer: request.multiplexer ?? null,
       },
       onData: dataChannel,
       onExit: exitChannel,

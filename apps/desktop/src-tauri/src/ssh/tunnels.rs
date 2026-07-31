@@ -19,6 +19,9 @@ use crate::storage::port_forwards::PortForward;
 #[serde(rename_all = "camelCase")]
 pub struct TunnelStartResponse {
     pub tunnel_id: String,
+    /// Actual device-side port for local/dynamic forwards. Differs from the
+    /// requested port when the caller asked for port 0 (OS-assigned).
+    pub local_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -36,12 +39,14 @@ pub struct TunnelInfo {
     pub port_forward_id: String,
     pub host_id: String,
     pub status: String,
+    pub local_port: Option<u16>,
 }
 
 struct ActiveTunnel {
     tunnel_id: String,
     port_forward_id: String,
     host_id: String,
+    local_port: Option<u16>,
     stop: watch::Sender<bool>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -57,7 +62,7 @@ impl TunnelManager {
         config: SshConnectionConfig,
         port_forward: PortForward,
         on_exit: impl FnOnce(TunnelExit) + Send + 'static,
-    ) -> Result<String> {
+    ) -> Result<TunnelStartResponse> {
         let tunnel_id = uuid::Uuid::new_v4().to_string();
         let (stop, stop_rx) = watch::channel(false);
         {
@@ -76,6 +81,7 @@ impl TunnelManager {
                     tunnel_id: tunnel_id.clone(),
                     port_forward_id: port_forward.id.clone(),
                     host_id: port_forward.host_id.clone(),
+                    local_port: None,
                     stop,
                     task: None,
                 },
@@ -83,7 +89,7 @@ impl TunnelManager {
         }
 
         let setup = self.setup(config, &port_forward).await;
-        let (connection, worker) = match setup {
+        let (connection, worker, local_port) = match setup {
             Ok(value) => value,
             Err(error) => {
                 self.tunnels.lock().unwrap().remove(&tunnel_id);
@@ -100,18 +106,23 @@ impl TunnelManager {
         });
         if let Some(tunnel) = self.tunnels.lock().unwrap().get_mut(&tunnel_id) {
             tunnel.task = Some(task);
+            tunnel.local_port = local_port;
         }
-        Ok(tunnel_id)
+        Ok(TunnelStartResponse {
+            tunnel_id,
+            local_port,
+        })
     }
 
     async fn setup(
         &self,
         config: SshConnectionConfig,
         port_forward: &PortForward,
-    ) -> Result<(AuthenticatedConnection, TunnelWorker)> {
+    ) -> Result<(AuthenticatedConnection, TunnelWorker, Option<u16>)> {
         match port_forward.forward_type.as_str() {
             "local" => {
                 let listener = bind_listener(port_forward, "localPort").await?;
+                let local_port = bound_port(&listener);
                 let destination = destination(port_forward)?;
                 let connection = authenticated_handle(&config).await?;
                 Ok((
@@ -120,12 +131,14 @@ impl TunnelManager {
                         listener,
                         destination,
                     },
+                    local_port,
                 ))
             }
             "dynamic" => {
                 let listener = bind_listener(port_forward, "localPort").await?;
+                let local_port = bound_port(&listener);
                 let connection = authenticated_handle(&config).await?;
-                Ok((connection, TunnelWorker::Dynamic { listener }))
+                Ok((connection, TunnelWorker::Dynamic { listener }, local_port))
             }
             "remote" => {
                 let destination = destination(port_forward)?;
@@ -157,6 +170,7 @@ impl TunnelManager {
                         remote_port,
                         destination,
                     },
+                    None,
                 ))
             }
             _ => Err(LumaError::InvalidInput(
@@ -190,6 +204,7 @@ impl TunnelManager {
                 port_forward_id: tunnel.port_forward_id.clone(),
                 host_id: tunnel.host_id.clone(),
                 status: "running".into(),
+                local_port: tunnel.local_port,
             })
             .collect::<Vec<_>>();
         tunnels.sort_by(|left, right| {
@@ -363,6 +378,10 @@ async fn run_remote(
     }
 }
 
+fn bound_port(listener: &TcpListener) -> Option<u16> {
+    listener.local_addr().ok().map(|addr| addr.port())
+}
+
 async fn bind_listener(port_forward: &PortForward, field: &str) -> Result<TcpListener> {
     let port = port_forward
         .local_port
@@ -454,6 +473,7 @@ mod tests {
                 tunnel_id: "one".into(),
                 port_forward_id: "forward-one".into(),
                 host_id: "host".into(),
+                local_port: Some(5432),
                 stop,
                 task: None,
             },

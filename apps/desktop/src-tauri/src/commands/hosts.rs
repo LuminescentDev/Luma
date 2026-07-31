@@ -3,6 +3,7 @@ use tauri::State;
 use crate::errors::Result;
 use crate::keystore::{self, KeystoreState};
 use crate::storage::host_groups::{self, HostGroup, HostGroupInput};
+use crate::storage::host_inheritance::{self, EffectiveHost};
 use crate::storage::hosts::{self, Host, HostInput};
 use crate::storage::identities::{self, Identity, IdentityInput};
 use crate::storage::key_references::{self, DerivedPublicKey, KeyReference, KeyReferenceInput};
@@ -26,6 +27,36 @@ pub async fn hosts_list(state: State<'_, AppState>, vault_id: Option<String>) ->
 #[tauri::command]
 pub async fn host_get(state: State<'_, AppState>, id: String) -> Result<Option<Host>> {
     hosts::get(&state.pool, &id).await
+}
+
+/// A host's effective configuration plus the provenance of every field.
+///
+/// With `id`, this resolves the stored host through its own group chain: what a
+/// connection will actually use. With `id` omitted it resolves a host that sets
+/// nothing at all against `groupId`, which answers the editor's question —
+/// "what would a host in this group inherit?" — for whichever group is selected
+/// in the form, including one the host has not been saved into yet.
+///
+/// `host_get` deliberately keeps returning the raw row: the editor has to show
+/// what this host actually stores, or saving the form would bake inherited
+/// values into the host and quietly break the link to its group.
+#[tauri::command]
+pub async fn host_effective_config(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    group_id: Option<String>,
+) -> Result<Option<EffectiveHost>> {
+    if let Some(id) = id {
+        let Some(host) = hosts::get(&state.pool, &id).await? else {
+            return Ok(None);
+        };
+        return host_inheritance::effective_host(&state.pool, host)
+            .await
+            .map(Some);
+    }
+    host_inheritance::group_defaults_preview(&state.pool, group_id.as_deref())
+        .await
+        .map(Some)
 }
 
 #[tauri::command]
@@ -99,6 +130,66 @@ pub async fn key_references_list(
     vault_id: Option<String>,
 ) -> Result<Vec<KeyReference>> {
     key_references::list(&state.pool, vault_id.as_deref()).await
+}
+
+// Both of these serve `ssh_agent_identities`, which mobile targets do not
+// compile — without the same gate they are dead code in a mobile build.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshAgentIdentity {
+    public_key: String,
+    fingerprint: String,
+    comment: String,
+    algorithm: String,
+    hardware_backed: bool,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn is_hardware_backed_agent_algorithm(algorithm: &str) -> bool {
+    algorithm.starts_with("sk-") || algorithm.contains("security-key")
+}
+
+/// Lists public identities exposed by the device's SSH agent. Private material
+/// never crosses this boundary; signing remains inside the agent/provider.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn ssh_agent_identities() -> Result<Vec<SshAgentIdentity>> {
+    use russh::keys::agent::AgentIdentity;
+    use russh::keys::HashAlg;
+
+    let mut agent = crate::ssh::agent::connect_client().await?;
+    let identities = agent.request_identities().await.map_err(|error| {
+        crate::errors::LumaError::KeyUnavailable(format!(
+            "could not list SSH-agent identities: {error}"
+        ))
+    })?;
+    let mut result = Vec::new();
+    for identity in identities {
+        let AgentIdentity::PublicKey { mut key, comment } = identity else {
+            // Certificate-backed agent identities require preserving the full
+            // certificate during authentication. Do not misrepresent their
+            // underlying public key as directly usable.
+            continue;
+        };
+        let algorithm = key.algorithm().to_string();
+        let hardware_backed = is_hardware_backed_agent_algorithm(&algorithm);
+        let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
+        key.set_comment("");
+        let public_key = key.to_openssh().map_err(|error| {
+            crate::errors::LumaError::KeyUnavailable(format!(
+                "could not encode SSH-agent public key: {error}"
+            ))
+        })?;
+        result.push(SshAgentIdentity {
+            public_key,
+            fingerprint,
+            comment,
+            algorithm,
+            hardware_backed,
+        });
+    }
+    Ok(result)
 }
 
 #[derive(Serialize)]
@@ -660,6 +751,19 @@ pub async fn identity_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn recognizes_fido_agent_algorithms_without_mislabeling_software_keys() {
+        assert!(is_hardware_backed_agent_algorithm(
+            "sk-ssh-ed25519@openssh.com"
+        ));
+        assert!(is_hardware_backed_agent_algorithm(
+            "sk-ecdsa-sha2-nistp256@openssh.com"
+        ));
+        assert!(!is_hardware_backed_agent_algorithm("ssh-ed25519"));
+        assert!(!is_hardware_backed_agent_algorithm("rsa-sha2-512"));
+    }
 
     fn local_key_input(name: &str, passphrase: Option<&str>) -> KeyReferenceInput {
         KeyReferenceInput {

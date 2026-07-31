@@ -50,6 +50,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::errors::{LumaError, Result};
 use crate::keystore::{self, KeystoreState};
+use crate::storage::host_groups::HostGroupDefaults;
 use crate::storage::vaults::PERSONAL_VAULT_ID;
 use crate::storage::{host_groups, hosts, identities, key_references, settings, snippets, vaults};
 
@@ -157,7 +158,23 @@ pub struct SyncHost {
     pub favorite: bool,
     #[serde(default)]
     pub tab_color: Option<String>,
+    // Mosh transport settings. Defaulted AND skipped when at their defaults so
+    // bundles from hosts that never touched Mosh stay byte-identical for older
+    // clients (SyncHost is deny_unknown_fields on the receiving side).
+    #[serde(
+        default = "crate::storage::hosts::default_transport",
+        skip_serializing_if = "is_default_transport"
+    )]
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mosh_server_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mosh_port_range: Option<String>,
     pub updated_at: i64,
+}
+
+fn is_default_transport(transport: &str) -> bool {
+    transport == "ssh"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -178,6 +195,24 @@ pub struct SyncHostGroup {
     pub name: String,
     pub parent_id: Option<String>,
     pub sort_order: i32,
+    // Inheritable group defaults, nested rather than flattened because serde
+    // cannot flatten under `deny_unknown_fields`.
+    //
+    // `None` means "this peer said nothing about defaults" — a bundle written
+    // by a client that predates them. It must NOT be read as "the user cleared
+    // every default": last-writer-wins would then let an old peer that merely
+    // renamed a group wipe the inherited identity and jump host for every host
+    // in it. Absent therefore preserves whatever the local row holds, while an
+    // explicit (possibly empty) object is applied as authoritative.
+    //
+    // A vault that uses no group defaults emits no `defaults` key at all, so
+    // its bundles stay byte-identical for older clients (SyncHostGroup is
+    // deny_unknown_fields on the receiving side). Once any group in the vault
+    // sets a default, every group in that bundle carries an explicit object so
+    // that clearing one propagates — old-client compatibility for that vault is
+    // already gone at that point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defaults: Option<HostGroupDefaults>,
     pub updated_at: i64,
 }
 
@@ -1156,10 +1191,9 @@ fn decrypt_bundle(blob: &[u8], secret: &VaultSecret) -> Result<SyncBundle> {
     Ok(bundle)
 }
 
-/// Peers running versions before SSH-agent support was removed may still sync
-/// 'agent' hosts and 'ssh-agent' key references. Coerce them to the migrated
-/// shape (interactive auth, key reference dropped) instead of rejecting the
-/// whole bundle.
+/// SSH-agent references are device-bound handles and must not cross sync
+/// boundaries. This also accepts bundles emitted by older versions that used
+/// the legacy `agent` authentication type.
 fn normalize_legacy_agent_auth(bundle: &mut SyncBundle) {
     let agent_key_ids: HashSet<String> = bundle
         .key_references
@@ -1471,7 +1505,8 @@ async fn assemble_bundle_inner(
 
     let hosts = sqlx::query(
         "SELECT id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,proxy_jump_host_id,
-                startup_command,working_directory,environment,tags,favorite,tab_color,updated_at FROM hosts
+                startup_command,working_directory,environment,tags,favorite,tab_color,transport,
+                mosh_server_path,mosh_port_range,updated_at FROM hosts
          WHERE is_ephemeral = 0 AND vault_id = ?1",
     )
     .bind(vault_id)
@@ -1505,26 +1540,70 @@ async fn assemble_bundle_inner(
                 .map_err(|_| LumaError::InvalidInput("stored host tags are invalid".into()))?,
             favorite: row.get::<i64, _>("favorite") != 0,
             tab_color: row.get("tab_color"),
+            transport: row.get("transport"),
+            mosh_server_path: row.get("mosh_server_path"),
+            mosh_port_range: row.get("mosh_port_range"),
             updated_at: row.get("updated_at"),
         })
     })
     .collect::<Result<Vec<_>>>()?;
 
     let host_groups = sqlx::query(
-        "SELECT id,name,parent_id,sort_order,updated_at FROM host_groups WHERE vault_id = ?1",
+        "SELECT id,name,parent_id,sort_order,username,identity_id,proxy_jump_host_id,
+                startup_command,working_directory,environment,tab_color,transport,
+                mosh_server_path,mosh_port_range,updated_at FROM host_groups WHERE vault_id = ?1",
     )
     .bind(vault_id)
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|row| SyncHostGroup {
-        id: row.get("id"),
-        name: row.get("name"),
-        parent_id: row.get("parent_id"),
-        sort_order: row.get("sort_order"),
-        updated_at: row.get("updated_at"),
+    .map(|row| {
+        let environment: Option<String> = row.get("environment");
+        Ok(SyncHostGroup {
+            id: row.get("id"),
+            name: row.get("name"),
+            parent_id: row.get("parent_id"),
+            sort_order: row.get("sort_order"),
+            defaults: Some(HostGroupDefaults {
+                username: row.get("username"),
+                identity_id: row.get("identity_id"),
+                proxy_jump_host_id: row.get("proxy_jump_host_id"),
+                startup_command: row.get("startup_command"),
+                working_directory: row.get("working_directory"),
+                environment: environment
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()
+                    .map_err(|_| {
+                        LumaError::InvalidInput("stored group environment is invalid".into())
+                    })?,
+                tab_color: row.get("tab_color"),
+                transport: row.get("transport"),
+                mosh_server_path: row.get("mosh_server_path"),
+                mosh_port_range: row.get("mosh_port_range"),
+            }),
+            updated_at: row.get("updated_at"),
+        })
     })
-    .collect();
+    .collect::<Result<Vec<_>>>()?;
+    // Keep bundles from vaults that never configured a group default identical
+    // to what a pre-defaults client would have written, so those users can keep
+    // syncing across mixed app versions.
+    //
+    // Known edge: clearing the LAST default in a vault drops the key again, and
+    // peers that still hold a copy keep theirs (absent means "preserve"). The
+    // alternative — always emitting the key — breaks every older client even
+    // for users who never touch group defaults, which is the worse trade.
+    let mut host_groups = host_groups;
+    if host_groups.iter().all(|group| {
+        group
+            .defaults
+            .as_ref()
+            .is_none_or(HostGroupDefaults::is_empty)
+    }) {
+        for group in &mut host_groups {
+            group.defaults = None;
+        }
+    }
 
     let mut key_references = Vec::new();
     let mut private_key_reference_timestamps = Vec::new();
@@ -1746,7 +1825,7 @@ async fn assemble_bundle_inner(
             })
             .collect();
 
-    let bundle = SyncBundle {
+    let mut bundle = SyncBundle {
         format_version: FORMAT_VERSION,
         device_id,
         updated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
@@ -1761,6 +1840,10 @@ async fn assemble_bundle_inner(
         settings: settings_map,
         tombstones,
     };
+    // Agent identities are handles into this machine's running provider, not
+    // portable credentials. Strip them and their references before the bundle
+    // can be encrypted or used as a sync baseline.
+    normalize_legacy_agent_auth(&mut bundle);
     validate_bundle(&bundle)?;
     Ok(bundle)
 }
@@ -2225,6 +2308,9 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
             "host_group" => {
                 let group: SyncHostGroup = payload_as(item)?;
                 host_groups::validate_name(&group.name)?;
+                if let Some(defaults) = group.defaults.as_ref() {
+                    host_groups::validate_defaults(defaults)?;
+                }
                 group_ids.insert(group.id.clone());
                 group_parents.insert(group.id, group.parent_id);
             }
@@ -2262,6 +2348,9 @@ fn validate_states(states: &BTreeMap<String, MergeItem>) -> Result<()> {
                     tags: host.tags,
                     favorite: host.favorite,
                     tab_color: host.tab_color,
+                    transport: host.transport,
+                    mosh_server_path: host.mosh_server_path,
+                    mosh_port_range: host.mosh_port_range,
                 })?;
                 host_ids.insert(host.id.clone());
                 host_proxies.insert(
@@ -2708,6 +2797,24 @@ async fn apply_states(
 /// otherwise a member of one shared vault could repoint a host in your personal
 /// vault at their own server. Every upsert therefore only updates a row whose
 /// vault matches, and leaves other vaults' rows untouched.
+/// A host's current key reference and auth type, but only when that key is an
+/// SSH-agent reference — a device-bound handle that sync deliberately never
+/// carries. `None` for every other host, so ordinary key changes still sync.
+async fn local_agent_binding(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    host_id: &str,
+) -> Result<Option<(String, String)>> {
+    let row = sqlx::query(
+        "SELECT hosts.key_id, hosts.auth_type FROM hosts
+         JOIN key_references ON key_references.id = hosts.key_id
+         WHERE hosts.id = ?1 AND key_references.storage_mode = 'ssh-agent'",
+    )
+    .bind(host_id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    Ok(row.map(|row| (row.get("key_id"), row.get("auth_type"))))
+}
+
 async fn apply_object(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     item: &MergeItem,
@@ -2716,11 +2823,49 @@ async fn apply_object(
     match item.object_type.as_str() {
         "host_group" => {
             let value: SyncHostGroup = payload_as(item)?;
+            let Some(defaults) = value.defaults else {
+                // A peer that predates group defaults: it can rename or reparent
+                // the group, but it knows nothing about the default columns, so
+                // they stay exactly as they are.
+                sqlx::query(
+                    "INSERT INTO host_groups(id,name,parent_id,sort_order,vault_id,created_at,updated_at)
+                     VALUES(?1,?2,?3,?4,?5,?6,?6)
+                     ON CONFLICT(id) DO UPDATE SET name=excluded.name,parent_id=excluded.parent_id,
+                     sort_order=excluded.sort_order,updated_at=excluded.updated_at
+                     WHERE host_groups.vault_id=excluded.vault_id",
+                )
+                .bind(value.id)
+                .bind(value.name)
+                .bind(value.parent_id)
+                .bind(value.sort_order)
+                .bind(vault_id)
+                .bind(value.updated_at)
+                .execute(&mut **transaction)
+                .await?;
+                return Ok(());
+            };
+            let environment = defaults
+                .environment
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|_| {
+                    LumaError::InvalidInput("group environment cannot be serialized".into())
+                })?;
             sqlx::query(
-                "INSERT INTO host_groups(id,name,parent_id,sort_order,vault_id,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?6)
+                "INSERT INTO host_groups(id,name,parent_id,sort_order,vault_id,created_at,updated_at,
+                 username,identity_id,proxy_jump_host_id,startup_command,working_directory,
+                 environment,tab_color,transport,mosh_server_path,mosh_port_range)
+                 VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,parent_id=excluded.parent_id,
-                 sort_order=excluded.sort_order,updated_at=excluded.updated_at
+                 sort_order=excluded.sort_order,updated_at=excluded.updated_at,
+                 username=excluded.username,identity_id=excluded.identity_id,
+                 proxy_jump_host_id=excluded.proxy_jump_host_id,
+                 startup_command=excluded.startup_command,
+                 working_directory=excluded.working_directory,environment=excluded.environment,
+                 tab_color=excluded.tab_color,transport=excluded.transport,
+                 mosh_server_path=excluded.mosh_server_path,
+                 mosh_port_range=excluded.mosh_port_range
                  WHERE host_groups.vault_id=excluded.vault_id",
             )
             .bind(value.id)
@@ -2729,6 +2874,16 @@ async fn apply_object(
             .bind(value.sort_order)
             .bind(vault_id)
             .bind(value.updated_at)
+            .bind(defaults.username)
+            .bind(defaults.identity_id)
+            .bind(defaults.proxy_jump_host_id)
+            .bind(defaults.startup_command)
+            .bind(defaults.working_directory)
+            .bind(environment)
+            .bind(defaults.tab_color)
+            .bind(defaults.transport)
+            .bind(defaults.mosh_server_path)
+            .bind(defaults.mosh_port_range)
             .execute(&mut **transaction)
             .await?;
         }
@@ -2775,19 +2930,34 @@ async fn apply_object(
             .await?;
         }
         "host" => {
-            let value: SyncHost = payload_as(item)?;
+            let mut value: SyncHost = payload_as(item)?;
+            // Every bundle — including the one assembled from this device — has
+            // its SSH-agent references stripped, because they are handles into
+            // a local provider and mean nothing on another machine. Writing
+            // that stripped shape back would clear the binding on the device
+            // that owns it, so a host currently pointing at an agent key keeps
+            // its key and auth type whatever sync says.
+            if value.key_id.is_none() {
+                if let Some((key_id, auth_type)) =
+                    local_agent_binding(transaction, &value.id).await?
+                {
+                    value.key_id = Some(key_id);
+                    value.authentication_type = auth_type;
+                }
+            }
             sqlx::query(
                 "INSERT INTO hosts(id,name,hostname,port,username,group_id,auth_type,key_id,identity_id,
                  proxy_jump_host_id,startup_command,working_directory,environment,tags,favorite,tab_color,
-                 vault_id,created_at,updated_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18)
+                 transport,mosh_server_path,mosh_port_range,vault_id,created_at,updated_at)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?21)
                  ON CONFLICT(id) DO UPDATE SET name=excluded.name,hostname=excluded.hostname,
                  port=excluded.port,username=excluded.username,group_id=excluded.group_id,
                  auth_type=excluded.auth_type,key_id=excluded.key_id,identity_id=excluded.identity_id,
                  proxy_jump_host_id=excluded.proxy_jump_host_id,startup_command=excluded.startup_command,
                  working_directory=excluded.working_directory,environment=excluded.environment,
                  tags=excluded.tags,favorite=excluded.favorite,tab_color=excluded.tab_color,
-                 updated_at=excluded.updated_at
+                 transport=excluded.transport,mosh_server_path=excluded.mosh_server_path,
+                 mosh_port_range=excluded.mosh_port_range,updated_at=excluded.updated_at
                  WHERE hosts.vault_id=excluded.vault_id",
             )
             .bind(value.id)
@@ -2806,6 +2976,9 @@ async fn apply_object(
             .bind(serde_json::to_string(&value.tags).map_err(|_| LumaError::InvalidInput("host tags are invalid".into()))?)
             .bind(value.favorite)
             .bind(value.tab_color)
+            .bind(value.transport)
+            .bind(value.mosh_server_path)
+            .bind(value.mosh_port_range)
             .bind(vault_id)
             .bind(value.updated_at)
             .execute(&mut **transaction)
@@ -3882,6 +4055,168 @@ mod tests {
         assert!(!error.to_string().contains("b3BlbnNzaC1rZXktdjE"));
     }
 
+    /// Apply one host_group payload as if it had arrived from a peer.
+    async fn apply_group_payload(pool: &SqlitePool, payload: serde_json::Value) {
+        let item = MergeItem {
+            object_type: "host_group".into(),
+            object_id: "group-1".into(),
+            label: "Prod".into(),
+            updated_at: 100,
+            payload: Some(payload),
+        };
+        let mut transaction = pool.begin().await.unwrap();
+        apply_object(&mut transaction, &item, PERSONAL_VAULT_ID)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_peer_without_group_defaults_cannot_clear_them() {
+        // A client that predates group defaults omits the field entirely. Read
+        // as "everything is unset" it would wipe the inherited identity and
+        // jump host for every member of the group, just by renaming it.
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO host_groups(id,name,vault_id,sort_order,created_at,updated_at,
+             username,startup_command)
+             VALUES('group-1','Prod',?1,0,1,1,'deploy','tmux -u attach')",
+        )
+        .bind(PERSONAL_VAULT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_group_payload(
+            &pool,
+            json!({
+                "id": "group-1",
+                "name": "Production",
+                "parentId": null,
+                "sortOrder": 0,
+                "updatedAt": 100,
+            }),
+        )
+        .await;
+
+        let row =
+            sqlx::query("SELECT name,username,startup_command FROM host_groups WHERE id='group-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        // The rename lands; the defaults it knew nothing about survive.
+        assert_eq!(row.get::<String, _>("name"), "Production");
+        assert_eq!(
+            row.get::<Option<String>, _>("username").as_deref(),
+            Some("deploy")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("startup_command").as_deref(),
+            Some("tmux -u attach")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_explicit_empty_defaults_object_still_clears_them() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO host_groups(id,name,vault_id,sort_order,created_at,updated_at,username)
+             VALUES('group-1','Prod',?1,0,1,1,'deploy')",
+        )
+        .bind(PERSONAL_VAULT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_group_payload(
+            &pool,
+            json!({
+                "id": "group-1",
+                "name": "Prod",
+                "parentId": null,
+                "sortOrder": 0,
+                "defaults": {},
+                "updatedAt": 100,
+            }),
+        )
+        .await;
+
+        let username: Option<String> =
+            sqlx::query_scalar("SELECT username FROM host_groups WHERE id='group-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(username, None);
+    }
+
+    #[tokio::test]
+    async fn sync_cannot_clear_a_device_bound_agent_key_binding() {
+        // Every bundle has agent references stripped, so an incoming host has
+        // no key. Writing that back would unbind the agent key on the very
+        // device that owns it.
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO key_references(id,name,storage_mode,has_private_key,vault_id,updated_at)
+             VALUES('key-agent','Security key','ssh-agent',0,?1,1)",
+        )
+        .bind(PERSONAL_VAULT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO hosts(id,name,hostname,port,auth_type,key_id,vault_id,created_at,updated_at)
+             VALUES('host-1','Prod','prod.example.com',22,'key','key-agent',?1,1,1)",
+        )
+        .bind(PERSONAL_VAULT_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let item = MergeItem {
+            object_type: "host".into(),
+            object_id: "host-1".into(),
+            label: "Prod".into(),
+            updated_at: 100,
+            payload: Some(json!({
+                "id": "host-1",
+                "name": "Prod",
+                "hostname": "prod.example.com",
+                "port": 22,
+                "username": null,
+                "groupId": null,
+                "authenticationType": "interactive",
+                "keyId": null,
+                "identityId": null,
+                "proxyJumpHostId": null,
+                "startupCommand": null,
+                "workingDirectory": null,
+                "environment": null,
+                "tags": [],
+                "favorite": false,
+                "tabColor": null,
+                "transport": "ssh",
+                "moshServerPath": null,
+                "moshPortRange": null,
+                "updatedAt": 100,
+            })),
+        };
+        let mut transaction = pool.begin().await.unwrap();
+        apply_object(&mut transaction, &item, PERSONAL_VAULT_ID)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+
+        let row = sqlx::query("SELECT key_id,auth_type FROM hosts WHERE id='host-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            row.get::<Option<String>, _>("key_id").as_deref(),
+            Some("key-agent")
+        );
+        assert_eq!(row.get::<String, _>("auth_type"), "key");
+    }
+
     #[tokio::test]
     async fn private_key_sync_opt_in_off_assembles_no_encrypted_secrets() {
         let pool = crate::storage::init_in_memory().await.unwrap();
@@ -4235,6 +4570,9 @@ mod tests {
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 1,
         });
         bundle.hosts.push(SyncHost {
@@ -4254,6 +4592,9 @@ mod tests {
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 1,
         });
 
@@ -4298,6 +4639,9 @@ mod tests {
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 10,
         });
 
@@ -4427,6 +4771,9 @@ mod tests {
                 tags: vec![],
                 favorite: false,
                 tab_color: None,
+                transport: "ssh".into(),
+                mosh_server_path: None,
+                mosh_port_range: None,
             },
         )
         .await
@@ -4764,6 +5111,9 @@ mod tests {
             tags: vec![],
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             updated_at: 9_999_999,
         });
         apply_states(&pool, &hostile.states().unwrap(), &shared)

@@ -17,6 +17,7 @@ commands.allow = [
   "vault_remove_member",
   "hosts_list",
   "host_get",
+  "host_effective_config",
   "host_create",
   "host_update",
   "host_delete",
@@ -76,6 +77,20 @@ commands.allow = [
   "sftp_download",
   "sftp_cancel",
   "sftp_retry",
+  "terminal_attach_upload",
+  "command_history_record",
+  "command_history_query",
+  "shell_completions_executables",
+  "shell_completions_paths",
+  "voice_history_add",
+  "voice_history_list",
+  "voice_history_delete",
+  "voice_history_clear",
+  # The server dashboard, web preview, workspace picker, repository browser and
+  # Docker view are mounted only in the desktop layout. Their commands stay off
+  # the mobile allowlist until a mobile surface actually calls them — most of
+  # all `docker_action`, which mutates containers on the remote host and whose
+  # confirmation step lives entirely in the (desktop-only) store.
   "keystore_status",
   "keystore_setup",
   "keystore_unlock",

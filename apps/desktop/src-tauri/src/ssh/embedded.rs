@@ -32,6 +32,7 @@ pub(super) enum Control {
     Write(Vec<u8>),
     Resize(u16, u16),
     Ping(oneshot::Sender<std::result::Result<u64, PingFailure>>),
+    EnableAgentForwarding(oneshot::Sender<std::result::Result<(), String>>),
     Disconnect,
 }
 
@@ -50,6 +51,7 @@ pub(crate) struct Client {
     key_mismatch: Arc<AtomicBool>,
     on_data: Option<SharedDataCallback>,
     forwarded_tcpip: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    agent_forwarding_enabled: Arc<AtomicBool>,
 }
 
 pub(crate) struct ForwardedTcpip {
@@ -116,6 +118,32 @@ impl client::Handler for Client {
         if let Some(sender) = &self.forwarded_tcpip {
             let _ = sender.send(ForwardedTcpip { channel, reply });
         }
+        Ok(())
+    }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        if !self.agent_forwarding_enabled.load(Ordering::Acquire) {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+            return Ok(());
+        }
+        let Ok(mut agent) = super::agent::connect_stream().await else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        reply.accept().await;
+        tauri::async_runtime::spawn(async move {
+            let mut channel = channel.into_stream();
+            if let Err(error) = tokio::io::copy_bidirectional(&mut channel, &mut agent).await {
+                tracing::warn!(%error, "SSH agent-forwarding channel closed with an error");
+            }
+        });
         Ok(())
     }
 
@@ -247,8 +275,9 @@ impl EmbeddedSshManager {
             }
 
             let handle = Arc::clone(connection.handle());
+            let agent_forwarding_enabled = Arc::clone(&config.agent_forwarding_enabled);
             let _connection = connection;
-            let mut channel = match open_shell_channel(&handle, &config, cols, rows).await {
+            let mut channel = match open_shell_channel(&handle, &config, cols, rows, false).await {
                 Ok(channel) => channel,
                 Err(error) => {
                     let category = error.category().to_string();
@@ -277,6 +306,8 @@ impl EmbeddedSshManager {
             let mut exit_code = None;
             let mut failure = None;
             let mut channel_disappeared = false;
+            let mut current_cols = cols;
+            let mut current_rows = rows;
             loop {
                 tokio::select! {
                     control = control_rx.recv() => match control {
@@ -291,6 +322,8 @@ impl EmbeddedSshManager {
                                 failure = Some(error.to_string());
                                 break;
                             }
+                            current_cols = cols;
+                            current_rows = rows;
                         }
                         Some(Control::Ping(reply)) => {
                             let handle = Arc::clone(&handle);
@@ -314,6 +347,43 @@ impl EmbeddedSshManager {
                                 };
                                 let _ = reply.send(result);
                             });
+                        }
+                        Some(Control::EnableAgentForwarding(reply)) => {
+                            if agent_forwarding_enabled.load(Ordering::Acquire) {
+                                let _ = reply.send(Ok(()));
+                                continue;
+                            }
+                            let available = super::agent::connect_client().await;
+                            if let Err(error) = available {
+                                let _ = reply.send(Err(error.to_string()));
+                                continue;
+                            }
+                            agent_forwarding_enabled.store(true, Ordering::Release);
+                            match open_shell_channel(
+                                &handle,
+                                &config,
+                                current_cols,
+                                current_rows,
+                                true,
+                            )
+                            .await
+                            {
+                                Ok(forwarded_channel) => {
+                                    let _ = channel.eof().await;
+                                    let _ = channel.close().await;
+                                    channel = forwarded_channel;
+                                    exit_code = None;
+                                    channel_disappeared = false;
+                                    tracing::warn!(host = %config.hostname, "SSH agent forwarding enabled for session");
+                                    let _ = reply.send(Ok(()));
+                                }
+                                Err(error) => {
+                                    agent_forwarding_enabled.store(false, Ordering::Release);
+                                    let _ = reply.send(Err(format!(
+                                        "could not start a remote shell with SSH agent forwarding: {error}"
+                                    )));
+                                }
+                            }
                         }
                         Some(Control::Disconnect) | None => {
                             let _ = channel.eof().await;
@@ -454,6 +524,22 @@ impl EmbeddedSshManager {
         self.send(session_id, Control::Disconnect)
     }
 
+    pub async fn enable_agent_forwarding(&self, session_id: &str) -> Result<bool> {
+        let sender = self.sessions.lock().unwrap().get(session_id).cloned();
+        let Some(sender) = sender else {
+            return Ok(false);
+        };
+        let (reply, response) = oneshot::channel();
+        sender
+            .send(Control::EnableAgentForwarding(reply))
+            .map_err(|_| LumaError::Pty("SSH session is no longer available".into()))?;
+        response
+            .await
+            .map_err(|_| LumaError::Pty("SSH session closed before forwarding started".into()))?
+            .map_err(LumaError::KeyUnavailable)?;
+        Ok(true)
+    }
+
     fn send(&self, session_id: &str, control: Control) -> Result<bool> {
         let sender = self.sessions.lock().unwrap().get(session_id).cloned();
         let Some(sender) = sender else {
@@ -497,8 +583,9 @@ async fn open_shell_channel(
     config: &SshConnectionConfig,
     cols: u16,
     rows: u16,
+    agent_forwarding: bool,
 ) -> Result<russh::Channel<client::Msg>> {
-    let channel = tokio::time::timeout(Duration::from_secs(15), handle.channel_open_session())
+    let mut channel = tokio::time::timeout(Duration::from_secs(15), handle.channel_open_session())
         .await
         .map_err(|_| LumaError::SshConnection {
             category: "timeout",
@@ -508,7 +595,7 @@ async fn open_shell_channel(
     tokio::time::timeout(
         Duration::from_secs(15),
         channel.request_pty(
-            true,
+            !agent_forwarding,
             "xterm-256color",
             u32::from(cols),
             u32::from(rows),
@@ -523,6 +610,43 @@ async fn open_shell_channel(
         message: "SSH PTY request timed out".into(),
     })?
     .map_err(connect_error)?;
+    if agent_forwarding {
+        tokio::time::timeout(Duration::from_secs(15), channel.agent_forward(true))
+            .await
+            .map_err(|_| LumaError::SshConnection {
+                category: "timeout",
+                message: "SSH agent forwarding request timed out".into(),
+            })?
+            .map_err(connect_error)?;
+        let accepted = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Success) => return Ok(()),
+                    Some(ChannelMsg::Failure) => {
+                        return Err(LumaError::SshConnection {
+                            category: "ssh-error",
+                            message: "the remote server rejected SSH agent forwarding".into(),
+                        });
+                    }
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => {
+                        return Err(LumaError::SshConnection {
+                            category: "connection-lost",
+                            message:
+                                "the remote channel closed during the SSH agent forwarding request"
+                                    .into(),
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| LumaError::SshConnection {
+            category: "timeout",
+            message: "SSH agent forwarding confirmation timed out".into(),
+        })?;
+        accepted?;
+    }
     if let Some(command) = config.startup_command.as_deref() {
         tokio::time::timeout(
             Duration::from_secs(15),
@@ -679,6 +803,7 @@ where
                 key_mismatch: Arc::clone(&key_mismatch),
                 on_data,
                 forwarded_tcpip,
+                agent_forwarding_enabled: Arc::clone(&config.agent_forwarding_enabled),
             },
         ),
     )
@@ -937,6 +1062,7 @@ mod tests {
     enum ServerEvent {
         SessionOpened,
         PtyRequested(u32, u32),
+        AgentForwardRequested,
         ShellRequested,
         Data(Vec<u8>),
         Resized(u32, u32),
@@ -1103,6 +1229,21 @@ mod tests {
                 .push(ServerEvent::ShellRequested);
             session.channel_success(channel)?;
             Ok(())
+        }
+
+        async fn agent_request(
+            &mut self,
+            channel: ChannelId,
+            session: &mut Session,
+        ) -> std::result::Result<bool, Self::Error> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(ServerEvent::AgentForwardRequested);
+            // russh's test server path currently emits the handler's bool as a
+            // global reply; send the protocol-required channel reply explicitly.
+            session.channel_success(channel)?;
+            Ok(true)
         }
 
         async fn exec_request(
@@ -1327,6 +1468,8 @@ mod tests {
             username: Some(TEST_USERNAME.into()),
             authentication_type: "password".into(),
             identity_file: None,
+            agent_public_key: None,
+            agent_forwarding_enabled: Arc::new(AtomicBool::new(false)),
             proxy_jumps: Vec::new(),
             startup_command: None,
             password: Some(Arc::new(zeroize::Zeroizing::new(TEST_PASSWORD.into()))),
@@ -1448,6 +1591,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forwarded_shell_requests_agent_access_before_starting() {
+        let files = TestFiles::new();
+        let server =
+            TestSshServer::start(0, as_russh_private_key(&generate_ed25519_key()), None).await;
+        let known_hosts = files.path("known_hosts");
+        write_known_host(&known_hosts, server.address, &server.host_key);
+        let config = test_config(server.address, known_hosts);
+        let handle = authenticated_handle(&config).await.unwrap();
+
+        let channel = open_shell_channel(&handle, &config, 80, 24, true)
+            .await
+            .unwrap();
+        wait_for_event(&server.events, ServerEvent::AgentForwardRequested).await;
+        wait_for_event(&server.events, ServerEvent::ShellRequested).await;
+        channel.close().await.unwrap();
+        disconnect_handle(&handle).await;
+        server.stop().await;
+    }
+
+    #[tokio::test]
     async fn proxy_preflight_returns_first_unknown_then_target_after_trust() {
         let files = TestFiles::new();
         let target =
@@ -1479,6 +1642,9 @@ mod tests {
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
             os_id: None,
             os_pretty_name: None,
             is_ephemeral: false,

@@ -24,6 +24,7 @@ import {
 } from '../stores/syncStore';
 import { TabBar } from '../features/terminal/TabBar';
 import { VaultSwitcher } from './VaultSwitcher';
+import { AgentInbox } from '../features/agentInbox/AgentInbox';
 
 const appWindow = getCurrentWindow();
 
@@ -149,6 +150,7 @@ export function TitleBar() {
         </button>
       )}
       {syncedVaultIds.length > 0 && <SyncIndicator vaultIds={syncedVaultIds} />}
+      <AgentInbox />
       <div className='flex h-full shrink-0 items-stretch'>
         <WindowButton
           label='Minimize'

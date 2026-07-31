@@ -14,7 +14,9 @@ export type MainView =
   | "terminal"
   | "settings"
   | "keychain"
-  | "known-hosts";
+  | "known-hosts"
+  | "server-stats"
+  | "fleet";
 
 type UiState = {
   /** What the main area shows to the right of the sidebar. */
@@ -33,6 +35,10 @@ type UiState = {
   openKeychain: () => void;
   /** Show the known-hosts trust-store manager in the main area. */
   openKnownHosts: () => void;
+  /** Show the agentless server stats dashboard in the main area. */
+  openServerStats: () => void;
+  /** Show foreground health checks across favorite hosts. */
+  openFleet: () => void;
   terminalSearchOpen: boolean;
   setTerminalSearchOpen: (open: boolean) => void;
   newTabIds: string[];
@@ -63,6 +69,55 @@ type UiState = {
   vaultJoinLink: VaultJoinLink | null;
   openVaultJoin: (link?: VaultJoinLink) => void;
   closeVaultJoin: () => void;
+  /** Web-preview dialog: the host whose listeners are being previewed, and an
+   * optional label for the dialog subtitle. Null host means closed. */
+  webPreviewHostId: string | null;
+  webPreviewHostLabel: string | null;
+  /** Terminal session the dialog was opened from, so previews it starts are
+   * torn down with that session. */
+  webPreviewSessionId: string | null;
+  openWebPreview: (
+    hostId: string,
+    hostLabel?: string,
+    sessionId?: string,
+  ) => void;
+  closeWebPreview: () => void;
+  /** Multiplexer workspace dialog: the host whose tmux/zellij sessions are being
+   * managed, plus an optional label for the subtitle. Null host means closed. */
+  multiplexerHostId: string | null;
+  multiplexerHostLabel: string | null;
+  openMultiplexer: (hostId: string, hostLabel?: string) => void;
+  closeMultiplexer: () => void;
+  /** Docker dialog: the host whose containers are being managed, plus an
+   * optional label for the subtitle. Null host means closed. */
+  dockerHostId: string | null;
+  dockerHostLabel: string | null;
+  openDocker: (hostId: string, hostLabel?: string) => void;
+  closeDocker: () => void;
+  /** Repository (git status / diff) dialog: the host + working directory being
+   * inspected, the session whose prompt an insertion targets, and an optional
+   * label for the subtitle. Null target means closed. */
+  repoTarget: {
+    hostId: string;
+    cwd: string;
+    sessionId: string;
+    label?: string;
+  } | null;
+  openRepo: (target: {
+    hostId: string;
+    cwd: string;
+    sessionId: string;
+    label?: string;
+  }) => void;
+  closeRepo: () => void;
+  /** Voice composer dialog: the session a composed draft is destined for, plus
+   * an optional label for the subtitle. Null target means closed. */
+  voiceTarget: {
+    sessionId: string;
+    label?: string;
+  } | null;
+  openVoice: (target: { sessionId: string; label?: string }) => void;
+  closeVoice: () => void;
 };
 
 export type CollabIntent = {
@@ -85,6 +140,8 @@ export const useUiStore = create<UiState>((set) => ({
   openSettings: () => set({ mainView: "settings" }),
   openKeychain: () => set({ mainView: "keychain" }),
   openKnownHosts: () => set({ mainView: "known-hosts" }),
+  openServerStats: () => set({ mainView: "server-stats" }),
+  openFleet: () => set({ mainView: "fleet" }),
   terminalSearchOpen: false,
   setTerminalSearchOpen: (open) => set({ terminalSearchOpen: open }),
   newTabIds: [],
@@ -122,6 +179,38 @@ export const useUiStore = create<UiState>((set) => ({
   serialConnectOpen: false,
   openSerialConnect: () => set({ serialConnectOpen: true }),
   closeSerialConnect: () => set({ serialConnectOpen: false }),
+  webPreviewHostId: null,
+  webPreviewHostLabel: null,
+  webPreviewSessionId: null,
+  openWebPreview: (hostId, hostLabel, sessionId) =>
+    set({
+      webPreviewHostId: hostId,
+      webPreviewHostLabel: hostLabel ?? null,
+      webPreviewSessionId: sessionId ?? null,
+    }),
+  closeWebPreview: () =>
+    set({
+      webPreviewHostId: null,
+      webPreviewHostLabel: null,
+      webPreviewSessionId: null,
+    }),
+  multiplexerHostId: null,
+  multiplexerHostLabel: null,
+  openMultiplexer: (hostId, hostLabel) =>
+    set({ multiplexerHostId: hostId, multiplexerHostLabel: hostLabel ?? null }),
+  closeMultiplexer: () =>
+    set({ multiplexerHostId: null, multiplexerHostLabel: null }),
+  dockerHostId: null,
+  dockerHostLabel: null,
+  openDocker: (hostId, hostLabel) =>
+    set({ dockerHostId: hostId, dockerHostLabel: hostLabel ?? null }),
+  closeDocker: () => set({ dockerHostId: null, dockerHostLabel: null }),
+  repoTarget: null,
+  openRepo: (target) => set({ repoTarget: target }),
+  closeRepo: () => set({ repoTarget: null }),
+  voiceTarget: null,
+  openVoice: (target) => set({ voiceTarget: target }),
+  closeVoice: () => set({ voiceTarget: null }),
   paletteOpen: false,
   openPalette: () => set({ paletteOpen: true }),
   closePalette: () => set({ paletteOpen: false }),

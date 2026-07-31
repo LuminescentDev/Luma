@@ -19,6 +19,8 @@ import { KnownHostsScreen } from "../knownHosts/KnownHostsScreen";
 import { SnippetRunner } from "../snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../snippets/MultiHostRunDialog";
 import { MobileFontSizeSetup } from "./MobileFontSizeSetup";
+import { VoiceComposerDialog } from "../voiceComposer/VoiceComposerDialog";
+import { useUiStore } from "../../stores/uiStore";
 import {
   MobileAboutScreen,
   MobileAccountScreen,
@@ -92,6 +94,9 @@ export function MobileLayout() {
         />
         <SnippetRunner />
         <MultiHostRunDialog />
+        {/* Only reachable from the terminal accessory bar, so it is mounted
+            with the session view rather than the whole shell. */}
+        <MobileVoiceComposer />
         <Suspense fallback={null}>
           <SyncDialogs />
         </Suspense>
@@ -138,6 +143,21 @@ export function MobileLayout() {
       </Suspense>
       <MobileFontSizeSetup />
     </div>
+  );
+}
+
+/** Binds the shared voice-composer dialog to the uiStore target, so the mobile
+ * accessory bar opens the same reviewed-draft flow the desktop pane menu does. */
+function MobileVoiceComposer() {
+  const voiceTarget = useUiStore((s) => s.voiceTarget);
+  const closeVoice = useUiStore((s) => s.closeVoice);
+  return (
+    <VoiceComposerDialog
+      open={voiceTarget !== null}
+      onOpenChange={(o) => !o && closeVoice()}
+      sessionId={voiceTarget?.sessionId ?? null}
+      label={voiceTarget?.label}
+    />
   );
 }
 

@@ -37,7 +37,10 @@ Cloud sync.
   passwords use the OS credential store on desktop and support encrypted sync
 - Encrypted and passphrase-protected private keys, public-key derivation, and
   SSH certificates
-- OS SSH agents and hardware-token-only keys are not supported
+- Device-bound SSH-agent identities on desktop, including FIDO2 `sk-*` and
+  platform-provider keys; signing and user-presence checks stay in the provider
+- Explicit, disabled-by-default SSH agent forwarding with a per-session warning
+  and persistent active-session indicator
 - ProxyJump, keepalive, startup commands, working directories, and per-host
   environment variables
 - Explicit unknown-host confirmation and changed-host-key warnings

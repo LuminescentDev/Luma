@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { Ban, Plus, Trash2 } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 /*
@@ -26,7 +27,7 @@ export function TextField({
   mono?: boolean;
   error?: string;
   required?: boolean;
-  hint?: string;
+  hint?: React.ReactNode;
 }) {
   const id = useId();
   return (
@@ -36,7 +37,7 @@ export function TextField({
           {label}
           {required && <span className="text-danger"> *</span>}
         </span>
-        {hint && <span className="text-[11px] text-muted/80">{hint}</span>}
+        {hint}
       </label>
       <input
         id={id}
@@ -76,7 +77,7 @@ export function TextAreaField({
   mono?: boolean;
   error?: string;
   required?: boolean;
-  hint?: string;
+  hint?: React.ReactNode;
 }) {
   const id = useId();
   return (
@@ -86,7 +87,7 @@ export function TextAreaField({
           {label}
           {required && <span className="text-danger"> *</span>}
         </span>
-        {hint && <span className="text-[11px] text-muted/80">{hint}</span>}
+        {hint}
       </label>
       <textarea
         id={id}
@@ -114,6 +115,7 @@ export function SelectField({
   children,
   error,
   required,
+  hint,
 }: {
   label: string;
   value: string;
@@ -121,13 +123,17 @@ export function SelectField({
   children: React.ReactNode;
   error?: string;
   required?: boolean;
+  hint?: React.ReactNode;
 }) {
   const id = useId();
   return (
     <div>
-      <label htmlFor={id} className="mb-1 block text-xs font-medium text-muted">
-        {label}
-        {required && <span className="text-danger"> *</span>}
+      <label htmlFor={id} className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="text-xs font-medium text-muted">
+          {label}
+          {required && <span className="text-danger"> *</span>}
+        </span>
+        {hint}
       </label>
       <select
         id={id}
@@ -143,6 +149,142 @@ export function SelectField({
         {children}
       </select>
       {error && <p id={`${id}-error`} className="mt-1 text-xs text-danger">{error}</p>}
+    </div>
+  );
+}
+
+/** A small set of accent presets for the tab color swatch row. */
+const TAB_COLOR_PRESETS = [
+  "#4cc9f0",
+  "#60a5fa",
+  "#4ade80",
+  "#facc15",
+  "#fb923c",
+  "#f87171",
+  "#c084fc",
+  "#f472b6",
+];
+
+/** Tab accent picker: a "none" option plus preset swatches. The chosen color is
+ * stored as "#RRGGBB" (or "" for none) and drives the colored tab. */
+export function TabColorField({
+  value,
+  onChange,
+  label = "Tab color",
+  hint,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  label?: string;
+  hint?: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+        <span className="block text-xs font-medium text-muted">{label}</span>
+        {hint}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="No tab color"
+          aria-pressed={value === ""}
+          title="None"
+          className={cn(
+            "flex h-6 w-6 items-center justify-center rounded-full border text-muted",
+            value === "" ? "border-accent ring-1 ring-accent" : "border-border",
+          )}
+        >
+          <Ban size={13} />
+        </button>
+        {TAB_COLOR_PRESETS.map((color) => (
+          <button
+            key={color}
+            type="button"
+            onClick={() => onChange(color)}
+            aria-label={`Tab color ${color}`}
+            aria-pressed={value.toLowerCase() === color.toLowerCase()}
+            title={color}
+            style={{ backgroundColor: color }}
+            className={cn(
+              "h-6 w-6 rounded-full border transition-transform hover:scale-110",
+              value.toLowerCase() === color.toLowerCase()
+                ? "border-foreground ring-2 ring-foreground/40"
+                : "border-transparent",
+            )}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export type EnvRow = { key: string; value: string };
+
+export function EnvironmentEditor({
+  rows,
+  onChange,
+  label = "Environment variables (optional)",
+  emptyLabel = "No variables set.",
+  hint,
+}: {
+  rows: EnvRow[];
+  onChange: (rows: EnvRow[]) => void;
+  label?: string;
+  emptyLabel?: string;
+  hint?: React.ReactNode;
+}) {
+  const update = (index: number, partial: Partial<EnvRow>) =>
+    onChange(rows.map((row, i) => (i === index ? { ...row, ...partial } : row)));
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted">{label}</span>
+        <div className="flex items-center gap-2">
+          {hint}
+          <button
+            type="button"
+            onClick={() => onChange([...rows, { key: "", value: "" }])}
+            className="flex items-center gap-1 text-xs text-accent hover:underline"
+          >
+            <Plus size={11} /> Add
+          </button>
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted/70">{emptyLabel}</p>
+      ) : (
+        <div className="space-y-1.5">
+          {rows.map((row, index) => (
+            <div key={index} className="flex items-center gap-2">
+              <input
+                aria-label={`Variable ${index + 1} name`}
+                value={row.key}
+                onChange={(e) => update(index, { key: e.target.value })}
+                placeholder="KEY"
+                className="w-2/5 rounded-md border border-border bg-background px-2 py-1 font-mono text-sm outline-none focus:border-accent"
+              />
+              <input
+                aria-label={`Variable ${index + 1} value`}
+                value={row.value}
+                onChange={(e) => update(index, { value: e.target.value })}
+                placeholder="value"
+                className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-sm outline-none focus:border-accent"
+              />
+              <button
+                type="button"
+                aria-label={`Remove variable ${index + 1}`}
+                onClick={() => onChange(rows.filter((_, i) => i !== index))}
+                className="shrink-0 rounded p-1 text-muted hover:text-danger"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::errors::{LumaError, Result};
 use crate::keystore::KeystoreState;
+use crate::multiplexer::MultiplexerAttach;
 use crate::sftp::{self, SftpManager};
 use crate::ssh::{self, EmbeddedSshManager, SshExit, SshHostKeyStatus, SshRemoteOs};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -22,6 +23,12 @@ pub struct SshSpawnRequest {
     pub host_id: String,
     pub cols: u16,
     pub rows: u16,
+    /// Optional multiplexer workspace to land in. The frontend names a
+    /// multiplexer and a session, never a command: `attach_command` builds the
+    /// actual `tmux`/`zellij` invocation from a validated name, so this cannot
+    /// become an arbitrary-command channel.
+    #[serde(default)]
+    pub multiplexer: Option<MultiplexerAttach>,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,6 +164,22 @@ pub fn ssh_resize(
 #[tauri::command]
 pub fn ssh_disconnect(embedded: State<'_, EmbeddedSshManager>, session_id: String) -> Result<()> {
     if embedded.disconnect(&session_id)? {
+        Ok(())
+    } else {
+        Err(LumaError::InvalidInput("unknown SSH session".into()))
+    }
+}
+
+/// Enables forwarding for one already-authenticated session. The frontend
+/// exposes this only behind a warning/confirmation, and there is deliberately
+/// no global or persisted toggle.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+pub async fn ssh_agent_forward_enable(
+    embedded: State<'_, EmbeddedSshManager>,
+    session_id: String,
+) -> Result<()> {
+    if embedded.enable_agent_forwarding(&session_id).await? {
         Ok(())
     } else {
         Err(LumaError::InvalidInput("unknown SSH session".into()))
@@ -329,8 +352,13 @@ async fn ssh_spawn_impl(
             "terminal dimensions must be greater than zero".into(),
         ));
     }
-    let (config, title) =
+    let (mut config, title) =
         ssh::connection_config(&state.pool, &keystore_state, &request.host_id).await?;
+    // A multiplexer attach replaces the host's own startup command for this
+    // spawn only; the built command is validated here, never supplied verbatim.
+    if let Some(attach) = &request.multiplexer {
+        config.startup_command = Some(crate::multiplexer::attach_command(attach)?);
+    }
     let pending_remote_os = Arc::new(Mutex::new(PendingRemoteOsEvent {
         host_id: request.host_id.clone(),
         ..PendingRemoteOsEvent::default()
@@ -339,7 +367,11 @@ async fn ssh_spawn_impl(
     let app_for_remote_os = app.clone();
     let pool_for_remote_os = state.pool.clone();
     let host_id_for_remote_os = request.host_id.clone();
+    let agent_sink = crate::agent_events::AgentEventSink::new(app.clone());
+    let agent_sink_for_data = agent_sink.clone();
+    let mut agent_scanner = crate::agent_events::AgentEventScanner::new();
     let data_callback = Box::new(move |bytes: &[u8]| {
+        agent_sink_for_data.publish(agent_scanner.scan(bytes));
         let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
     });
     let exit_callback = Box::new(move |exit| {
@@ -376,6 +408,8 @@ async fn ssh_spawn_impl(
             remote_os_callback,
         )
         .await?;
+
+    agent_sink.attach(&session_id);
 
     {
         pending_remote_os.lock().unwrap().session_id = Some(session_id.clone());

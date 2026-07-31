@@ -6,6 +6,7 @@ import {
   parseLumaError,
   updateHost,
   type AuthenticationType,
+  type TransportType,
   type Host,
   type HostGroup,
   type HostInput,
@@ -60,6 +61,11 @@ type FormState = {
   tags: string[];
   favorite: boolean;
   tabColor: string;
+  /** Mosh transport settings, carried through without mobile UI (see
+   * initialState) so edits here never reset them. */
+  transport: TransportType;
+  moshServerPath: string;
+  moshPortRange: string;
   env: EnvRow[];
 };
 
@@ -111,6 +117,11 @@ function initialState(host: Host | null, initialGroupId: string | null): FormSta
     tags: host?.tags ?? [],
     favorite: host?.favorite ?? false,
     tabColor: host?.tabColor ?? "",
+    // Mosh transport settings: carried through unchanged (edited on desktop
+    // only) so a mobile edit never silently resets them.
+    transport: host?.transport ?? "ssh",
+    moshServerPath: host?.moshServerPath ?? "",
+    moshPortRange: host?.moshPortRange ?? "",
     env: host?.environment
       ? Object.entries(host.environment).map(([key, value]) => ({ key, value }))
       : [],
@@ -207,6 +218,9 @@ function toInput(state: FormState): HostInput {
     tags: state.tags.map((tag) => tag.trim()).filter(Boolean),
     favorite: state.favorite,
     tabColor: state.tabColor || null,
+    transport: state.transport,
+    moshServerPath: state.moshServerPath.trim() || null,
+    moshPortRange: state.moshPortRange.trim() || null,
   };
 }
 

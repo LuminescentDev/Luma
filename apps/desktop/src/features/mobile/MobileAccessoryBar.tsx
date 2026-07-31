@@ -6,12 +6,17 @@ import {
   ArrowUp,
   ClipboardCopy,
   ClipboardPaste,
+  Mic,
+  MessageSquarePlus,
+  Paperclip,
   Plug,
   RotateCw,
   Search,
   TextSelect,
 } from "lucide-react";
 import { terminalManager } from "../terminal/terminalManager";
+import { attachFileToSession, canAttachFile } from "../terminal/attachFile";
+import { detectSpeechSupport } from "../voiceComposer/speechProvider";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { cn } from "../../lib/utils";
@@ -30,6 +35,10 @@ import { cn } from "../../lib/utils";
  */
 
 const ESC = "\x1b";
+
+/** Whether this platform can transcribe at all — a fixed capability, so it is
+ * resolved once rather than on every render. */
+const DICTATION_AVAILABLE = detectSpeechSupport().available;
 
 type KeyDef = {
   label: string;
@@ -54,7 +63,11 @@ const KEYS: KeyDef[] = [
 export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
   const restartSession = useSessionStore((s) => s.restartSession);
   const closeSession = useSessionStore((s) => s.closeSession);
+  const session = useSessionStore((s) =>
+    s.sessions.find((candidate) => candidate.id === sessionId),
+  );
   const setSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
+  const openVoice = useUiStore((s) => s.openVoice);
   // Which sticky modifier is visually armed. Cleared when consumed (via the
   // manager callback) or toggled off.
   const [sticky, setSticky] = useState<"ctrl" | "alt" | null>(null);
@@ -118,6 +131,28 @@ export function MobileAccessoryBar({ sessionId }: { sessionId: string }) {
         </ActionKey>
         <ActionKey aria="Select all" onPress={() => terminalManager.selectAll(sessionId)}>
           <TextSelect size={16} />
+        </ActionKey>
+        {canAttachFile(session) && session && (
+          <ActionKey
+            aria="Attach file"
+            onPress={() => void attachFileToSession(session)}
+          >
+            <Paperclip size={16} />
+          </ActionKey>
+        )}
+        {/* Compose a reviewable draft rather than dictating straight into the
+            live shell. WKWebView exposes no speech recognition, so on Apple
+            platforms this is a typed composer — offering a microphone there
+            would promise dictation the platform cannot deliver. */}
+        <ActionKey
+          aria={DICTATION_AVAILABLE ? "Voice composer" : "Compose command"}
+          onPress={() => openVoice({ sessionId, label: session?.title })}
+        >
+          {DICTATION_AVAILABLE ? (
+            <Mic size={16} />
+          ) : (
+            <MessageSquarePlus size={16} />
+          )}
         </ActionKey>
         <ActionKey aria="Search terminal" onPress={() => setSearchOpen(true)}>
           <Search size={16} />

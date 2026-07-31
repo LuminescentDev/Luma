@@ -256,10 +256,10 @@ pub(crate) fn validate(input: &KeyReferenceInput) -> Result<()> {
     }
     if !matches!(
         input.storage_mode.as_str(),
-        "local-path" | "encrypted-vault"
+        "local-path" | "encrypted-vault" | "ssh-agent"
     ) {
         return Err(LumaError::InvalidInput(
-            "storageMode must be 'local-path' or 'encrypted-vault'".into(),
+            "storageMode must be 'local-path', 'encrypted-vault', or 'ssh-agent'".into(),
         ));
     }
     let local_path = input.local_path.as_deref().map(str::trim);
@@ -267,6 +267,44 @@ pub(crate) fn validate(input: &KeyReferenceInput) -> Result<()> {
         return Err(LumaError::InvalidInput(
             "local-path storage requires localPath".into(),
         ));
+    }
+    if input.storage_mode == "ssh-agent" {
+        if input.vault_id != crate::storage::vaults::PERSONAL_VAULT_ID {
+            return Err(LumaError::InvalidInput(
+                "SSH-agent keys are device-bound and can only belong to the personal vault".into(),
+            ));
+        }
+        if local_path.is_some_and(|path| !path.is_empty())
+            || input
+                .private_key
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            || input
+                .passphrase
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+        {
+            return Err(LumaError::InvalidInput(
+                "SSH-agent keys store only public metadata; private key, passphrase, and localPath must be empty"
+                    .into(),
+            ));
+        }
+        let public_key = input.public_key.as_deref().ok_or_else(|| {
+            LumaError::InvalidInput("SSH-agent storage requires publicKey".into())
+        })?;
+        let mut parsed = PublicKey::from_openssh(public_key)
+            .map_err(|_| LumaError::InvalidInput("SSH-agent publicKey is invalid".into()))?;
+        parsed.set_comment("");
+        let expected_fingerprint = parsed.fingerprint(HashAlg::Sha256).to_string();
+        if input
+            .fingerprint
+            .as_deref()
+            .is_some_and(|value| value != expected_fingerprint)
+        {
+            return Err(LumaError::InvalidInput(
+                "SSH-agent fingerprint does not match publicKey".into(),
+            ));
+        }
     }
     if local_path.is_some_and(|path| path.len() > MAX_PATH_LENGTH || path.contains('\0')) {
         return Err(LumaError::InvalidInput(
@@ -867,6 +905,38 @@ mod tests {
             error.to_string(),
             "invalid input: private key could not be parsed; provide an RSA or ed25519 private key in OpenSSH or PEM format"
         );
+    }
+
+    #[test]
+    fn agent_keys_accept_only_device_bound_public_metadata() {
+        let mut rng = OsRng;
+        let private_key = PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+        let expected = authoritative_values(&private_key);
+        let input = KeyReferenceInput {
+            vault_id: crate::storage::vaults::default_id(),
+            name: "Agent identity".into(),
+            public_key: Some(expected.public_key),
+            storage_mode: "ssh-agent".into(),
+            local_path: None,
+            fingerprint: Some(expected.fingerprint),
+            certificate: None,
+            private_key: None,
+            passphrase: None,
+        };
+
+        validate_create(&input).unwrap();
+
+        let mut shared = input.clone();
+        shared.vault_id = uuid::Uuid::new_v4().to_string();
+        assert!(validate_create(&shared).is_err());
+
+        let mut mismatched = input.clone();
+        mismatched.fingerprint = Some("SHA256:not-the-selected-key".into());
+        assert!(validate_create(&mismatched).is_err());
+
+        let mut secret = input;
+        secret.private_key = Some("private material must stay in the provider".into());
+        assert!(validate_create(&secret).is_err());
     }
 
     #[tokio::test]

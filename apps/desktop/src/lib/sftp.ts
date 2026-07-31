@@ -171,6 +171,26 @@ export function sftpDownload(
   });
 }
 
+export type AttachUploadResult = { remotePath: string };
+
+/**
+ * Upload a local file to the host's private staging directory
+ * (~/.luma/attachments) over a short-lived SFTP session, returning the
+ * absolute remote path. Used by the terminal "Attach file" action; unlike
+ * sftpUpload this resolves only after the transfer has fully completed.
+ */
+export function terminalAttachUpload(
+  hostId: string,
+  localPath: string,
+  fileName?: string,
+): Promise<AttachUploadResult> {
+  return invoke<AttachUploadResult>("terminal_attach_upload", {
+    hostId,
+    localPath,
+    fileName: fileName ?? null,
+  });
+}
+
 export function sftpCancel(transferId: string): Promise<void> {
   return invoke<void>("sftp_cancel", { transferId });
 }

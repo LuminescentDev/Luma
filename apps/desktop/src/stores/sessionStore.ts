@@ -13,7 +13,13 @@ import {
   sshHostKeyTrust,
   type SshHostKeyStatus,
 } from "../lib/ssh";
-import { parseLumaError } from "../lib/hosts";
+import { hostEffectiveConfig, parseLumaError, type TransportType } from "../lib/hosts";
+import {
+  withMultiplexerTitle,
+  withoutMultiplexerTitle,
+  type MultiplexerAttach,
+} from "../lib/multiplexer";
+import { resumeAttachFor } from "./multiplexerStore";
 import {
   terminalManager,
   isSpawnAbandoned,
@@ -37,6 +43,7 @@ import {
 } from "../features/terminal/paneTree";
 import { useUiStore } from "./uiStore";
 import { useSessionLogStore } from "./sessionLogStore";
+import { useWebPreviewStore } from "./webPreviewStore";
 
 /*
  * Session METADATA and split-pane LAYOUT only. Terminal byte streams and
@@ -61,6 +68,9 @@ type SessionState = {
     hostname?: string,
     ephemeral?: boolean,
     tabColor?: string | null,
+    /** Land the new session inside a tmux/zellij workspace. Omitted connects
+     * fall back to the host's saved "resume on connect" workspace, if any. */
+    multiplexer?: MultiplexerAttach,
   ) => Promise<void>;
   openSerialSession: (config: SerialConfig, title?: string) => Promise<void>;
   /** Restart a session's backend. `reconnect` marks an auto-reconnect attempt:
@@ -149,6 +159,11 @@ type SessionState = {
   toggleActiveBroadcast: () => void;
   /** Include/exclude a single pane's session from its tab's broadcast group. */
   setPaneBroadcast: (tabId: string, sessionId: string, enabled: boolean) => void;
+  /** Set or clear (undefined) a session's non-blocking transport notice (the
+   * "Mosh unavailable, fell back to SSH" card). */
+  setTransportNotice: (id: string, notice: string | undefined) => void;
+  /** Mark the one live session whose agent-forwarding request succeeded. */
+  setAgentForwarding: (id: string, enabled: boolean) => void;
 };
 
 /** The session ids that should currently receive broadcast for a tab: every
@@ -267,6 +282,7 @@ function handleSessionExit(
         nextRetryAt: Date.now() + plan.delayMs,
         latencyMs: null,
         connectionPrompt: undefined,
+        agentForwarding: false,
       }),
     }));
     const timer = setTimeout(() => {
@@ -289,6 +305,7 @@ function handleSessionExit(
       connectionState: exit.errorCategory ? "failed" : "disconnected",
       nextRetryAt: null,
       latencyMs: null,
+      agentForwarding: false,
     }),
   }));
 }
@@ -499,8 +516,47 @@ function makeCallbacks(set: SetFn, get: () => SessionState, id: string) {
   };
 }
 
+/** Patch the post-spawn success state for a launch/fallback attempt. Local,
+ * serial, and Mosh sessions are connected the moment the backend spawns; SSH
+ * flips to connected later, after authentication completes. */
+function applySpawnSuccess(
+  set: SetFn,
+  id: string,
+  descriptorKind: SpawnDescriptor["kind"],
+  title: string | undefined,
+): void {
+  set((state) => {
+    const current = state.sessions.find((s) => s.id === id);
+    // A fast backend exit can fire onExit BEFORE createSession resolves, which
+    // already moved the session to disconnected/error. Never overwrite that
+    // with "connected" — that is exactly the ghost-session race.
+    const spawnExited = !!current && current.status !== "connecting";
+    return {
+      sessions: patchSession(state.sessions, id, {
+        ...(descriptorKind !== "ssh" && !spawnExited
+          ? { status: "connected" as const }
+          : {}),
+        title,
+      }),
+    };
+  });
+}
+
+function applySpawnError(set: SetFn, id: string, error: unknown): void {
+  const { category, message } = parseLumaError(error);
+  set((state) => ({
+    sessions: patchSession(state.sessions, id, {
+      status: "error",
+      errorCategory: category,
+      errorMessage: message,
+    }),
+  }));
+}
+
 /** Spawn a managed terminal for an already-registered session, then patch its
- * status to connected/error. */
+ * status to connected/error. SSH descriptors honor the host's transport
+ * preference: "mosh"/"auto" spawn through mosh_spawn, and "auto" falls back to
+ * plain SSH with a non-blocking notice when the Mosh attempt fails. */
 async function launch(
   set: SetFn,
   get: () => SessionState,
@@ -508,12 +564,59 @@ async function launch(
   descriptor: SpawnDescriptor,
   title: string | undefined,
 ): Promise<void> {
+  // A workspace attach rides the SSH startup command, which the Mosh bootstrap
+  // has no equivalent for — so an attaching session stays on SSH, and this is
+  // also what the automatic Mosh→SSH fallback re-attaches with.
+  const moshFallbackAttach =
+    descriptor.kind === "ssh" ? descriptor.multiplexer : undefined;
   // SSH sessions must clear the host-key preflight before any spawn. This
   // covers first-open, split-pane duplication, and workspace restore alike —
   // an unknown host on restore prompts, it is never silently auto-trusted.
+  // Mosh bootstraps over the same embedded SSH engine, so the preflight covers
+  // it identically.
   if (descriptor.kind === "ssh") {
     const proceed = await runHostKeyPreflight(set, get, id, descriptor.hostId);
     if (!proceed || !sessionStillOpen(get, id)) return;
+  }
+  // Resolve the host's transport preference from its effective configuration,
+  // so a transport (or tab color) inherited from the host's group applies just
+  // as a host-level one does. A lookup failure falls back to plain SSH — the
+  // spawn will surface any real problem with the host itself.
+  let transport: TransportType = "ssh";
+  if (descriptor.kind === "ssh") {
+    try {
+      const effective = (await hostEffectiveConfig(descriptor.hostId))?.host;
+      transport = effective?.transport ?? "ssh";
+      // Only fill in a color the session does not already carry: the caller
+      // passed the host's own color, and the host always wins over its group.
+      if (effective?.tabColor) {
+        set((state) => ({
+          sessions: state.sessions.map((session) =>
+            session.id === id && !session.tabColor
+              ? { ...session, tabColor: effective.tabColor }
+              : session,
+          ),
+        }));
+      }
+    } catch {
+      transport = "ssh";
+    }
+    if (!sessionStillOpen(get, id)) return;
+    if (transport !== "ssh") {
+      if (moshFallbackAttach) {
+        // Attaching to a workspace rides the SSH startup command, which the
+        // Mosh bootstrap has no equivalent for, so the attach forces SSH. A
+        // host pinned to Mosh must not be downgraded without saying so.
+        set((state) => ({
+          sessions: patchSession(state.sessions, id, {
+            transportNotice:
+              "Connected over SSH instead of Mosh — attaching to a workspace requires the SSH startup command.",
+          }),
+        }));
+      } else {
+        descriptor = { kind: "mosh", hostId: descriptor.hostId };
+      }
+    }
   }
   try {
     const result = await terminalManager.createSession(
@@ -521,35 +624,44 @@ async function launch(
       descriptor,
       makeCallbacks(set, get, id),
     );
-    set((state) => {
-      const current = state.sessions.find((s) => s.id === id);
-      // A fast backend exit can fire onExit BEFORE createSession resolves, which
-      // already moved the session to disconnected/error. Never overwrite that
-      // with "connected" — that is exactly the ghost-session race.
-      const spawnExited = !!current && current.status !== "connecting";
-      return {
-        sessions: patchSession(state.sessions, id, {
-          // Local and serial sessions are connected the moment the backend spawns;
-          // SSH flips to connected later, after authentication completes.
-          ...(descriptor.kind !== "ssh" && !spawnExited
-            ? { status: "connected" as const }
-            : {}),
-          title: title ?? result.title,
-        }),
-      };
-    });
+    applySpawnSuccess(set, id, descriptor.kind, title ?? result.title);
   } catch (error) {
     // A superseding restart (or disposal) abandoned this attempt; the winner
     // owns the session's state, so leave it untouched.
     if (isSpawnAbandoned(error)) return;
-    const { category, message } = parseLumaError(error);
-    set((state) => ({
-      sessions: patchSession(state.sessions, id, {
-        status: "error",
-        errorCategory: category,
-        errorMessage: message,
-      }),
-    }));
+    if (
+      descriptor.kind === "mosh" &&
+      transport === "auto" &&
+      sessionStillOpen(get, id)
+    ) {
+      // Automatic fallback: retry the SAME managed session over plain SSH and
+      // leave a dismissible notice. (A Mosh session that connects but stalls
+      // cannot be detected here — that usually means UDP is blocked.)
+      const { message } = parseLumaError(error);
+      set((state) => ({
+        sessions: patchSession(state.sessions, id, {
+          status: "connecting",
+          connectionStage: "starting",
+          errorCategory: undefined,
+          errorMessage: undefined,
+          transportNotice: `Mosh unavailable — connected over SSH instead. (${message})`,
+        }),
+      }));
+      const sshDescriptor: SpawnDescriptor = {
+        kind: "ssh",
+        hostId: descriptor.hostId,
+        multiplexer: moshFallbackAttach,
+      };
+      terminalManager.setDescriptor(id, sshDescriptor);
+      try {
+        const result = await terminalManager.restart(id);
+        applySpawnSuccess(set, id, sshDescriptor.kind, title ?? result.title);
+      } catch (retryError) {
+        if (!isSpawnAbandoned(retryError)) applySpawnError(set, id, retryError);
+      }
+      return;
+    }
+    applySpawnError(set, id, error);
   }
 }
 
@@ -625,7 +737,11 @@ function sessionFromRestore(
         activePaneId: id,
         restore,
       },
-      descriptor: { kind: "ssh", hostId: restore.hostId },
+      descriptor: {
+        kind: "ssh",
+        hostId: restore.hostId,
+        multiplexer: restore.multiplexer,
+      },
       title: undefined,
     };
   }
@@ -703,11 +819,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await openInNewTab(set, get, session, { kind: "local", ref }, title);
   },
 
-  openSshSession: async (hostId, title, hostname, ephemeral, tabColor) => {
+  openSshSession: async (hostId, title, hostname, ephemeral, tabColor, multiplexer) => {
     const id = crypto.randomUUID();
+    // An explicit workspace wins; otherwise the host may have one saved to
+    // resume. Either way the title carries the workspace it landed in.
+    const attach = multiplexer ?? resumeAttachFor(hostId);
+    const displayTitle = withMultiplexerTitle(title ?? "SSH", attach);
     const session: TerminalSession = {
       id,
-      title: title ?? "SSH",
+      title: displayTitle,
       type: "ssh",
       hostId,
       connectionTarget: hostname ?? title ?? "SSH host",
@@ -719,12 +839,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       restore: {
         kind: "ssh",
         hostId,
-        title: title ?? "SSH",
+        title: displayTitle,
         connectionTarget: hostname ?? title ?? "SSH host",
         tabColor: tabColor ?? null,
+        multiplexer: attach,
       },
     };
-    await openInNewTab(set, get, session, { kind: "ssh", hostId }, title);
+    await openInNewTab(
+      set,
+      get,
+      session,
+      { kind: "ssh", hostId, multiplexer: attach },
+      displayTitle,
+    );
   },
 
   openSerialSession: async (config, title) => {
@@ -763,6 +890,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         hostKeyScanned: undefined,
         hostKeyKnown: undefined,
         latencyMs: null,
+        agentForwarding: false,
         ...(reconnect
           ? { connectionState: "reconnecting" as const, nextRetryAt: null }
           : { connectionState: undefined, reconnectAttempt: 0, nextRetryAt: null }),
@@ -852,6 +980,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     clearReconnectTimer(id);
     // Disposing the backend stops any active logging; clear our indicator too.
     useSessionLogStore.getState().markInactive(id);
+    // A web preview is a live forward into the remote host: it must not outlive
+    // the pane it was started from.
+    void useWebPreviewStore.getState().closeForSession(id);
     // Remember which tab owned this pane so its broadcast membership can be
     // re-synced after removal (dispose() already detached the closed session).
     const owningTabId = get().tabs.find((t) => findLeafBySession(t.root, id))?.id;
@@ -916,6 +1047,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Stop any pending auto-reconnect for the closed sessions.
       clearReconnectTimer(sessionId);
       useSessionLogStore.getState().markInactive(sessionId);
+      void useWebPreviewStore.getState().closeForSession(sessionId);
       terminalManager.dispose(sessionId);
     }
     set((state) => {
@@ -984,11 +1116,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     let title: string | undefined;
     // Duplicate the source pane's SSH host; otherwise open the default shell.
     if (source?.type === "ssh" && source.hostId) {
+      // A split duplicates the HOST, not the workspace: two clients attached to
+      // the same tmux session would mirror each other and fight over the size.
+      // Drop the workspace suffix so the new pane's title matches what it is.
+      const sourceAttach =
+        source.restore?.kind === "ssh" ? source.restore.multiplexer : undefined;
+      const splitTitle = withoutMultiplexerTitle(source.title, sourceAttach);
       descriptor = { kind: "ssh", hostId: source.hostId };
-      title = source.title;
+      title = splitTitle;
       session = {
         id,
-        title: source.title,
+        title: splitTitle,
         type: "ssh",
         hostId: source.hostId,
         connectionTarget: source.connectionTarget,
@@ -999,7 +1137,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         restore: {
           kind: "ssh",
           hostId: source.hostId,
-          title: source.title,
+          title: splitTitle,
           connectionTarget: source.connectionTarget,
           tabColor: source.tabColor ?? null,
         },
@@ -1426,6 +1564,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // the UI for single-pane tabs, so the shortcut/palette entry match that.
     if (!tab || collectLeaves(tab.root).length < 2) return;
     get().toggleBroadcast(tab.id);
+  },
+
+  setTransportNotice: (id, notice) => {
+    set((state) => ({
+      sessions: patchSession(state.sessions, id, { transportNotice: notice }),
+    }));
+  },
+  setAgentForwarding: (id, enabled) => {
+    set((state) => ({
+      sessions: patchSession(state.sessions, id, { agentForwarding: enabled }),
+    }));
   },
 
   setPaneBroadcast: (tabId, sessionId, enabled) => {

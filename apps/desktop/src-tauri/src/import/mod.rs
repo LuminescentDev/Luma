@@ -845,6 +845,9 @@ pub async fn apply_hosts(
             tags: Vec::new(),
             favorite: false,
             tab_color: None,
+            transport: "ssh".into(),
+            mosh_server_path: None,
+            mosh_port_range: None,
         };
         hosts::validate_fields(&input)?;
         prepared.push(PreparedHost {

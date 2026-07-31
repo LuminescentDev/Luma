@@ -22,6 +22,8 @@ use crate::terminal::{PtyManager, ResolvedShell};
 use crate::AppState;
 
 mod collaboration;
+mod completions;
+mod docker;
 mod hosts;
 mod import;
 mod keystore;
@@ -30,17 +32,26 @@ mod known_hosts;
 mod live_activity;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod menu;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod mosh;
+mod multiplexer;
 mod platform;
 mod port_forwards;
+mod repository;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod serial;
+mod server_stats;
 mod sftp;
 mod snippets;
 mod ssh;
 mod sync;
 mod vaults;
+mod voice;
+mod web_preview;
 
 pub use collaboration::*;
+pub use completions::*;
+pub use docker::*;
 pub use hosts::*;
 pub use import::*;
 pub use keystore::*;
@@ -49,15 +60,22 @@ pub use known_hosts::*;
 pub use live_activity::*;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use menu::*;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use mosh::*;
+pub use multiplexer::*;
 pub use platform::*;
 pub use port_forwards::*;
+pub use repository::*;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use serial::*;
+pub use server_stats::*;
 pub use sftp::*;
 pub use snippets::*;
 pub use ssh::*;
 pub use sync::*;
 pub use vaults::*;
+pub use voice::*;
+pub use web_preview::*;
 
 // --- Settings ---
 
@@ -136,6 +154,7 @@ mod desktop_terminal_commands {
 
     #[tauri::command]
     pub async fn pty_spawn(
+        app: tauri::AppHandle,
         state: State<'_, AppState>,
         pty: State<'_, PtyManager>,
         request: SpawnRequest,
@@ -178,17 +197,22 @@ mod desktop_terminal_commands {
             )
         };
 
+        let agent_sink = crate::agent_events::AgentEventSink::new(app);
+        let agent_sink_for_data = agent_sink.clone();
+        let mut agent_scanner = crate::agent_events::AgentEventScanner::new();
         let session_id = pty.spawn(
             shell,
             request.cols,
             request.rows,
             move |bytes| {
+                agent_sink_for_data.publish(agent_scanner.scan(bytes));
                 let _ = on_data.send(InvokeResponseBody::Raw(bytes.to_vec()));
             },
             move |code| {
                 let _ = on_exit.send(code);
             },
         )?;
+        agent_sink.attach(&session_id);
 
         Ok(SpawnResponse {
             session_id,

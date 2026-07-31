@@ -2,19 +2,23 @@ import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  Activity,
   Cable,
   ChevronRight,
+  Container,
   Copy,
   DownloadCloud,
   FolderPlus,
   Folder,
   Home,
   KeyRound,
+  LayoutGrid,
   MoreHorizontal,
   Pencil,
   Plus,
   Server,
   ShieldAlert,
+  Siren,
   Star,
   Trash2,
   Vault as VaultIcon,
@@ -49,11 +53,13 @@ import { GroupDialog } from "./GroupDialog";
 import { ImportDialog } from "./ImportDialog";
 import { PortForwardsDialog } from "../portForwards/PortForwardsDialog";
 import { useUiStore } from "../../stores/uiStore";
+import { useServerStatsStore } from "../../stores/serverStatsStore";
 import { useTunnelStore } from "../../stores/tunnelStore";
 import { useCapabilityStore } from "../../stores/capabilityStore";
 import { useVaultStore } from "../../stores/vaultStore";
 import { useVaults } from "../../hooks/useVaults";
 import { PERSONAL_VAULT_ID, type Vault } from "../../lib/vaults";
+import { useFleetStore } from "../../stores/fleetStore";
 
 function matchesQuery(host: Host, q: string): boolean {
   if (!q) return true;
@@ -71,6 +77,11 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
   const invalidate = useInvalidateHosts();
   const queryClient = useQueryClient();
   const showTerminal = useUiStore((s) => s.showTerminal);
+  const openServerStats = useUiStore((s) => s.openServerStats);
+  const openFleet = useUiStore((s) => s.openFleet);
+  const openMultiplexer = useUiStore((s) => s.openMultiplexer);
+  const openDocker = useUiStore((s) => s.openDocker);
+  const selectStatsHost = useServerStatsStore((s) => s.select);
 
   const { data: hosts } = useHosts();
   const { data: groups } = useHostGroups();
@@ -284,6 +295,23 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
     onPortForwards: portForwardingEnabled
       ? (h: Host) => setPortForwardsHost(h)
       : undefined,
+    // The server stats dashboard is a desktop main view; mobile navigation has
+    // no route for it yet, so the action is hidden there.
+    onServerStats: isMobile
+      ? undefined
+      : (h: Host) => {
+          selectStatsHost(h);
+          openServerStats();
+        },
+    // Docker containers on the host. Same desktop-only rule as server stats:
+    // the dialog is mounted by the desktop shell.
+    onDocker: isMobile ? undefined : (h: Host) => openDocker(h.id, h.name),
+    // Attaching from here needs no existing session — it opens a new tab
+    // already inside the workspace. The dialog is mounted by the desktop shell
+    // only, so mobile hides the action (same rule as server stats).
+    onWorkspaces: isMobile
+      ? undefined
+      : (h: Host) => openMultiplexer(h.id, h.name),
     runningByHost,
     selectedHostIds,
     onSelect: (host: Host, additive: boolean) => setSelectedHostIds((previous) => {
@@ -361,6 +389,11 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
               >
                 Import hosts…
               </MenuItem>
+              {!isMobile && (
+                <MenuItem icon={<Siren size={14} />} onSelect={openFleet}>
+                  Fleet overview
+                </MenuItem>
+              )}
             </DropdownMenu.Content>
           </DropdownMenu.Portal>
         </DropdownMenu.Root>
@@ -443,6 +476,10 @@ export function HostsPanel({ onOpenKeychain }: { onOpenKeychain?: () => void } =
         groups={groupDialogVaultId
           ? allGroups.filter((group) => group.vaultId === groupDialogVaultId)
           : allGroups}
+        hosts={allHosts.filter((host) => host.vaultId === groupDialogVaultId)}
+        identities={(identities ?? []).filter(
+          (identity) => identity.vaultId === groupDialogVaultId,
+        )}
         initialParentId={groupId}
         vaultId={groupDialogVaultId}
       />
@@ -658,6 +695,9 @@ function HostRow({
   onDelete,
   onToggleFavorite,
   onPortForwards,
+  onServerStats,
+  onDocker,
+  onWorkspaces,
   runningByHost,
   selectedHostIds,
   onSelect,
@@ -673,6 +713,9 @@ function HostRow({
   onDelete: (host: Host) => void;
   onToggleFavorite: (host: Host) => void;
   onPortForwards?: (host: Host) => void;
+  onServerStats?: (host: Host) => void;
+  onDocker?: (host: Host) => void;
+  onWorkspaces?: (host: Host) => void;
   runningByHost: Map<string, number>;
   selectedHostIds: Set<string>;
   onSelect: (host: Host, additive: boolean) => void;
@@ -681,6 +724,7 @@ function HostRow({
 }) {
   const runningTunnels = runningByHost.get(host.id) ?? 0;
   const selected = selectedHostIds.has(host.id);
+  const fleetEntry = useFleetStore((state) => state.entries[host.id]);
   const hostActions: MenuAction[] = [
     { label: "Connect", icon: <Server size={14} />, onSelect: () => onConnect(host) },
     { label: "Edit", icon: <Pencil size={14} />, onSelect: () => onEdit(host) },
@@ -691,6 +735,33 @@ function HostRow({
             label: "Port forwarding",
             icon: <Cable size={14} />,
             onSelect: () => onPortForwards(host),
+          } as MenuAction,
+        ]
+      : []),
+    ...(onServerStats
+      ? [
+          {
+            label: "Server stats",
+            icon: <Activity size={14} />,
+            onSelect: () => onServerStats(host),
+          } as MenuAction,
+        ]
+      : []),
+    ...(onDocker
+      ? [
+          {
+            label: "Docker",
+            icon: <Container size={14} />,
+            onSelect: () => onDocker(host),
+          } as MenuAction,
+        ]
+      : []),
+    ...(onWorkspaces
+      ? [
+          {
+            label: "Workspaces…",
+            icon: <LayoutGrid size={14} />,
+            onSelect: () => onWorkspaces(host),
           } as MenuAction,
         ]
       : []),
@@ -744,6 +815,24 @@ function HostRow({
         </span>
       )}
 
+      {fleetEntry && host.favorite && fleetEntry.status !== "checking" && (
+        <span
+          title={
+            fleetEntry.status === "offline"
+              ? "Unreachable during the last fleet check"
+              : `${fleetEntry.health?.severity ?? "Healthy"} during the last fleet check`
+          }
+          className={cn(
+            "h-2 w-2 shrink-0 rounded-full",
+            fleetEntry.status === "offline" ||
+              fleetEntry.health?.severity === "critical"
+              ? "bg-danger"
+              : fleetEntry.health?.severity === "warning"
+                ? "bg-amber-400"
+                : "bg-green-400",
+          )}
+        />
+      )}
       <button
         type="button"
         aria-label={host.favorite ? `Unfavorite ${host.name}` : `Favorite ${host.name}`}

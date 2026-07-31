@@ -6,6 +6,8 @@ import { useUiStore } from "../stores/uiStore";
 import { setAutoReconnectEnabled, useSessionStore } from "../stores/sessionStore";
 import { useTemplateStore } from "../stores/templateStore";
 import { useTunnelStore } from "../stores/tunnelStore";
+import { useWebPreviewStore } from "../stores/webPreviewStore";
+import { useMultiplexerStore } from "../stores/multiplexerStore";
 import { useSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { parseShellRef } from "../lib/terminal";
@@ -22,6 +24,7 @@ import { resolveAction, type KeymapActionId } from "../lib/keymap";
 import { useUpdaterStore } from "../stores/updaterStore";
 import { useCapabilityStore } from "../stores/capabilityStore";
 import { useCollabStore } from "../stores/collabStore";
+import { startAgentInboxListener } from "../stores/agentInboxStore";
 import {
   collabGetConfig,
   parseCollaborationError,
@@ -142,6 +145,11 @@ export function useAppInit(): void {
       defaultShell: parseShellRef(settings[SETTING_KEYS.defaultShell]),
     });
     setAutoReconnectEnabled(settings[SETTING_KEYS.autoReconnect] !== false);
+    // Off unless explicitly enabled: while it is off the manager neither tracks
+    // the input line nor records any command history.
+    terminalManager.setAutocompleteEnabled(
+      settings[SETTING_KEYS.terminalAutocomplete] === true,
+    );
   }, [settings]);
 
   // Poll connection health (latency) for connected SSH sessions.
@@ -173,17 +181,30 @@ export function useAppInit(): void {
     };
   }, []);
 
+  // Subscribe once to backend `agent-event` notifications (Agent Inbox),
+  // mirroring the `deep-link`/`ssh-remote-os` listener wiring.
+  useEffect(() => startAgentInboxListener(), []);
+
   // Reflect any tunnels the backend already has running. Skipped on platforms
   // without the port-forwarding feature (mobile): its `tunnels_list` command is
   // not registered there, so hydrating would fire a failing invoke on startup.
   useEffect(() => {
     if (!portForwardingAvailable) return;
     void useTunnelStore.getState().hydrate();
+    // Preview tunnels are ordinary tunnels behind the same capability, so the
+    // preview dialog can list ones opened before this reload.
+    void useWebPreviewStore.getState().hydrate();
   }, [portForwardingAvailable]);
 
   // Load saved workspace templates once.
   useEffect(() => {
     void useTemplateStore.getState().load();
+  }, []);
+
+  // Load per-host "resume this tmux/zellij workspace on connect" preferences
+  // once, before any host is connected from the UI.
+  useEffect(() => {
+    void useMultiplexerStore.getState().loadResume();
   }, []);
 
   // Load the persisted keymap once and push the chord set into terminalManager.

@@ -35,6 +35,13 @@ pub struct Host {
     pub tags: Vec<String>,
     pub favorite: bool,
     pub tab_color: Option<String>,
+    /// Transport preference: 'ssh' (default), 'auto' (Mosh with SSH fallback),
+    /// or 'mosh' (Mosh only).
+    pub transport: String,
+    /// Optional custom remote mosh-server path (validated: no shell metacharacters).
+    pub mosh_server_path: Option<String>,
+    /// Optional UDP port range for mosh-server, "N" or "N-M".
+    pub mosh_port_range: Option<String>,
     pub os_id: Option<String>,
     pub os_pretty_name: Option<String>,
     pub is_ephemeral: bool,
@@ -72,14 +79,28 @@ pub struct HostInput {
     pub favorite: bool,
     #[serde(default)]
     pub tab_color: Option<String>,
+    #[serde(default = "default_transport")]
+    pub transport: String,
+    #[serde(default)]
+    pub mosh_server_path: Option<String>,
+    #[serde(default)]
+    pub mosh_port_range: Option<String>,
 }
 
 fn default_port() -> i64 {
     22
 }
 
-fn default_authentication_type() -> String {
-    "interactive".into()
+pub(crate) fn default_transport() -> String {
+    "ssh".into()
+}
+
+/// The `auth_type` a host row carries when nobody has chosen one. Inheritance
+/// reads this as "the host has not configured credentials of its own".
+pub(crate) const DEFAULT_AUTHENTICATION_TYPE: &str = "interactive";
+
+pub(crate) fn default_authentication_type() -> String {
+    DEFAULT_AUTHENTICATION_TYPE.into()
 }
 
 fn optional_trimmed(value: Option<String>) -> Option<String> {
@@ -119,7 +140,7 @@ pub(crate) fn validate_safe_hostname(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_safe_username(value: &str) -> Result<()> {
+pub(crate) fn validate_safe_username(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > MAX_USERNAME_LENGTH {
         return Err(LumaError::InvalidInput(format!(
             "username must be 1-{MAX_USERNAME_LENGTH} characters"
@@ -242,6 +263,70 @@ pub(crate) fn validate_tab_color(tab_color: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_startup_command(value: &str) -> Result<()> {
+    if value.len() > MAX_STARTUP_COMMAND_LENGTH || value.contains('\0') {
+        return Err(LumaError::InvalidInput(
+            "startup command is too large or contains a null character".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_working_directory(value: &str) -> Result<()> {
+    if value.len() > MAX_PATH_LENGTH || value.contains('\0') {
+        return Err(LumaError::InvalidInput(
+            "working directory is too large or contains a null character".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_environment(environment: &HashMap<String, String>) -> Result<()> {
+    if environment.len() > MAX_ENVIRONMENT_ENTRIES {
+        return Err(LumaError::InvalidInput(
+            "too many environment variables".into(),
+        ));
+    }
+    for (key, value) in environment {
+        if key.is_empty()
+            || key.len() > 128
+            || key.contains('=')
+            || key.contains('\0')
+            || value.contains('\0')
+            || value.len() > 16 * 1024
+        {
+            return Err(LumaError::InvalidInput(format!(
+                "invalid environment variable: {key:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Transport settings shared by hosts and by the defaults a host group can
+/// supply, so a group default can never smuggle in a value a host would have
+/// rejected.
+pub(crate) fn validate_transport_settings(
+    transport: Option<&str>,
+    mosh_server_path: Option<&str>,
+    mosh_port_range: Option<&str>,
+) -> Result<()> {
+    if let Some(transport) = transport {
+        crate::mosh::validate_transport(transport)?;
+    }
+    if let Some(path) = mosh_server_path.map(str::trim) {
+        if !path.is_empty() {
+            crate::mosh::validate_server_path(path)?;
+        }
+    }
+    if let Some(range) = mosh_port_range.map(str::trim) {
+        if !range.is_empty() {
+            crate::mosh::validate_port_range(range)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
     let name = input.name.trim();
     if name.is_empty() || name.len() > MAX_NAME_LENGTH {
@@ -277,44 +362,15 @@ pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
         ));
     }
 
-    if input
-        .startup_command
-        .as_ref()
-        .is_some_and(|value| value.len() > MAX_STARTUP_COMMAND_LENGTH || value.contains('\0'))
-    {
-        return Err(LumaError::InvalidInput(
-            "startup command is too large or contains a null character".into(),
-        ));
+    if let Some(startup_command) = input.startup_command.as_deref() {
+        validate_startup_command(startup_command)?;
     }
-    if input
-        .working_directory
-        .as_ref()
-        .is_some_and(|value| value.len() > MAX_PATH_LENGTH || value.contains('\0'))
-    {
-        return Err(LumaError::InvalidInput(
-            "working directory is too large or contains a null character".into(),
-        ));
+    if let Some(working_directory) = input.working_directory.as_deref() {
+        validate_working_directory(working_directory)?;
     }
 
     if let Some(environment) = &input.environment {
-        if environment.len() > MAX_ENVIRONMENT_ENTRIES {
-            return Err(LumaError::InvalidInput(
-                "too many environment variables".into(),
-            ));
-        }
-        for (key, value) in environment {
-            if key.is_empty()
-                || key.len() > 128
-                || key.contains('=')
-                || key.contains('\0')
-                || value.contains('\0')
-                || value.len() > 16 * 1024
-            {
-                return Err(LumaError::InvalidInput(format!(
-                    "invalid environment variable: {key:?}"
-                )));
-            }
-        }
+        validate_environment(environment)?;
     }
 
     if input.tags.len() > MAX_TAGS
@@ -330,6 +386,12 @@ pub(crate) fn validate_fields(input: &HostInput) -> Result<()> {
     }
 
     validate_tab_color(input.tab_color.as_deref())?;
+
+    validate_transport_settings(
+        Some(&input.transport),
+        input.mosh_server_path.as_deref(),
+        input.mosh_port_range.as_deref(),
+    )?;
 
     Ok(())
 }
@@ -356,6 +418,9 @@ fn row_to_host(row: &sqlx::sqlite::SqliteRow) -> Host {
         tags: serde_json::from_str(&tags).unwrap_or_default(),
         favorite: row.get::<i64, _>("favorite") != 0,
         tab_color: row.get("tab_color"),
+        transport: row.get("transport"),
+        mosh_server_path: row.get("mosh_server_path"),
+        mosh_port_range: row.get("mosh_port_range"),
         os_id: row.get("os_id"),
         os_pretty_name: row.get("os_pretty_name"),
         is_ephemeral: row.get::<i64, _>("is_ephemeral") != 0,
@@ -364,7 +429,8 @@ fn row_to_host(row: &sqlx::sqlite::SqliteRow) -> Host {
 
 const HOST_COLUMNS: &str =
     "id, vault_id, name, hostname, port, username, group_id, auth_type, key_id, identity_id, proxy_jump_host_id, \
-     startup_command, working_directory, environment, tags, favorite, tab_color, os_id, os_pretty_name, is_ephemeral";
+     startup_command, working_directory, environment, tags, favorite, tab_color, transport, mosh_server_path, \
+     mosh_port_range, os_id, os_pretty_name, is_ephemeral";
 
 /// `vault_id` of `None` spans every vault, which is what the command palette and
 /// the vault overview need; pass `Some` to scope to one vault.
@@ -481,6 +547,8 @@ pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
     input.proxy_jump_host_id = optional_trimmed(input.proxy_jump_host_id);
     input.startup_command = optional_trimmed(input.startup_command);
     input.working_directory = optional_trimmed(input.working_directory);
+    input.mosh_server_path = optional_trimmed(input.mosh_server_path);
+    input.mosh_port_range = optional_trimmed(input.mosh_port_range);
     input.tags = input
         .tags
         .into_iter()
@@ -492,8 +560,8 @@ pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
         "INSERT INTO hosts (
              id, vault_id, name, hostname, port, username, group_id, auth_type, key_id, identity_id,
              proxy_jump_host_id, startup_command, working_directory, environment, tags, favorite,
-             tab_color
-         ) VALUES (?1, ?17, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             tab_color, transport, mosh_server_path, mosh_port_range
+         ) VALUES (?1, ?17, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?18, ?19, ?20)",
     )
     .bind(&id)
     .bind(input.name.trim())
@@ -522,6 +590,9 @@ pub async fn create(pool: &SqlitePool, mut input: HostInput) -> Result<Host> {
     .bind(input.favorite)
     .bind(&input.tab_color)
     .bind(&input.vault_id)
+    .bind(&input.transport)
+    .bind(&input.mosh_server_path)
+    .bind(&input.mosh_port_range)
     .execute(pool)
     .await?;
 
@@ -638,6 +709,8 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result
     input.proxy_jump_host_id = optional_trimmed(input.proxy_jump_host_id);
     input.startup_command = optional_trimmed(input.startup_command);
     input.working_directory = optional_trimmed(input.working_directory);
+    input.mosh_server_path = optional_trimmed(input.mosh_server_path);
+    input.mosh_port_range = optional_trimmed(input.mosh_port_range);
     input.tags = input
         .tags
         .into_iter()
@@ -649,7 +722,8 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result
              name = ?2, hostname = ?3, port = ?4, username = ?5, group_id = ?6,
              auth_type = ?7, key_id = ?8, identity_id = ?9, proxy_jump_host_id = ?10,
              startup_command = ?11, working_directory = ?12, environment = ?13,
-             tags = ?14, favorite = ?15, tab_color = ?16,
+             tags = ?14, favorite = ?15, tab_color = ?16, transport = ?17,
+             mosh_server_path = ?18, mosh_port_range = ?19,
              os_id = CASE WHEN hostname <> ?3 OR port <> ?4 THEN NULL ELSE os_id END,
              os_pretty_name = CASE WHEN hostname <> ?3 OR port <> ?4 THEN NULL ELSE os_pretty_name END,
              updated_at = unixepoch()
@@ -681,6 +755,9 @@ pub async fn update(pool: &SqlitePool, id: &str, mut input: HostInput) -> Result
     )
     .bind(input.favorite)
     .bind(&input.tab_color)
+    .bind(&input.transport)
+    .bind(&input.mosh_server_path)
+    .bind(&input.mosh_port_range)
     .execute(pool)
     .await?;
 
@@ -716,6 +793,9 @@ pub async fn duplicate(pool: &SqlitePool, id: &str) -> Result<Host> {
             tags: host.tags,
             favorite: false,
             tab_color: host.tab_color,
+            transport: host.transport,
+            mosh_server_path: host.mosh_server_path,
+            mosh_port_range: host.mosh_port_range,
         },
     )
     .await
@@ -857,6 +937,9 @@ mod tests {
             tags: vec!["test".into()],
             favorite: false,
             tab_color: None,
+            transport: default_transport(),
+            mosh_server_path: None,
+            mosh_port_range: None,
         }
     }
 
@@ -946,6 +1029,45 @@ mod tests {
             let error = create(&pool, invalid_input).await.unwrap_err();
             assert_eq!(error.category(), "invalid-input", "accepted {invalid:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn transport_settings_round_trip_and_reject_invalid_values() {
+        let pool = crate::storage::init_in_memory().await.unwrap();
+        let created = create(&pool, sample_input("Plain", "plain.example.com"))
+            .await
+            .unwrap();
+        assert_eq!(created.transport, "ssh");
+        assert_eq!(created.mosh_server_path, None);
+        assert_eq!(created.mosh_port_range, None);
+
+        let mut mosh_input = sample_input("Mosh", "mosh.example.com");
+        mosh_input.transport = "auto".into();
+        mosh_input.mosh_server_path = Some("/usr/local/bin/mosh-server".into());
+        mosh_input.mosh_port_range = Some("60000-61000".into());
+        let mosh_host = create(&pool, mosh_input).await.unwrap();
+        assert_eq!(mosh_host.transport, "auto");
+        assert_eq!(
+            mosh_host.mosh_server_path.as_deref(),
+            Some("/usr/local/bin/mosh-server")
+        );
+        assert_eq!(mosh_host.mosh_port_range.as_deref(), Some("60000-61000"));
+
+        let duplicated = duplicate(&pool, &mosh_host.id).await.unwrap();
+        assert_eq!(duplicated.transport, "auto");
+        assert_eq!(duplicated.mosh_port_range.as_deref(), Some("60000-61000"));
+
+        let mut bad_transport = sample_input("Bad", "bad.example.com");
+        bad_transport.transport = "telnet".into();
+        assert!(create(&pool, bad_transport).await.is_err());
+
+        let mut bad_range = sample_input("Bad range", "bad.example.com");
+        bad_range.mosh_port_range = Some("61000-60000".into());
+        assert!(create(&pool, bad_range).await.is_err());
+
+        let mut bad_path = sample_input("Bad path", "bad.example.com");
+        bad_path.mosh_server_path = Some("mosh-server; rm -rf /".into());
+        assert!(create(&pool, bad_path).await.is_err());
     }
 
     #[tokio::test]
@@ -1155,6 +1277,7 @@ mod tests {
                 name: "Personal".into(),
                 parent_id: None,
                 sort_order: 0,
+                defaults: Default::default(),
             },
         )
         .await

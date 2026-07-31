@@ -1,17 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Copy, Eraser, FolderInput, KeyRound, LoaderCircle, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldCheck, TextSelect, Video, X } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, CircleStop, ClipboardCopy, ClipboardPaste, Circle, Columns2, Container, Copy, Eraser, FolderInput, GitBranch, Globe, KeyRound, LayoutGrid, LoaderCircle, Mic, Paperclip, Radio, RadioTower, RotateCcw, Rows2, ScrollText, Search, Share2, ShieldAlert, ShieldCheck, TextSelect, Video, X } from "lucide-react";
 import { terminalManager } from "./terminalManager";
+import { AutocompleteOverlay } from "./AutocompleteOverlay";
+import { attachFileToSession, canAttachFile } from "./attachFile";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useSessionLogStore } from "../../stores/sessionLogStore";
 import type { TerminalSession } from "../../types";
 import { parseLumaError } from "../../lib/hosts";
+import { withoutMultiplexerTitle } from "../../lib/multiplexer";
 import { cn } from "../../lib/utils";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { describeSshError } from "../hosts/sshErrors";
 import { HostKeyChangedAlert } from "../hosts/HostKeyChangedAlert";
 import { ConnectionErrorAlert } from "../hosts/ConnectionErrorAlert";
 import { MAX_RECONNECT_ATTEMPTS } from "./reconnect";
+import { enableSshAgentForwarding } from "../../lib/ssh";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { useCapabilityStore } from "../../stores/capabilityStore";
 
 /*
  * A single split-pane leaf. Owns the host element for one managed terminal and
@@ -52,8 +58,15 @@ export function PaneView({
   const splitActivePane = useSessionStore((s) => s.splitActivePane);
   const closeActivePane = useSessionStore((s) => s.closeActivePane);
   const setPaneBroadcast = useSessionStore((s) => s.setPaneBroadcast);
+  const setTransportNotice = useSessionStore((s) => s.setTransportNotice);
+  const setAgentForwarding = useSessionStore((s) => s.setAgentForwarding);
   const setTerminalSearchOpen = useUiStore((s) => s.setTerminalSearchOpen);
   const openCollab = useUiStore((s) => s.openCollab);
+  const openWebPreview = useUiStore((s) => s.openWebPreview);
+  const openMultiplexer = useUiStore((s) => s.openMultiplexer);
+  const openDocker = useUiStore((s) => s.openDocker);
+  const openRepo = useUiStore((s) => s.openRepo);
+  const openVoice = useUiStore((s) => s.openVoice);
   const startLog = useSessionLogStore((s) => s.start);
   const stopLog = useSessionLogStore((s) => s.stop);
   const logEntry = useSessionLogStore((s) => s.logs[session.id]);
@@ -66,6 +79,10 @@ export function PaneView({
   const [logNotice, setLogNotice] = useState<string | null>(null);
   const [logError, setLogError] = useState<string | null>(null);
   const [noticeCopied, setNoticeCopied] = useState(false);
+  const [forwardingConfirm, setForwardingConfirm] = useState(false);
+  const [forwardingBusy, setForwardingBusy] = useState(false);
+  const [forwardingError, setForwardingError] = useState<string | null>(null);
+  const isMobile = useCapabilityStore((state) => state.capabilities.isMobile);
 
   const beginLogging = (mode: "raw" | "asciicast") => {
     setLogError(null);
@@ -77,6 +94,23 @@ export function PaneView({
   const endLogging = () => {
     setLogNotice(null);
     void stopLog(session.id);
+  };
+  const enableForwarding = () => {
+    const backendId = terminalManager.getBackendId(session.id);
+    if (!backendId) {
+      setForwardingError("This SSH session is no longer connected.");
+      setForwardingConfirm(false);
+      return;
+    }
+    setForwardingBusy(true);
+    setForwardingError(null);
+    enableSshAgentForwarding(backendId)
+      .then(() => {
+        setAgentForwarding(session.id, true);
+        setForwardingConfirm(false);
+      })
+      .catch((error) => setForwardingError(parseLumaError(error).message))
+      .finally(() => setForwardingBusy(false));
   };
 
   useEffect(() => {
@@ -224,6 +258,118 @@ export function PaneView({
     },
   ];
 
+  // Attach a local file: uploaded to the SSH host over SFTP, escaped remote
+  // path inserted at the prompt. Only offered for SSH-backed sessions.
+  if (canAttachFile(session)) {
+    paneActions.push({
+      label: "Attach file…",
+      icon: <Paperclip size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        void attachFileToSession(session);
+      },
+    });
+  }
+
+  if (isSsh && !isMobile && !session.agentForwarding) {
+    paneActions.push({
+      label: "Restart shell with SSH agent…",
+      icon: <ShieldAlert size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        setForwardingConfirm(true);
+      },
+    });
+  }
+
+  // Compose a command as a reviewable draft (dictated, typed, or both) instead
+  // of typing straight into the live shell. Offered for every connected
+  // session; attachments inside it need SSH, which the composer handles.
+  paneActions.push({
+    label: "Voice composer…",
+    icon: <Mic size={15} />,
+    disabled: session.status !== "connected",
+    onSelect: () => {
+      onFocus();
+      openVoice({ sessionId: session.id, label: session.title });
+    },
+  });
+
+  // Discover HTTP servers on the remote host and preview one through a
+  // temporary loopback forward. Per-host, so it needs an SSH session's hostId.
+  if (isSsh && session.hostId) {
+    const previewHostId = session.hostId;
+    paneActions.push({
+      label: "Preview web server…",
+      icon: <Globe size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openWebPreview(previewHostId, session.title, session.id);
+      },
+    });
+  }
+
+  // Manage the remote tmux/zellij workspaces of this host: attaching opens a new
+  // tab, so this is offered wherever an SSH session names a host.
+  if (isSsh && session.hostId) {
+    const workspaceHostId = session.hostId;
+    // The pane's own title may already carry a workspace suffix; the dialog
+    // labels the HOST, so strip it before passing it along.
+    const workspaceLabel =
+      session.restore?.kind === "ssh"
+        ? withoutMultiplexerTitle(session.title, session.restore.multiplexer)
+        : session.title;
+    paneActions.push({
+      label: "Workspaces…",
+      icon: <LayoutGrid size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openMultiplexer(workspaceHostId, workspaceLabel);
+      },
+    });
+  }
+
+  // Docker containers on this host: read-only listing plus the three
+  // reversible lifecycle actions, all behind a confirmation.
+  if (isSsh && session.hostId) {
+    const dockerHostId = session.hostId;
+    paneActions.push({
+      label: "Docker…",
+      icon: <Container size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openDocker(dockerHostId, session.title);
+      },
+    });
+  }
+
+  // Repository browser (git status / diff) of the session's working directory.
+  // Only meaningful once the shell has reported a cwd (OSC 7), so it stays
+  // hidden entirely until then rather than showing a dead entry.
+  if (isSsh && session.hostId && cwd) {
+    const repoHostId = session.hostId;
+    const repoCwd = cwd;
+    paneActions.push({
+      label: "Repository…",
+      icon: <GitBranch size={15} />,
+      disabled: session.status !== "connected",
+      onSelect: () => {
+        onFocus();
+        openRepo({
+          hostId: repoHostId,
+          cwd: repoCwd,
+          sessionId: session.id,
+          label: session.title,
+        });
+      },
+    });
+  }
+
   // Shell integration (OSC 133 / OSC 7). Only offered when the shell has emitted
   // the relevant sequences, so plain shells never see dead menu entries.
   if (hasMarks || cwd) {
@@ -293,6 +439,7 @@ export function PaneView({
   }
 
   return (
+    <>
     <ContextMenu
       actions={paneActions}
       minWidth="min-w-52"
@@ -324,6 +471,11 @@ export function PaneView({
           parent: dropOverflowingRow measures this element's content box. */}
       <div ref={hostRef} className="min-h-0 w-full flex-1 pl-2 pt-1.5" />
 
+      {/* Opt-in completion overlay. Absolutely positioned over the pane so it
+          never affects the terminal's layout or grid size, and self-hiding when
+          the feature is off or the input line is not known. */}
+      <AutocompleteOverlay sessionId={session.id} />
+
       {/* Broadcast indicator: a distinct accent-tinted inset border plus a
           corner badge on every pane currently receiving fanned-out input.
           Purely decorative (pointer-events-none) so it never blocks the
@@ -344,6 +496,16 @@ export function PaneView({
         <div className="pointer-events-none absolute bottom-1.5 right-2 z-6 flex items-center gap-1 rounded bg-danger/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-danger shadow-sm backdrop-blur-sm">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-danger" />
           {logEntry.mode === "asciicast" ? "Rec" : "Log"}
+        </div>
+      )}
+
+      {session.agentForwarding && (
+        <div
+          title="The remote host can use your local SSH agent while this session is active"
+          className="pointer-events-none absolute bottom-1.5 left-2 z-6 flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400 shadow-sm backdrop-blur-sm"
+        >
+          <ShieldAlert size={11} />
+          Agent forwarded
         </div>
       )}
 
@@ -398,6 +560,32 @@ export function PaneView({
             aria-label="Dismiss"
             onClick={() => setLogError(null)}
             className="shrink-0 rounded p-1 text-danger/80 hover:text-danger"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {forwardingError && (
+        <div role="alert" className="absolute inset-x-2 top-2 z-9 flex items-start gap-2 rounded-lg border border-danger/40 bg-surface/95 px-3 py-2 text-xs text-danger shadow-glow">
+          <span className="min-w-0 flex-1">Could not enable agent forwarding: {forwardingError}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setForwardingError(null)}><X size={14}/></button>
+        </div>
+      )}
+
+      {/* Non-blocking transport notice (Mosh → SSH auto-fallback). */}
+      {session.transportNotice && (
+        <div
+          role="status"
+          className="absolute inset-x-2 top-2 z-8 flex items-start gap-2 rounded-lg border border-border bg-surface/95 px-3 py-2 text-xs shadow-glow backdrop-blur"
+        >
+          <ShieldCheck size={14} className="mt-0.5 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 text-foreground">{session.transportNotice}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setTransportNotice(session.id, undefined)}
+            className="shrink-0 rounded p-1 text-muted hover:bg-raised hover:text-foreground"
           >
             <X size={14} />
           </button>
@@ -461,6 +649,33 @@ export function PaneView({
       )}
     </div>
     </ContextMenu>
+    <ConfirmDialog
+      open={forwardingConfirm}
+      onOpenChange={setForwardingConfirm}
+      title="Restart shell with SSH agent forwarding?"
+      confirmLabel="Restart and enable"
+      busy={forwardingBusy}
+      onConfirm={enableForwarding}
+      message={
+        <div className="space-y-2">
+          <p>
+            The remote host can ask your local agent to sign authentication
+            requests for as long as this session remains connected.
+          </p>
+          <p>
+            SSH requires forwarding before a shell starts. Luma will end the
+            current remote process and start a new shell in this terminal; the
+            terminal buffer and SSH connection remain.
+          </p>
+          <p className="font-medium text-danger">
+            A compromised remote host could use every key your agent exposes.
+            Enable this only for a host you trust.
+          </p>
+          <p>This choice applies only to this live session and is not saved.</p>
+        </div>
+      }
+    />
+    </>
   );
 }
 

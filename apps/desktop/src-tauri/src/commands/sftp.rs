@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -7,6 +8,7 @@ use crate::sftp::{
     self, DirectoryListing, SftpConnectResponse, SftpManager, SftpSessionInfo, TransferProgress,
     TransferStartResponse,
 };
+use crate::ssh;
 use crate::AppState;
 
 #[tauri::command]
@@ -137,6 +139,67 @@ pub async fn sftp_download(
 #[tauri::command]
 pub async fn sftp_cancel(manager: State<'_, SftpManager>, transfer_id: String) -> Result<()> {
     manager.cancel_transfer(&transfer_id)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalAttachUploadResponse {
+    pub remote_path: String,
+}
+
+/// Upload a local file to a private staging directory on an SSH host so the
+/// terminal UI can insert the returned remote path at the prompt.
+///
+/// Reuses an SFTP session the user already has open for the host — a second
+/// authenticated connection per attachment costs a full handshake and can put
+/// an interactive or 2FA prompt in the middle of attaching a file. Only a
+/// session this command opened itself is closed afterwards.
+#[tauri::command]
+pub async fn terminal_attach_upload(
+    state: State<'_, AppState>,
+    keystore_state: State<'_, KeystoreState>,
+    manager: State<'_, SftpManager>,
+    host_id: String,
+    local_path: String,
+    file_name: Option<String>,
+) -> Result<TerminalAttachUploadResponse> {
+    ssh::validate_host_id(&host_id)?;
+    // Reading the home directory doubles as the liveness check: a session that
+    // has since died falls through to opening a dedicated one.
+    let reusable = match manager.session_for_host(&host_id) {
+        Some(session_id) => match manager.home_directory(&session_id).await {
+            Ok(home) => Some((session_id, home)),
+            Err(error) => {
+                tracing::debug!(%error, "reusable SFTP session was unusable; opening a new one");
+                None
+            }
+        },
+        None => None,
+    };
+    let (session_id, home, opened_here) = match reusable {
+        Some((session_id, home)) => (session_id, home, false),
+        None => {
+            let session = manager
+                .connect(&state.pool, &keystore_state, &host_id)
+                .await?;
+            (session.sftp_session_id, session.initial_path, true)
+        }
+    };
+    let upload_result = sftp::upload_attachment(
+        &manager,
+        &session_id,
+        &home,
+        &local_path,
+        file_name.as_deref(),
+    )
+    .await;
+    // Never close a session the user opened; only the one this command made.
+    if opened_here {
+        if let Err(error) = manager.disconnect(&session_id).await {
+            tracing::warn!(%error, "failed to close SFTP session after attachment upload");
+        }
+    }
+    upload_result.map(|remote_path| TerminalAttachUploadResponse { remote_path })
 }
 
 #[tauri::command]

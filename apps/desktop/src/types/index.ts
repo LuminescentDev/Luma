@@ -1,6 +1,7 @@
 import type { ShellRef } from "../lib/terminal";
 import type { SerialConfig } from "../lib/serial";
 import type { HostKeyFingerprint } from "../lib/ssh";
+import type { MultiplexerAttach } from "../lib/multiplexer";
 
 export type ThemeMode = "dark" | "light" | "system";
 
@@ -28,6 +29,10 @@ export type RestoreDescriptor =
       /** Per-host tab accent color ("#RRGGBB") so a restored pane shows the same
        * tab color immediately. Optional; older snapshots simply have no color. */
       tabColor?: string | null;
+      /** Multiplexer workspace this pane was attached to, so a restored pane
+       * lands back in the same tmux/zellij session instead of a bare shell.
+       * Optional; snapshots that predate the workspace manager have none. */
+      multiplexer?: MultiplexerAttach;
     }
   | { kind: "serial"; config: SerialConfig };
 
@@ -82,6 +87,12 @@ export type TerminalSession = {
       };
   connectionStage?: "starting" | "network" | "host-key" | "authentication" | "ready";
   connectionIssue?: string;
+  /** Non-blocking transport notice shown over the pane (e.g. "Mosh unavailable,
+   * fell back to SSH"). Dismissed via setTransportNotice. Metadata only. */
+  transportNotice?: string;
+  /** True only after this live session explicitly enabled SSH agent
+   * forwarding. Transient and never persisted into workspace snapshots. */
+  agentForwarding?: boolean;
   /** Host keys observed on the network during the last host-key preflight scan
    * for this session. Populated only for the blocking `host-key-changed` error
    * state so the alert can show new-vs-known fingerprints for comparison. */
@@ -173,7 +184,23 @@ export const SETTING_KEYS = {
   terminalCustomThemes: "terminal.customThemes",
   /** Terminal font family (CSS font stack); empty falls back to the default. */
   terminalFontFamily: "terminal.fontFamily",
+  /** Device-local toggle: the local-data completion overlay for the terminal
+   * prompt. Default OFF — enabling it also starts recording command history,
+   * which is why it is opt-in. Never synced. */
+  terminalAutocomplete: "terminal.autocomplete",
   /** iOS-only toggle: mirror open connections and transfers to a Live Activity on
    * the lock screen and Dynamic Island. Default on; ignored elsewhere. */
   liveActivity: "mobile.liveActivity",
+  /** Device-local map of hostId -> { multiplexer, sessionName } to re-attach
+   * automatically when connecting to that host. Never synced. */
+  multiplexerResume: "multiplexer.resume",
+  /** Device-local toggle: allow the voice composer to use the platform's speech
+   * recognition. Default OFF because the only engine reachable from a webview
+   * may transcribe in the vendor's cloud — the settings copy says so plainly.
+   * Never synced. */
+  voiceDictation: "voice.dictation",
+  /** Device-local toggle: insert the draft at the prompt as soon as dictation
+   * ends, skipping the review step this feature exists for. Default OFF. Never
+   * executes — auto-send only ever inserts, never presses Enter. */
+  voiceAutoSend: "voice.autoSend",
 } as const;

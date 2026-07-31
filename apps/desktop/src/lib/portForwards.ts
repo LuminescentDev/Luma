@@ -42,6 +42,14 @@ export type TunnelInfo = {
   portForwardId: string;
   hostId: string;
   status: string;
+  /** Device-side port for local/dynamic forwards; null for remote forwards. */
+  localPort: number | null;
+};
+
+export type TunnelStartResponse = {
+  tunnelId: string;
+  /** Actual bound port, which differs from the request when it asked for 0. */
+  localPort: number | null;
 };
 
 export function listPortForwards(hostId?: string): Promise<PortForward[]> {
@@ -66,10 +74,10 @@ export function deletePortForward(id: string): Promise<void> {
 export function startTunnel(
   portForwardId: string,
   onExit: (exit: TunnelExit) => void,
-): Promise<{ tunnelId: string }> {
+): Promise<TunnelStartResponse> {
   const exitChannel = new Channel<TunnelExit>();
   exitChannel.onmessage = onExit;
-  return invoke<{ tunnelId: string }>("tunnel_start", {
+  return invoke<TunnelStartResponse>("tunnel_start", {
     portForwardId,
     onExit: exitChannel,
   });

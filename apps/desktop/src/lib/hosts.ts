@@ -8,6 +8,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type AuthenticationType = "key" | "password" | "interactive";
 
+/** Per-host transport preference: plain SSH (default), Mosh with automatic
+ * SSH fallback ("auto"), or Mosh only. */
+export type TransportType = "ssh" | "auto" | "mosh";
+
 export type Host = {
   id: string;
   /** Vault that owns this host. Every reference it holds (group, key, identity,
@@ -33,6 +37,13 @@ export type Host = {
   /** Per-host tab accent color as "#RRGGBB", or null for no accent. The backend
    * only accepts null or a "#RRGGBB" string. */
   tabColor: string | null;
+  /** Transport preference: "ssh" (default), "auto" (Mosh with SSH fallback),
+   * or "mosh" (Mosh only). */
+  transport: TransportType;
+  /** Optional custom remote mosh-server path (no shell metacharacters). */
+  moshServerPath: string | null;
+  /** Optional UDP port range for mosh-server: "N" or "N-M" (1-65535). */
+  moshPortRange: string | null;
   /** True for a throwaway host created by quick-connect that has not been saved
    * to the host list. Ephemeral hosts are excluded from hosts_list / recents by
    * the backend; quick_connect_save clears this flag. */
@@ -59,6 +70,27 @@ export type HostInput = {
   favorite: boolean;
   /** Per-host tab accent color as "#RRGGBB", or null for no accent. */
   tabColor: string | null;
+  transport: TransportType;
+  moshServerPath: string | null;
+  moshPortRange: string | null;
+};
+
+/** Defaults a group hands down to the hosts inside it, and through `parentId`
+ * to nested groups. Every field is optional: null/absent means the group sets
+ * no default, so resolution keeps walking up the chain. Hosts always win over
+ * groups. `authenticationType` and `keyId` are deliberately absent — see the
+ * note on `host_inheritance` in the backend. */
+export type HostGroupDefaults = {
+  username?: string | null;
+  identityId?: string | null;
+  proxyJumpHostId?: string | null;
+  startupCommand?: string | null;
+  workingDirectory?: string | null;
+  environment?: Record<string, string> | null;
+  tabColor?: string | null;
+  transport?: TransportType | null;
+  moshServerPath?: string | null;
+  moshPortRange?: string | null;
 };
 
 export type HostGroup = {
@@ -67,16 +99,47 @@ export type HostGroup = {
   name: string;
   parentId: string | null;
   sortOrder: number;
-};
+} & HostGroupDefaults;
 
 export type HostGroupInput = {
   vaultId?: string;
   name: string;
   parentId: string | null;
   sortOrder: number;
+} & HostGroupDefaults;
+
+/** Where an effective value came from: "host", "group:<id>", or "default". */
+export type FieldOrigin = string;
+
+/** Per-field provenance for an effective host. Environment variables merge per
+ * name rather than replacing wholesale, so their origins are recorded per key. */
+export type HostFieldOrigins = {
+  username: FieldOrigin;
+  identityId: FieldOrigin;
+  proxyJumpHostId: FieldOrigin;
+  startupCommand: FieldOrigin;
+  workingDirectory: FieldOrigin;
+  tabColor: FieldOrigin;
+  transport: FieldOrigin;
+  moshServerPath: FieldOrigin;
+  moshPortRange: FieldOrigin;
+  environment: Record<string, FieldOrigin>;
 };
 
-export type KeyStorageMode = "local-path" | "encrypted-vault";
+export type EffectiveHostConfig = {
+  /** The host with group defaults applied. Never write this back through
+   * `updateHost`: it would bake inherited values into the host row. */
+  host: Host;
+  origins: HostFieldOrigins;
+};
+
+/** The group an inherited value came from, or null when the value is the
+ * host's own or is not set anywhere. */
+export function inheritedGroupId(origin: FieldOrigin | undefined): string | null {
+  return origin?.startsWith("group:") ? origin.slice("group:".length) : null;
+}
+
+export type KeyStorageMode = "local-path" | "encrypted-vault" | "ssh-agent";
 
 export type KeyReference = {
   id: string;
@@ -100,6 +163,14 @@ export type KeyReferenceInput = {
   certificate: string | null;
   privateKey?: string | null;
   passphrase?: string | null;
+};
+
+export type SshAgentIdentity = {
+  publicKey: string;
+  fingerprint: string;
+  comment: string;
+  algorithm: string;
+  hardwareBacked: boolean;
 };
 
 export type Identity = { id: string; vaultId: string; name: string; username: string; keyId: string | null; hasPassword: boolean };
@@ -140,6 +211,9 @@ export function hostToInput(host: Host): HostInput {
     tags: host.tags,
     favorite: host.favorite,
     tabColor: host.tabColor,
+    transport: host.transport,
+    moshServerPath: host.moshServerPath,
+    moshPortRange: host.moshPortRange,
   };
 }
 
@@ -219,6 +293,29 @@ export function deleteHostGroup(id: string): Promise<void> {
   return invoke<void>("host_group_delete", { id });
 }
 
+// Group-level inheritance ----------------------------------------------------
+
+/** Resolve a stored host through its group chain: what a connection will
+ * actually use, plus where each field came from. */
+export function hostEffectiveConfig(hostId: string): Promise<EffectiveHostConfig | null> {
+  return invoke<EffectiveHostConfig | null>("host_effective_config", {
+    id: hostId,
+    groupId: null,
+  });
+}
+
+/** What a host that overrides nothing would inherit from `groupId`. The editor
+ * asks this for whichever group is selected in the form, so the inherited /
+ * overridden hints follow the picker instead of the last saved group. */
+export function groupInheritedDefaults(
+  groupId: string | null,
+): Promise<EffectiveHostConfig | null> {
+  return invoke<EffectiveHostConfig | null>("host_effective_config", {
+    id: null,
+    groupId,
+  });
+}
+
 // Key references ------------------------------------------------------------
 
 export function listKeyReferences(vaultId?: string): Promise<KeyReference[]> {
@@ -259,6 +356,11 @@ export function updateKeyReference(
 
 export function deleteKeyReference(id: string): Promise<void> {
   return invoke<void>("key_reference_delete", { id });
+}
+
+/** Lists public identities exposed by the device-local SSH agent. */
+export function listSshAgentIdentities(): Promise<SshAgentIdentity[]> {
+  return invoke<SshAgentIdentity[]>("ssh_agent_identities");
 }
 export function generateSshKey(name: string, localPath: string, passphrase: string, certificate: string | null, vaultId?: string): Promise<KeyReference> { return invoke<KeyReference>("ssh_key_generate", { input: { vaultId, name, localPath, passphrase, certificate } }); }
 

@@ -12,6 +12,11 @@ import { CommandPalette } from "../features/palette/CommandPalette";
 import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
 import { CollaborationDialog } from "../features/collaboration/CollaborationDialog";
 import { CollaborationViewer } from "../features/collaboration/CollaborationViewer";
+import { WebPreviewDialog } from "../features/webPreview/WebPreviewDialog";
+import { DockerDialog } from "../features/docker/DockerDialog";
+import { MultiplexerDialog } from "../features/multiplexer/MultiplexerDialog";
+import { RepoDialog } from "../features/repo/RepoDialog";
+import { VoiceComposerDialog } from "../features/voiceComposer/VoiceComposerDialog";
 
 /*
  * Desktop application shell — the original Luma layout, unchanged. Heavier,
@@ -38,6 +43,14 @@ const KnownHostsScreen = named(
   () => import("../features/knownHosts/KnownHostsScreen"),
   "KnownHostsScreen",
 );
+const ServerStatsScreen = named(
+  () => import("../features/serverStats/ServerStatsScreen"),
+  "ServerStatsScreen",
+);
+const FleetOverviewScreen = named(
+  () => import("../features/fleet/FleetOverviewScreen"),
+  "FleetOverviewScreen",
+);
 const SyncDialogs = named(
   () => import("../features/sync/SyncDialogs"),
   "SyncDialogs",
@@ -61,6 +74,20 @@ export function DesktopLayout() {
   const navOpen = useUiStore((s) => s.navOpen);
   const collabOpen = useUiStore((s) => s.collabOpen);
   const closeCollab = useUiStore((s) => s.closeCollab);
+  const webPreviewHostId = useUiStore((s) => s.webPreviewHostId);
+  const webPreviewHostLabel = useUiStore((s) => s.webPreviewHostLabel);
+  const webPreviewSessionId = useUiStore((s) => s.webPreviewSessionId);
+  const closeWebPreview = useUiStore((s) => s.closeWebPreview);
+  const multiplexerHostId = useUiStore((s) => s.multiplexerHostId);
+  const multiplexerHostLabel = useUiStore((s) => s.multiplexerHostLabel);
+  const closeMultiplexer = useUiStore((s) => s.closeMultiplexer);
+  const dockerHostId = useUiStore((s) => s.dockerHostId);
+  const dockerHostLabel = useUiStore((s) => s.dockerHostLabel);
+  const closeDocker = useUiStore((s) => s.closeDocker);
+  const repoTarget = useUiStore((s) => s.repoTarget);
+  const closeRepo = useUiStore((s) => s.closeRepo);
+  const voiceTarget = useUiStore((s) => s.voiceTarget);
+  const closeVoice = useUiStore((s) => s.closeVoice);
 
   return (
     <div className="flex h-full flex-col">
@@ -104,6 +131,16 @@ export function DesktopLayout() {
                 <KnownHostsScreen />
               </Suspense>
             )}
+            {mainView === "server-stats" && (
+              <Suspense fallback={<ScreenFallback />}>
+                <ServerStatsScreen />
+              </Suspense>
+            )}
+            {mainView === "fleet" && (
+              <Suspense fallback={<ScreenFallback />}>
+                <FleetOverviewScreen />
+              </Suspense>
+            )}
             {/* Shared-terminal viewer overlay: shown only while joining a room,
                 covering whichever main view is active (a viewer has no local
                 tabs of its own). */}
@@ -114,6 +151,39 @@ export function DesktopLayout() {
       <CommandPalette />
       <CollaborationDialog open={collabOpen} onOpenChange={(o) => !o && closeCollab()} />
       <SerialConnectDialog />
+      <WebPreviewDialog
+        open={webPreviewHostId !== null}
+        onOpenChange={(o) => !o && closeWebPreview()}
+        hostId={webPreviewHostId}
+        hostLabel={webPreviewHostLabel ?? undefined}
+        sessionId={webPreviewSessionId}
+      />
+      <MultiplexerDialog
+        open={multiplexerHostId !== null}
+        onOpenChange={(o) => !o && closeMultiplexer()}
+        hostId={multiplexerHostId}
+        hostLabel={multiplexerHostLabel ?? undefined}
+      />
+      <DockerDialog
+        open={dockerHostId !== null}
+        onOpenChange={(o) => !o && closeDocker()}
+        hostId={dockerHostId}
+        hostLabel={dockerHostLabel ?? undefined}
+      />
+      <RepoDialog
+        open={repoTarget !== null}
+        onOpenChange={(o) => !o && closeRepo()}
+        hostId={repoTarget?.hostId ?? null}
+        cwd={repoTarget?.cwd ?? null}
+        sessionId={repoTarget?.sessionId ?? null}
+        label={repoTarget?.label}
+      />
+      <VoiceComposerDialog
+        open={voiceTarget !== null}
+        onOpenChange={(o) => !o && closeVoice()}
+        sessionId={voiceTarget?.sessionId ?? null}
+        label={voiceTarget?.label}
+      />
       <SnippetRunner />
       <MultiHostRunDialog />
       {/* Always mounted but idle until triggered; a null fallback keeps them

@@ -111,6 +111,12 @@ impl AuthDriver {
                 let _ = reply.send(Err(PingFailure::Authenticating));
                 Ok(())
             }
+            Some(Control::EnableAgentForwarding(reply)) => {
+                let _ = reply.send(Err(
+                    "wait for SSH authentication to finish before enabling agent forwarding".into(),
+                ));
+                Ok(())
+            }
             Some(Control::Disconnect) | None => Err(AuthAbort::Disconnect),
         }
     }
@@ -277,6 +283,80 @@ async fn authenticate_key(
         .await
 }
 
+/// Whether the agent holds `key`, compared on key material alone.
+///
+/// `PublicKey`'s `PartialEq` also compares the OpenSSH comment. Agents report
+/// identities with their comment attached while Luma strips it before storing
+/// the reference, so comparing whole keys would reject every commented agent
+/// key — which is nearly all of them.
+pub(super) fn agent_holds_key(
+    identities: &[russh::keys::agent::AgentIdentity],
+    key: &russh::keys::PublicKey,
+) -> bool {
+    identities
+        .iter()
+        .any(|identity| identity.public_key().key_data() == key.key_data())
+}
+
+async fn authenticate_agent_key(
+    handle: &mut Handle<Client>,
+    username: &str,
+    key: &russh::keys::PublicKey,
+    driver: &mut AuthDriver,
+    on_data: &SharedDataCallback,
+    timeouts: EmbeddedSshTimeouts,
+) -> std::result::Result<AuthResult, AuthAbort> {
+    let mut agent = super::agent::connect_client()
+        .await
+        .map_err(AuthAbort::Error)?;
+    let identities = agent.request_identities().await.map_err(|error| {
+        AuthAbort::Error(LumaError::KeyUnavailable(format!(
+            "could not read SSH-agent identities: {error}"
+        )))
+    })?;
+    if !agent_holds_key(&identities, key) {
+        return Err(AuthAbort::Error(LumaError::KeyUnavailable(
+            "the selected SSH-agent key is not available on this device".into(),
+        )));
+    }
+    let hash = driver
+        .operation(
+            timeouts.signature_negotiation,
+            "SSH signature negotiation timed out",
+            handle.best_supported_rsa_hash(),
+        )
+        .await?
+        .flatten();
+    emit_text(
+        on_data,
+        "\r\nConfirm the SSH signature with your security key or agent provider if prompted.\r\n",
+    );
+
+    // Hardware-backed providers may wait for a touch or biometric confirmation,
+    // so use the credential prompt budget rather than the normal 15s auth budget.
+    let operation = handle.authenticate_publickey_with(username, key.clone(), hash, &mut agent);
+    tokio::pin!(operation);
+    let timeout = tokio::time::sleep(PROMPT_TIMEOUT);
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = &mut operation => {
+                return result.map_err(|error| AuthAbort::Error(LumaError::SshConnection {
+                    category: "auth-failed",
+                    message: format!("SSH-agent signing failed: {error}"),
+                }));
+            }
+            _ = &mut timeout => {
+                return Err(AuthAbort::Error(LumaError::SshConnection {
+                    category: "timeout",
+                    message: "SSH-agent authentication timed out waiting for confirmation".into(),
+                }));
+            }
+            control = driver.control_rx.recv() => driver.handle_control(control)?,
+        }
+    }
+}
+
 struct AuthenticationBudget {
     timeouts: EmbeddedSshTimeouts,
     method_attempts: usize,
@@ -428,12 +508,31 @@ pub(super) async fn authenticate_with_prompts(
     let authentication_type = authentication_type(config);
     let target = prompt_target(config);
     if authentication_type == "key" && method_available(&remaining_methods, MethodKind::PublicKey) {
-        let key = load_key_with_prompts(config, driver, on_data).await?;
         budget.method_attempts += 1;
-        let result = authenticate_key(handle, username, key, driver, budget.timeouts).await?;
+        let uses_agent = config.agent_public_key.is_some();
+        let result = if let Some(key) = config.agent_public_key.as_ref() {
+            authenticate_agent_key(handle, username, key, driver, on_data, budget.timeouts).await?
+        } else {
+            let key = load_key_with_prompts(config, driver, on_data).await?;
+            authenticate_key(handle, username, key, driver, budget.timeouts).await?
+        };
         match auth_failure(result) {
             None => return Ok(()),
-            Some(methods) => remaining_methods = methods,
+            Some(methods) => {
+                // The server rejected the key. Luma still tries the remaining
+                // methods (as OpenSSH does), but the downgrade must never be
+                // silent: a user who expects a hardware-backed key to be in use
+                // needs to know it was not accepted before typing a password.
+                emit_text(
+                    on_data,
+                    if uses_agent {
+                        "\r\nThe server rejected your SSH-agent key. Falling back to the remaining authentication methods.\r\n"
+                    } else {
+                        "\r\nThe server rejected your SSH key. Falling back to the remaining authentication methods.\r\n"
+                    },
+                );
+                remaining_methods = methods;
+            }
         }
     }
 
@@ -517,6 +616,48 @@ where
     let authentication_type = authentication_type(config);
 
     if authentication_type == "key" {
+        if let Some(key) = config.agent_public_key.as_ref() {
+            let mut agent = super::agent::connect_client().await?;
+            let identities = agent.request_identities().await.map_err(|error| {
+                LumaError::KeyUnavailable(format!("could not read SSH-agent identities: {error}"))
+            })?;
+            if !agent_holds_key(&identities, key) {
+                return Err(LumaError::KeyUnavailable(
+                    "the selected SSH-agent key is not available on this device".into(),
+                ));
+            }
+            let hash = tokio::time::timeout(
+                timeouts.signature_negotiation,
+                handle.best_supported_rsa_hash(),
+            )
+            .await
+            .map_err(|_| LumaError::SshConnection {
+                category: "timeout",
+                message: "SSH signature negotiation timed out".into(),
+            })?
+            .map_err(super::embedded::connect_error)?
+            .flatten();
+            let result = tokio::time::timeout(
+                PROMPT_TIMEOUT,
+                handle.authenticate_publickey_with(username, key.clone(), hash, &mut agent),
+            )
+            .await
+            .map_err(|_| LumaError::SshConnection {
+                category: "timeout",
+                message: "SSH-agent authentication timed out waiting for confirmation".into(),
+            })?
+            .map_err(|error| LumaError::SshConnection {
+                category: "auth-failed",
+                message: format!("SSH-agent signing failed: {error}"),
+            })?;
+            if result.success() {
+                return Ok(());
+            }
+            return Err(LumaError::SshConnection {
+                category: "auth-failed",
+                message: "SSH-agent authentication failed".into(),
+            });
+        }
         let key = load_saved_key(config).map_err(|error| {
             if config.key_passphrase.is_some() {
                 key_passphrase_error()
@@ -592,7 +733,45 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use russh::keys::agent::AgentIdentity;
     use tokio::sync::oneshot;
+
+    const TEST_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF+tP7Kz5sc4nKp0oxc8/+UP+SYwF+ngP7yqAipixtx7";
+    const OTHER_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILqVtJTt0VJqmTkQu2OaVQeTRKl/IDZn98/67kgzZZ/w";
+
+    fn test_public_key(line: &str, comment: &str) -> russh::keys::PublicKey {
+        let mut key = russh::keys::PublicKey::from_openssh(line).expect("parse key");
+        key.set_comment(comment);
+        key
+    }
+
+    #[test]
+    fn agent_key_lookup_ignores_the_identity_comment() {
+        // The agent reports identities with their comment; Luma stores the key
+        // with the comment stripped. Matching must still succeed.
+        let stored = test_public_key(TEST_KEY, "");
+        let identities = vec![AgentIdentity::PublicKey {
+            key: test_public_key(TEST_KEY, "user@laptop"),
+            comment: "user@laptop".into(),
+        }];
+
+        assert!(agent_holds_key(&identities, &stored));
+    }
+
+    #[test]
+    fn agent_key_lookup_rejects_a_key_the_agent_does_not_hold() {
+        let identities = vec![AgentIdentity::PublicKey {
+            key: test_public_key(OTHER_KEY, "other@laptop"),
+            comment: "other@laptop".into(),
+        }];
+
+        assert!(!agent_holds_key(
+            &identities,
+            &test_public_key(TEST_KEY, "")
+        ));
+    }
 
     #[tokio::test]
     async fn auth_driver_assembles_split_writes_and_coalesces_crlf() {
