@@ -15,7 +15,12 @@ pnpm --dir "${desktop_path}" apple:icon
 pnpm --dir "${repository_path}" shared:build
 pnpm --dir "${desktop_path}" build
 
+# This directory is bundled as a folder reference, so anything left in it ships
+# verbatim inside Luma.app. A stray Assets.car here gives the bundle a second
+# compiled asset catalog and App Store processing marks the upload INVALID, so
+# start from an empty directory rather than merging onto whatever was checked out.
 assets_path="${SRCROOT:?}/assets"
+rm -rf "${assets_path}"
 mkdir -p "${assets_path}"
 cp -R "${desktop_path}/dist/." "${assets_path}/"
 
@@ -23,6 +28,12 @@ export RUST_BACKTRACE=1
 export CFLAGS_aarch64_apple_ios="-isysroot ${SDKROOT:?}"
 export CXXFLAGS_aarch64_apple_ios="-isysroot ${SDKROOT}"
 export OBJC_INCLUDE_PATH_aarch64_apple_ios="${SDKROOT}/usr/include"
+
+# release-please bumps the version in Cargo.toml but has no updater for
+# Cargo.lock, so release commits arrive with the two out of step and --locked
+# refuses to build. --workspace confines the re-lock to the local packages, so
+# every registry dependency stays pinned exactly as committed.
+cargo update --workspace --manifest-path "${tauri_path}/Cargo.toml"
 
 cargo_args=(
   build

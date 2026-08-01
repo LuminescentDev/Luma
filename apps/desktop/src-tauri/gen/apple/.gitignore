@@ -1,3 +1,7 @@
 xcuserdata/
 build/
 Externals/
+# Staged from apps/desktop/dist at build time and copied into the bundle as a
+# folder reference; committing anything here ships it inside Luma.app.
+assets/*
+!assets/.gitkeep
