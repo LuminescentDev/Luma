@@ -36,6 +36,12 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
   const restoreSessions = settings?.[SETTING_KEYS.restoreSessions] !== false;
   // Default OFF: enabling it starts recording command history locally.
   const autocomplete = settings?.[SETTING_KEYS.terminalAutocomplete] === true;
+  // Both default ON: they are the primary way to reach arrows and Tab without
+  // opening the key row. Each one takes a gesture away from xterm, which is why
+  // they can be turned off individually.
+  const gestureArrowPad = settings?.[SETTING_KEYS.gestureArrowPad] !== false;
+  const gestureDoubleTapTab =
+    settings?.[SETTING_KEYS.gestureDoubleTapTab] !== false;
   // Both default OFF. Dictation because the only engine a webview can reach may
   // be cloud-backed; auto-send because it skips the review step.
   const voiceDictation = settings?.[SETTING_KEYS.voiceDictation] === true;
@@ -87,6 +93,39 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
               setSetting.mutate({
                 key: SETTING_KEYS.terminalAutocomplete,
                 value: !autocomplete,
+              })
+            }
+          />
+        </Field>
+      </Section>
+
+      <Section title="Touch gestures">
+        <Field
+          label="Long-press and drag for arrow keys"
+          hint="Hold the terminal to open an arrow pad, then drag: up/down for history, left/right along the line."
+        >
+          <Toggle
+            checked={gestureArrowPad}
+            label="Long-press and drag for arrow keys"
+            onClick={() =>
+              setSetting.mutate({
+                key: SETTING_KEYS.gestureArrowPad,
+                value: !gestureArrowPad,
+              })
+            }
+          />
+        </Field>
+        <Field
+          label="Double-tap for Tab"
+          hint="Sends Tab for shell completion. Turning this off restores double-tap to select a word."
+        >
+          <Toggle
+            checked={gestureDoubleTapTab}
+            label="Double-tap for Tab"
+            onClick={() =>
+              setSetting.mutate({
+                key: SETTING_KEYS.gestureDoubleTapTab,
+                value: !gestureDoubleTapTab,
               })
             }
           />

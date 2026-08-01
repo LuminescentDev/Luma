@@ -191,6 +191,14 @@ export const SETTING_KEYS = {
   /** iOS-only toggle: mirror open connections and transfers to a Live Activity on
    * the lock screen and Dynamic Island. Default on; ignored elsewhere. */
   liveActivity: "mobile.liveActivity",
+  /** Mobile-only toggle: long-press the terminal and drag to send arrow keys.
+   * Default ON. While it is on, a long press summons the pad instead of starting
+   * a selection drag. Never synced. */
+  gestureArrowPad: "mobile.gestureArrowPad",
+  /** Mobile-only toggle: double-tap the terminal to send Tab. Default ON. While
+   * it is on, a double-tap no longer selects the word under the finger. Never
+   * synced. */
+  gestureDoubleTapTab: "mobile.gestureDoubleTapTab",
   /** Device-local map of hostId -> { multiplexer, sessionName } to re-attach
    * automatically when connecting to that host. Never synced. */
   multiplexerResume: "multiplexer.resume",

@@ -6,7 +6,10 @@ import { attachFileToSession, canAttachFile } from "./attachFile";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useUiStore } from "../../stores/uiStore";
 import { useSessionLogStore } from "../../stores/sessionLogStore";
-import type { TerminalSession } from "../../types";
+import { useSettings } from "../../hooks/useSettings";
+import { useTerminalGestures } from "../mobile/useTerminalGestures";
+import { TerminalGesturePad } from "../mobile/TerminalGesturePad";
+import { SETTING_KEYS, type TerminalSession } from "../../types";
 import { parseLumaError } from "../../lib/hosts";
 import { withoutMultiplexerTitle } from "../../lib/multiplexer";
 import { cn } from "../../lib/utils";
@@ -83,6 +86,17 @@ export function PaneView({
   const [forwardingBusy, setForwardingBusy] = useState(false);
   const [forwardingError, setForwardingError] = useState<string | null>(null);
   const isMobile = useCapabilityStore((state) => state.capabilities.isMobile);
+  // Touch gestures on the terminal itself, both default ON and mobile-only: a
+  // long press opens the arrow pad, a double-tap sends Tab. They emit through
+  // terminalManager's synthetic-key path, so bytes stay out of React.
+  const { data: settings } = useSettings();
+  const gesturePad = useTerminalGestures({
+    sessionId: session.id,
+    hostRef,
+    arrowPad: isMobile && settings?.[SETTING_KEYS.gestureArrowPad] !== false,
+    doubleTapTab:
+      isMobile && settings?.[SETTING_KEYS.gestureDoubleTapTab] !== false,
+  });
 
   const beginLogging = (mode: "raw" | "asciicast") => {
     setLogError(null);
@@ -477,6 +491,11 @@ export function PaneView({
           never affects the terminal's layout or grid size, and self-hiding when
           the feature is off or the input line is not known. */}
       <AutocompleteOverlay sessionId={session.id} />
+
+      {/* Arrow-key pad, shown only while a long press is driving it. Positioned
+          in viewport coordinates at the press point and pointer-events-none, so
+          it neither affects the grid nor intercepts the drag. */}
+      {gesturePad && <TerminalGesturePad pad={gesturePad} />}
 
       {/* Broadcast indicator: a distinct accent-tinted inset border plus a
           corner badge on every pane currently receiving fanned-out input.
