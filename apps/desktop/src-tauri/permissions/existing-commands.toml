@@ -90,6 +90,7 @@ commands.allow = [
   "local_delete",
   "sftp_upload",
   "sftp_download",
+  "sftp_copy",
   "sftp_cancel",
   "sftp_retry",
   "terminal_attach_upload",

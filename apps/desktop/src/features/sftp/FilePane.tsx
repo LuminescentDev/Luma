@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -39,23 +39,30 @@ import { cn } from "../../lib/utils";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { NameDialog } from "./NameDialog";
-import {
-  beginDrag,
-  endDrag,
-  LUMA_DND_TYPE,
-  peekDrag,
-  type PaneScope,
-} from "./dragState";
+import { beginDrag, endDrag, LUMA_DND_TYPE, peekDrag } from "./dragState";
+import type { PaneEndpoint, PaneSide } from "../../stores/sftpStore";
 
 /** Cap on rendered rows to keep very large directories cheap. */
 const RENDER_CAP = 1000;
 
+/** Where a lasso began, plus the selection it builds on when shift / ctrl was
+ * held. Fixed for the lifetime of one drag. */
+type LassoOrigin = { x: number; y: number; base: Set<string> };
+
+/** The live lasso rectangle, in the list body's scrollable content coordinates. */
+type Marquee = { left: number; top: number; width: number; height: number };
+
 type FilePaneProps = {
-  scope: PaneScope;
-  title: string;
-  subtitle?: string;
-  /** Remote session id; null for the local pane. */
-  sessionId: string | null;
+  /** Which pane this is — the drag/drop identity, since either pane can hold
+   * either kind of endpoint. */
+  side: PaneSide;
+  /** What this pane is pointed at. Never "none": the screen renders a picker
+   * instead of a pane in that case. */
+  endpoint: Exclude<PaneEndpoint, { kind: "none" }>;
+  /** Plain-text endpoint name, for accessible labels. */
+  label: string;
+  /** Endpoint selector rendered at the top of the pane. */
+  header: React.ReactNode;
   path: string;
   separator: "/" | "\\";
   listing: UseQueryResult<DirectoryListing>;
@@ -63,8 +70,10 @@ type FilePaneProps = {
   transferLabel: string;
   transferIcon: React.ReactNode;
   canTransfer: boolean;
+  /** Why the transfer button is disabled, shown as its tooltip. */
+  transferDisabledReason?: string;
   onRequestTransfer: (
-    sourceScope: PaneScope,
+    sourceSide: PaneSide,
     entries: SftpEntry[],
     targetDir: string,
   ) => void;
@@ -79,10 +88,10 @@ function KindIcon({ kind }: { kind: SftpEntry["kind"] }) {
 }
 
 export function FilePane({
-  scope,
-  title,
-  subtitle,
-  sessionId,
+  side,
+  endpoint,
+  label,
+  header,
   path,
   separator,
   listing,
@@ -90,6 +99,7 @@ export function FilePane({
   transferLabel,
   transferIcon,
   canTransfer,
+  transferDisabledReason,
   onRequestTransfer,
   headerExtra,
 }: FilePaneProps) {
@@ -100,6 +110,15 @@ export function FilePane({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const anchorIndex = useRef<number | null>(null);
   const [dropActive, setDropActive] = useState(false);
+
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef(new Map<number, HTMLLIElement>());
+  /** Where the lasso began and what it started from; stable for its lifetime. */
+  const lasso = useRef<LassoOrigin | null>(null);
+  const pointerY = useRef(0);
+  const [lassoing, setLassoing] = useState(false);
+  /** Live lasso rectangle, in the body's scrollable content coordinates. */
+  const [marquee, setMarquee] = useState<Marquee | null>(null);
 
   const [mkdirOpen, setMkdirOpen] = useState(false);
   const [mkdirBusy, setMkdirBusy] = useState(false);
@@ -112,21 +131,20 @@ export function FilePane({
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const isRemote = endpoint.kind === "remote";
+  const sessionId = endpoint.kind === "remote" ? endpoint.sessionId : null;
+
   const invalidate = () =>
     queryClient.invalidateQueries({
-      queryKey:
-        scope === "remote"
-          ? sftpListKey(sessionId ?? "", path)
-          : localListKey(path),
+      queryKey: sessionId ? sftpListKey(sessionId, path) : localListKey(path),
     });
 
   const ops = useMemo(() => {
-    if (scope === "remote") {
-      const id = sessionId ?? "";
+    if (sessionId) {
       return {
-        mkdir: (p: string) => sftpMkdir(id, p),
-        rename: (from: string, to: string) => sftpRename(id, from, to),
-        del: (p: string, r: boolean) => sftpDelete(id, p, r),
+        mkdir: (p: string) => sftpMkdir(sessionId, p),
+        rename: (from: string, to: string) => sftpRename(sessionId, from, to),
+        del: (p: string, r: boolean) => sftpDelete(sessionId, p, r),
       };
     }
     return {
@@ -134,7 +152,7 @@ export function FilePane({
       rename: (from: string, to: string) => localRename(from, to),
       del: (p: string, r: boolean) => localDelete(p, r),
     };
-  }, [scope, sessionId]);
+  }, [sessionId]);
 
   const childPath = (name: string) => joinPath(path, name, separator);
   const parent = parentPath(path, separator);
@@ -147,7 +165,7 @@ export function FilePane({
       : entries;
     return filtered;
   }, [entries, filter]);
-  const capped = visible.slice(0, RENDER_CAP);
+  const capped = useMemo(() => visible.slice(0, RENDER_CAP), [visible]);
   const overflow = visible.length - capped.length;
 
   const selectedEntries = useMemo(
@@ -162,7 +180,60 @@ export function FilePane({
     anchorIndex.current = null;
   };
 
+  /** Select rows `from`..`to` inclusive, optionally on top of `base`. */
+  const selectRange = (from: number, to: number, base?: Set<string>) => {
+    const [a, b] = from <= to ? [from, to] : [to, from];
+    const next = new Set(base ?? []);
+    for (const entry of capped.slice(a, b + 1)) next.add(entry.path);
+    setSelected(next);
+  };
+
+  const focusRow = (index: number) => {
+    rowRefs.current.get(index)?.focus();
+    rowRefs.current.get(index)?.scrollIntoView({ block: "nearest" });
+  };
+
+  /** Arrow-key navigation; shift extends the selection from the anchor. */
+  const moveFocus = (delta: number, extend: boolean) => {
+    if (capped.length === 0) return;
+    const current = anchorIndex.current ?? (delta > 0 ? -1 : capped.length);
+    const next = Math.min(capped.length - 1, Math.max(0, current + delta));
+    if (extend && anchorIndex.current !== null) {
+      // The anchor stays put so the range grows and shrinks around it.
+      selectRange(anchorIndex.current, next);
+    } else {
+      setSelected(new Set([capped[next].path]));
+      anchorIndex.current = next;
+    }
+    focusRow(next);
+  };
+
+  const onPaneKeyDown = (event: React.KeyboardEvent) => {
+    // Never hijack typing in the filter or path inputs.
+    if (event.target instanceof HTMLInputElement) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      setSelected(new Set(capped.map((entry) => entry.path)));
+      if (anchorIndex.current === null && capped.length > 0) {
+        anchorIndex.current = 0;
+      }
+      return;
+    }
+    if (event.key === "Escape" && selected.size > 0) {
+      event.preventDefault();
+      clearSelection();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      moveFocus(event.key === "ArrowDown" ? 1 : -1, event.shiftKey);
+    }
+  };
+
   const onRowClick = (event: React.MouseEvent, index: number, entry: SftpEntry) => {
+    // The lasso's mousedown suppresses native focus, so take it back here —
+    // the pane's keyboard shortcuts depend on focus living inside it.
+    rowRefs.current.get(index)?.focus();
     const paths = capped.map((e) => e.path);
     if (event.shiftKey && anchorIndex.current !== null) {
       const [a, b] = [anchorIndex.current, index].sort((x, y) => x - y);
@@ -236,6 +307,113 @@ export function FilePane({
     }
   };
 
+  // Lasso selection -----------------------------------------------------------
+  /**
+   * Rows carry `draggable` only while selected, which is what lets both
+   * gestures live on the same pixels: dragging a selected row moves the whole
+   * selection to the other pane, and dragging anywhere else lassos. Shift or
+   * ctrl keeps whatever was already selected.
+   */
+  const onBodyMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    const body = bodyRef.current;
+    if (event.button !== 0 || !body) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('[data-selected="true"]') || target.closest("button")) {
+      return;
+    }
+    // Ignore presses on the scrollbar gutter.
+    if (event.nativeEvent.offsetX > body.clientWidth) return;
+
+    const rect = body.getBoundingClientRect();
+    const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+    const base = additive ? new Set(selected) : new Set<string>();
+    lasso.current = {
+      x: event.clientX - rect.left + body.scrollLeft,
+      y: event.clientY - rect.top + body.scrollTop,
+      base,
+    };
+    pointerY.current = event.clientY;
+    // Anchor shift+arrow at the row the lasso started on.
+    const startRow = target.closest<HTMLElement>("[data-row-index]");
+    if (startRow) anchorIndex.current = Number(startRow.dataset.rowIndex);
+    // preventDefault below suppresses native focus; keep it in the pane so the
+    // keyboard shortcuts still reach onPaneKeyDown.
+    body.focus({ preventScroll: true });
+    // A plain press replaces the selection, so empty space clears it even when
+    // the pointer never moves.
+    setSelected(base);
+    event.preventDefault();
+    setLassoing(true);
+  };
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    if (!lassoing || !body) return;
+    let frame = 0;
+
+    const paint = () => {
+      const origin = lasso.current;
+      if (!origin) return;
+      const rect = body.getBoundingClientRect();
+      const y = pointerY.current - rect.top + body.scrollTop;
+      const top = Math.min(origin.y, y);
+      const bottom = Math.max(origin.y, y);
+      setMarquee({
+        left: 0,
+        top,
+        width: body.clientWidth,
+        height: bottom - top,
+      });
+      const next = new Set(origin.base);
+      for (const [index, row] of rowRefs.current) {
+        const entry = capped[index];
+        if (!entry) continue;
+        const rowTop = row.offsetTop;
+        // Rows span the pane, so vertical overlap is the whole test.
+        if (rowTop + row.offsetHeight > top && rowTop < bottom) {
+          next.add(entry.path);
+        }
+      }
+      setSelected(next);
+    };
+
+    const onMove = (event: MouseEvent) => {
+      pointerY.current = event.clientY;
+      paint();
+    };
+
+    // Keep extending the lasso past the rows currently in view.
+    const EDGE = 24;
+    const STEP = 12;
+    const autoScroll = () => {
+      const rect = body.getBoundingClientRect();
+      let delta = 0;
+      if (pointerY.current < rect.top + EDGE) delta = -STEP;
+      else if (pointerY.current > rect.bottom - EDGE) delta = STEP;
+      if (delta !== 0) {
+        const before = body.scrollTop;
+        body.scrollTop += delta;
+        if (body.scrollTop !== before) paint();
+      }
+      frame = requestAnimationFrame(autoScroll);
+    };
+
+    const onUp = () => {
+      lasso.current = null;
+      setLassoing(false);
+      setMarquee(null);
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    frame = requestAnimationFrame(autoScroll);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      cancelAnimationFrame(frame);
+    };
+  }, [lassoing, capped]);
+
   // Drag & drop between panes -------------------------------------------------
   const onRowDragStart = (event: React.DragEvent, entry: SftpEntry) => {
     let dragged = selectedEntries;
@@ -243,7 +421,7 @@ export function FilePane({
       setSelected(new Set([entry.path]));
       dragged = [entry];
     }
-    const payload = { scope, entries: dragged };
+    const payload = { side, entries: dragged };
     beginDrag(payload);
     event.dataTransfer.effectAllowed = "copy";
     try {
@@ -255,7 +433,7 @@ export function FilePane({
 
   const acceptsDrop = () => {
     const drag = peekDrag();
-    return drag !== null && drag.scope !== scope;
+    return drag !== null && drag.side !== side && canTransfer;
   };
 
   const onPaneDrop = (event: React.DragEvent, targetDir: string) => {
@@ -264,8 +442,8 @@ export function FilePane({
     setDropActive(false);
     const drag = peekDrag();
     endDrag();
-    if (!drag || drag.scope === scope) return;
-    onRequestTransfer(drag.scope, drag.entries, targetDir);
+    if (!drag || drag.side === side) return;
+    onRequestTransfer(drag.side, drag.entries, targetDir);
   };
 
   const startEditingPath = () => {
@@ -295,9 +473,10 @@ export function FilePane({
   return (
     <div
       className={cn(
-        "flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border bg-surface",
-        dropActive ? "border-accent ring-1 ring-accent" : "border-border",
+        "flex min-h-0 min-w-0 flex-1 flex-col",
+        dropActive && "bg-accent/5 ring-1 ring-inset ring-accent",
       )}
+      onKeyDown={onPaneKeyDown}
       onDragOver={(event) => {
         if (acceptsDrop()) {
           event.preventDefault();
@@ -312,12 +491,7 @@ export function FilePane({
       {/* Header ------------------------------------------------------------ */}
       <div className="flex flex-col gap-2 border-b border-border p-2.5">
         <div className="flex items-center gap-2">
-          <span className="truncate text-xs font-semibold uppercase tracking-wider text-muted">
-            {title}
-          </span>
-          {subtitle && (
-            <span className="truncate text-[11px] text-muted/70">{subtitle}</span>
-          )}
+          {header}
           <div className="flex-1" />
           {headerExtra}
         </div>
@@ -397,7 +571,7 @@ export function FilePane({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter…"
-            aria-label={`Filter ${title} files`}
+            aria-label={`Filter ${label} files`}
             className="h-7 min-w-0 flex-1 rounded-md border border-border bg-raised px-2 text-xs outline-none placeholder:text-muted focus:border-accent"
           />
           <button
@@ -405,11 +579,11 @@ export function FilePane({
             disabled={!canTransfer || transferableSelected.length === 0}
             title={
               !canTransfer
-                ? "Connect to a host first"
+                ? (transferDisabledReason ?? "Connect the other pane first")
                 : `${transferLabel} ${transferableSelected.length} item${transferableSelected.length === 1 ? "" : "s"}`
             }
             onClick={() =>
-              onRequestTransfer(scope, transferableSelected, "__counterpart__")
+              onRequestTransfer(side, transferableSelected, "__counterpart__")
             }
             className="flex shrink-0 items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-foreground hover:brightness-110 disabled:opacity-40"
           >
@@ -425,7 +599,7 @@ export function FilePane({
         <span className="min-w-0 flex-1">Name</span>
         <span className="w-20 text-right">Size</span>
         <span className="hidden w-32 text-right sm:block">Modified</span>
-        {scope === "remote" && (
+        {isRemote && (
           <span className="hidden w-24 text-right md:block">Perms</span>
         )}
         <span className="w-6" />
@@ -433,7 +607,22 @@ export function FilePane({
 
       {/* Body -------------------------------------------------------------- */}
       <ContextMenu actions={backgroundActions} minWidth="min-w-36">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        ref={bodyRef}
+        tabIndex={-1}
+        onMouseDown={onBodyMouseDown}
+        className={cn(
+          "relative min-h-0 flex-1 overflow-y-auto outline-none",
+          lassoing && "select-none",
+        )}
+      >
+        {marquee && marquee.height > 0 && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute z-10 border border-accent bg-accent/10"
+            style={marquee}
+          />
+        )}
         {listing.isLoading ? (
           <PaneMessage>Loading…</PaneMessage>
         ) : listing.isError ? (
@@ -460,7 +649,7 @@ export function FilePane({
               if (canRowTransfer) {
                 rowActions.push({
                   label: transferLabel,
-                  onSelect: () => onRequestTransfer(scope, [entry], "__counterpart__"),
+                  onSelect: () => onRequestTransfer(side, [entry], "__counterpart__"),
                 });
               }
               if (entry.kind === "dir" || entry.kind === "symlink") {
@@ -507,7 +696,15 @@ export function FilePane({
                   role="row"
                   aria-selected={isSelected}
                   tabIndex={0}
-                  draggable
+                  data-selected={isSelected}
+                  data-row-index={index}
+                  ref={(node) => {
+                    if (node) rowRefs.current.set(index, node);
+                    else rowRefs.current.delete(index);
+                  }}
+                  // Only selected rows drag, so a press on any other row starts
+                  // a lasso instead of an HTML5 drag.
+                  draggable={isSelected}
                   // Stop the native contextmenu from also reaching the pane
                   // background menu wrapping the body.
                   onContextMenu={(e) => e.stopPropagation()}
@@ -553,7 +750,7 @@ export function FilePane({
                   <span className="hidden w-32 shrink-0 text-right text-muted sm:block">
                     {formatModified(entry.modifiedAt)}
                   </span>
-                  {scope === "remote" && (
+                  {isRemote && (
                     <span className="hidden w-24 shrink-0 text-right font-mono text-[10px] text-muted md:block">
                       {formatPermissions(entry.permissions)}
                     </span>

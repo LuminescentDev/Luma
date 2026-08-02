@@ -89,7 +89,8 @@ function buildTransfer(
   if (rate) parts.push(rate);
 
   return {
-    uploading: record.kind === "up",
+    // Host-to-host copies read as outbound: the bytes end up on a remote host.
+    uploading: record.kind !== "down",
     fraction:
       total != null && total > 0 ? Math.min(1, Math.max(0, done / total)) : undefined,
     detail: parts.join(" · "),

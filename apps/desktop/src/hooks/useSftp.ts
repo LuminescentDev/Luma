@@ -24,11 +24,13 @@ export function useSftpList(sessionId: string | null, path: string | null) {
   });
 }
 
-/** Local directory listing (path null resolves to the home directory). */
-export function useLocalList(path: string | null) {
+/** Local directory listing (path null resolves to the home directory).
+ * `enabled` is false when no pane is showing this computer. */
+export function useLocalList(path: string | null, enabled = true) {
   return useQuery<DirectoryListing>({
     queryKey: localListKey(path),
     queryFn: () => localList(path),
+    enabled,
     staleTime: 5_000,
     retry: false,
   });

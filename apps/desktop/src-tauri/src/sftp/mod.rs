@@ -21,7 +21,7 @@ pub use attach::upload_attachment;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use local::{local_delete, local_list, local_mkdir, local_rename};
 pub use transfer::{
-    sftp_download, sftp_retry, sftp_upload, TransferProgress, TransferStartResponse,
+    sftp_copy, sftp_download, sftp_retry, sftp_upload, TransferProgress, TransferStartResponse,
 };
 
 const MAX_PATH_BYTES: usize = 32_768;
@@ -131,7 +131,9 @@ struct ActiveSession {
 }
 
 pub(super) struct ActiveTransfer {
-    pub session_id: String,
+    /// Every session the transfer reads from or writes to. A remote-to-remote
+    /// copy lists both ends so disconnecting either one cancels it.
+    pub session_ids: Vec<String>,
     pub cancel: watch::Sender<bool>,
 }
 
@@ -233,7 +235,11 @@ impl SftpManager {
     fn cancel_session_transfers(&self, session_id: &str) {
         let transfers = self.transfers.lock().unwrap();
         for transfer in transfers.values() {
-            if transfer.session_id == session_id {
+            if transfer
+                .session_ids
+                .iter()
+                .any(|candidate| candidate == session_id)
+            {
                 let _ = transfer.cancel.send(true);
             }
         }

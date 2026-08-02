@@ -448,7 +448,8 @@ function useCommands(
         icon: <FolderOpen size={15} />,
         run: wrap(() => {
           openSection("sftp");
-          void sftpConnect(host.id);
+          // The right pane is the remote side; the left defaults to local.
+          void sftpConnect(host.id, "right");
         }),
       });
     }

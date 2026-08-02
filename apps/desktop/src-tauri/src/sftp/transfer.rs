@@ -72,6 +72,13 @@ pub(super) enum TransferDescriptor {
         app_data_dir: PathBuf,
         is_directory: bool,
     },
+    /// Remote to remote: bytes stream through the app from the source session
+    /// to the destination session; nothing touches the local filesystem.
+    Copy {
+        source_path: String,
+        dest_path: String,
+        is_directory: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +148,10 @@ struct RetryState {
 }
 
 pub(crate) struct TransferRecord {
+    /// The session the transfer reads from (upload: the destination host).
     pub session_id: String,
+    /// The receiving session of a remote-to-remote copy; `None` otherwise.
+    pub dest_session_id: Option<String>,
     descriptor: TransferDescriptor,
     retry: Arc<Mutex<RetryState>>,
     is_retry: bool,
@@ -149,8 +159,17 @@ pub(crate) struct TransferRecord {
 
 impl TransferRecord {
     fn new(session_id: String, descriptor: TransferDescriptor) -> Self {
+        Self::with_destination(session_id, None, descriptor)
+    }
+
+    fn with_destination(
+        session_id: String,
+        dest_session_id: Option<String>,
+        descriptor: TransferDescriptor,
+    ) -> Self {
         Self {
             session_id,
+            dest_session_id,
             descriptor,
             retry: Arc::new(Mutex::new(RetryState {
                 phase: TransferPhase::Running,
@@ -179,6 +198,7 @@ impl TransferRecord {
         drop(state);
         Ok(Self {
             session_id: self.session_id.clone(),
+            dest_session_id: self.dest_session_id.clone(),
             descriptor: self.descriptor.clone(),
             retry: Arc::clone(&self.retry),
             is_retry: true,
@@ -289,7 +309,74 @@ pub async fn sftp_upload(
             is_directory: metadata.is_dir(),
         },
     ));
-    launch_transfer(manager, client, record, on_progress)
+    launch_transfer(manager, client, None, record, on_progress)
+}
+
+/// Copy a file or directory from one connected host to another, streaming the
+/// bytes through the app. The two sessions may point at the same host.
+pub async fn sftp_copy(
+    manager: &SftpManager,
+    source_session_id: &str,
+    source_path: &str,
+    dest_session_id: &str,
+    dest_path: &str,
+    on_progress: Channel<TransferProgress>,
+) -> Result<TransferStartResponse> {
+    let source_client = manager.client(source_session_id)?;
+    let dest_client = manager.client(dest_session_id)?;
+    let source_path = validate_remote_path(source_path)?;
+    let dest_path = validate_remote_path(dest_path)?;
+    if source_session_id == dest_session_id && source_path == dest_path {
+        return Err(LumaError::InvalidInput(
+            "copy source and destination are the same path".into(),
+        ));
+    }
+    let source_metadata = source_client
+        .symlink_metadata(source_path.clone())
+        .await
+        .map_err(remote_error)?;
+    if !source_metadata.is_dir() && !source_metadata.file_type().is_file() {
+        return Err(LumaError::InvalidInput(
+            "copy source must be a remote file or directory".into(),
+        ));
+    }
+    let is_directory = source_metadata.is_dir();
+    if dest_client
+        .try_exists(dest_path.clone())
+        .await
+        .map_err(remote_error)?
+    {
+        let existing = dest_client
+            .symlink_metadata(dest_path.clone())
+            .await
+            .map_err(remote_error)?;
+        if is_directory && !existing.is_dir() {
+            return Err(LumaError::InvalidInput(
+                "directory copy destination must be a remote directory path".into(),
+            ));
+        }
+        if !is_directory && existing.is_dir() {
+            return Err(LumaError::InvalidInput(
+                "copy destination must be a remote file path".into(),
+            ));
+        }
+    }
+    let record = Arc::new(TransferRecord::with_destination(
+        source_session_id.to_string(),
+        Some(dest_session_id.to_string()),
+        TransferDescriptor::Copy {
+            source_path,
+            dest_path,
+            is_directory,
+        },
+    ));
+    launch_transfer(
+        manager,
+        source_client,
+        Some(dest_client),
+        record,
+        on_progress,
+    )
 }
 
 pub async fn sftp_download(
@@ -332,7 +419,7 @@ pub async fn sftp_download(
             is_directory,
         },
     ));
-    launch_transfer(manager, client, record, on_progress)
+    launch_transfer(manager, client, None, record, on_progress)
 }
 
 pub async fn sftp_retry(
@@ -349,22 +436,33 @@ pub async fn sftp_retry(
         .cloned()
         .ok_or_else(|| LumaError::InvalidInput("unknown transfer".into()))?;
     let client = manager.client(&previous.session_id)?;
+    let dest_client = match previous.dest_session_id.as_deref() {
+        Some(session_id) => Some(manager.client(session_id)?),
+        None => None,
+    };
     let record = Arc::new(previous.for_retry()?);
-    launch_transfer(manager, client, record, on_progress)
+    launch_transfer(manager, client, dest_client, record, on_progress)
 }
 
 fn launch_transfer(
     manager: &SftpManager,
     client: Arc<SftpSession>,
+    dest_client: Option<Arc<SftpSession>>,
     record: Arc<TransferRecord>,
     on_progress: Channel<TransferProgress>,
 ) -> Result<TransferStartResponse> {
     let transfer_id = uuid::Uuid::new_v4().to_string();
     let (cancel, cancel_rx) = watch::channel(false);
+    let mut session_ids = vec![record.session_id.clone()];
+    if let Some(dest_session_id) = record.dest_session_id.clone() {
+        if dest_session_id != record.session_id {
+            session_ids.push(dest_session_id);
+        }
+    }
     manager.transfers.lock().unwrap().insert(
         transfer_id.clone(),
         ActiveTransfer {
-            session_id: record.session_id.clone(),
+            session_ids,
             cancel,
         },
     );
@@ -379,6 +477,7 @@ fn launch_transfer(
     tokio::spawn(async move {
         run_transfer_attempt(
             client,
+            dest_client,
             Arc::clone(&record),
             cancel_rx,
             &on_progress,
@@ -392,6 +491,7 @@ fn launch_transfer(
 
 async fn run_transfer_attempt(
     client: Arc<SftpSession>,
+    dest_client: Option<Arc<SftpSession>>,
     record: Arc<TransferRecord>,
     cancel: watch::Receiver<bool>,
     channel: &Channel<TransferProgress>,
@@ -451,6 +551,52 @@ async fn run_transfer_attempt(
                     record,
                     remote_path,
                     local_path,
+                    cancel,
+                    channel,
+                    transfer_id,
+                )
+                .await;
+            }
+        }
+        TransferDescriptor::Copy {
+            source_path,
+            dest_path,
+            is_directory,
+        } => {
+            // A copy always launches with both clients resolved; a missing one
+            // means the record was built wrong rather than a runtime failure.
+            let Some(dest_client) = dest_client else {
+                emit_progress(
+                    channel,
+                    transfer_id,
+                    0,
+                    None,
+                    "failed",
+                    Some("copy destination session is unavailable".into()),
+                    None,
+                );
+                record.finish(TransferPhase::Failed, false);
+                return;
+            };
+            if is_directory {
+                run_directory_copy(
+                    client,
+                    dest_client,
+                    record,
+                    source_path,
+                    dest_path,
+                    cancel,
+                    channel,
+                    transfer_id,
+                )
+                .await;
+            } else {
+                run_single_copy(
+                    client,
+                    dest_client,
+                    record,
+                    source_path,
+                    dest_path,
                     cancel,
                     channel,
                     transfer_id,
@@ -600,6 +746,100 @@ async fn run_single_download(
         remote_path,
         local_path,
         temp_path,
+        total,
+        prepared.resume_from,
+        cancel,
+        |transferred| {
+            emit_progress(
+                channel,
+                transfer_id,
+                transferred,
+                total,
+                "running",
+                None,
+                None,
+            );
+        },
+    )
+    .await;
+    let (phase, retryable) = outcome_phase(&outcome);
+    if matches!(outcome, TransferOutcome::Completed { .. }) {
+        record.mark_file_completed(String::new());
+        record.clear_checkpoint("");
+    }
+    emit_terminal(channel, transfer_id, total, outcome);
+    record.finish(phase, retryable);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_single_copy(
+    source_client: Arc<SftpSession>,
+    dest_client: Arc<SftpSession>,
+    record: Arc<TransferRecord>,
+    source_path: String,
+    dest_path: String,
+    cancel: watch::Receiver<bool>,
+    channel: &Channel<TransferProgress>,
+    transfer_id: &str,
+) {
+    let dest_temp = match remote_partial_path(&dest_path) {
+        Ok(path) => path,
+        Err(error) => {
+            emit_progress(
+                channel,
+                transfer_id,
+                0,
+                None,
+                "failed",
+                Some(error.to_string()),
+                None,
+            );
+            record.finish(TransferPhase::Failed, true);
+            return;
+        }
+    };
+    let prepared = match prepare_copy(
+        &source_client,
+        &dest_client,
+        &record,
+        "",
+        &source_path,
+        &dest_temp,
+    )
+    .await
+    {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            emit_progress(
+                channel,
+                transfer_id,
+                0,
+                None,
+                "failed",
+                Some(error.to_string()),
+                None,
+            );
+            record.finish(TransferPhase::Failed, true);
+            return;
+        }
+    };
+    let total = Some(prepared.source.size);
+    let resumed_from = (prepared.resume_from > 0).then_some(prepared.resume_from);
+    emit_progress(
+        channel,
+        transfer_id,
+        prepared.resume_from,
+        total,
+        "running",
+        None,
+        resumed_from,
+    );
+    let outcome = copy_task(
+        source_client,
+        dest_client,
+        source_path,
+        dest_path,
+        dest_temp,
         total,
         prepared.resume_from,
         cancel,
@@ -1140,6 +1380,245 @@ async fn run_directory_download(
     finish_directory(record, channel, transfer_id, aggregate, failures);
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_directory_copy(
+    source_client: Arc<SftpSession>,
+    dest_client: Arc<SftpSession>,
+    record: Arc<TransferRecord>,
+    source_root: String,
+    dest_root: String,
+    cancel: watch::Receiver<bool>,
+    channel: &Channel<TransferProgress>,
+    transfer_id: &str,
+) {
+    let plan = match build_remote_transfer_plan(&source_client, &source_root).await {
+        Ok(plan) => plan,
+        Err(error) => {
+            emit_directory_terminal(
+                channel,
+                transfer_id,
+                AggregateTracker::default(),
+                TransferPhase::Failed,
+                Some(error.to_string()),
+            );
+            record.finish(TransferPhase::Failed, true);
+            return;
+        }
+    };
+    let mut failures = report_walk_issues(&record, channel, transfer_id, &plan.issues);
+    for relative in plan.directories {
+        if record.completed_directory(&relative) {
+            continue;
+        }
+        if *cancel.borrow() {
+            emit_directory_terminal(
+                channel,
+                transfer_id,
+                AggregateTracker::default(),
+                TransferPhase::Cancelled,
+                None,
+            );
+            record.finish(TransferPhase::Cancelled, true);
+            return;
+        }
+        let destination = remote_destination(&dest_root, &relative);
+        match ensure_remote_directory(&dest_client, &destination).await {
+            Ok(()) => record.mark_directory_completed(relative),
+            Err(error) => {
+                failures += 1;
+                emit_entry(
+                    channel,
+                    transfer_id,
+                    &display_relative(&relative),
+                    "failed",
+                    Some(error.to_string()),
+                );
+            }
+        }
+    }
+
+    let files = plan
+        .files
+        .into_iter()
+        .filter(|file| {
+            !record.completed_file(&file.relative_path) && !record.skipped(&file.relative_path)
+        })
+        .collect::<Vec<_>>();
+    let mut aggregate = AggregateTracker::new(files.iter().map(|file| file.size.unwrap_or(0)));
+    for file in files {
+        if *cancel.borrow() {
+            emit_directory_terminal(
+                channel,
+                transfer_id,
+                aggregate,
+                TransferPhase::Cancelled,
+                None,
+            );
+            record.finish(TransferPhase::Cancelled, true);
+            return;
+        }
+        let relative = file.relative_path;
+        let display = display_relative(&relative);
+        let destination = remote_destination(&dest_root, &relative);
+        let dest_temp = match remote_partial_path(&destination) {
+            Ok(path) => path,
+            Err(error) => {
+                failures += 1;
+                aggregate.begin_file(display.clone());
+                aggregate.finish_file(0);
+                emit_file(
+                    channel,
+                    transfer_id,
+                    &display,
+                    0,
+                    file.size,
+                    "failed",
+                    Some(error.to_string()),
+                    &aggregate,
+                    None,
+                );
+                continue;
+            }
+        };
+        let prepared = match prepare_copy(
+            &source_client,
+            &dest_client,
+            &record,
+            &relative,
+            &file.source,
+            &dest_temp,
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                failures += 1;
+                aggregate.begin_file(display.clone());
+                aggregate.finish_file(0);
+                emit_file(
+                    channel,
+                    transfer_id,
+                    &display,
+                    0,
+                    file.size,
+                    "failed",
+                    Some(error.to_string()),
+                    &aggregate,
+                    None,
+                );
+                continue;
+            }
+        };
+        let total = Some(prepared.source.size);
+        let resumed_from = (prepared.resume_from > 0).then_some(prepared.resume_from);
+        aggregate.begin_file(display.clone());
+        let resumed_aggregate = aggregate.current(prepared.resume_from);
+        emit_file(
+            channel,
+            transfer_id,
+            &display,
+            prepared.resume_from,
+            total,
+            "running",
+            None,
+            &resumed_aggregate,
+            resumed_from,
+        );
+        emit_aggregate(channel, transfer_id, &resumed_aggregate, "running", None);
+        let outcome = copy_task(
+            Arc::clone(&source_client),
+            Arc::clone(&dest_client),
+            file.source,
+            destination,
+            dest_temp,
+            total,
+            prepared.resume_from,
+            cancel.clone(),
+            |transferred| {
+                let current = aggregate.current(transferred);
+                emit_file(
+                    channel,
+                    transfer_id,
+                    &display,
+                    transferred,
+                    total,
+                    "running",
+                    None,
+                    &current,
+                    None,
+                );
+                emit_aggregate(channel, transfer_id, &current, "running", None);
+            },
+        )
+        .await;
+        let transferred = outcome.transferred();
+        match outcome {
+            TransferOutcome::Completed { .. } => {
+                aggregate.finish_file(transferred);
+                record.mark_file_completed(relative.clone());
+                record.clear_checkpoint(&relative);
+                emit_file(
+                    channel,
+                    transfer_id,
+                    &display,
+                    transferred,
+                    total,
+                    "completed",
+                    None,
+                    &aggregate,
+                    None,
+                );
+            }
+            TransferOutcome::Failed { message, .. } => {
+                failures += 1;
+                aggregate.finish_file(transferred);
+                emit_file(
+                    channel,
+                    transfer_id,
+                    &display,
+                    transferred,
+                    total,
+                    "failed",
+                    Some(message),
+                    &aggregate,
+                    None,
+                );
+            }
+            TransferOutcome::Cancelled { .. } => {
+                aggregate.finish_file(transferred);
+                emit_file(
+                    channel,
+                    transfer_id,
+                    &display,
+                    transferred,
+                    total,
+                    "cancelled",
+                    None,
+                    &aggregate,
+                    None,
+                );
+                emit_directory_terminal(
+                    channel,
+                    transfer_id,
+                    aggregate,
+                    TransferPhase::Cancelled,
+                    None,
+                );
+                record.finish(TransferPhase::Cancelled, true);
+                return;
+            }
+        }
+        emit_aggregate(channel, transfer_id, &aggregate, "running", None);
+    }
+    if failures == 0 {
+        if let Err(error) = cleanup_remote_checkpoints(&dest_client, &record).await {
+            failures += 1;
+            emit_entry(channel, transfer_id, ".", "failed", Some(error.to_string()));
+        }
+    }
+    finish_directory(record, channel, transfer_id, aggregate, failures);
+}
+
 async fn cleanup_remote_checkpoints(client: &SftpSession, record: &TransferRecord) -> Result<()> {
     for (key, path) in record.checkpoints() {
         if client
@@ -1257,7 +1736,7 @@ async fn build_remote_transfer_plan(
         .map_err(remote_error)?;
     if !metadata.is_dir() {
         return Err(LumaError::InvalidInput(
-            "download source must be a remote file or directory".into(),
+            "remote transfer source is no longer a directory".into(),
         ));
     }
     let mut plan = RemoteTransferPlan::default();
@@ -1585,6 +2064,42 @@ async fn prepare_download(
     })
 }
 
+/// Checkpoint bookkeeping for one file of a remote-to-remote copy: the
+/// fingerprint comes from the source host, the partial file lives on the
+/// destination host.
+async fn prepare_copy(
+    source_client: &SftpSession,
+    dest_client: &SftpSession,
+    record: &TransferRecord,
+    key: &str,
+    source_path: &str,
+    dest_temp: &str,
+) -> Result<PreparedFile> {
+    let metadata = source_client
+        .symlink_metadata(source_path.to_string())
+        .await
+        .map_err(remote_error)?;
+    if !metadata.file_type().is_file() {
+        return Err(LumaError::SftpFailed(
+            "copy source is no longer a regular file".into(),
+        ));
+    }
+    let source = remote_source_fingerprint(&metadata)?;
+    let partial = remote_partial_inspection(dest_client, dest_temp).await?;
+    let decision =
+        record.prepare_checkpoint(key, source.clone(), dest_temp.to_string(), partial.len);
+    if partial.must_cleanup || decision.cleanup_partial {
+        dest_client
+            .remove_file(dest_temp.to_string())
+            .await
+            .map_err(remote_error)?;
+    }
+    Ok(PreparedFile {
+        source,
+        resume_from: decision.resume_from,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn upload_task(
     client: Arc<SftpSession>,
@@ -1731,6 +2246,82 @@ async fn download_task(
         Err(CopyFailure::Io { transferred, error }) => TransferOutcome::Failed {
             transferred,
             message: format!("download failed: {error}"),
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn copy_task(
+    source_client: Arc<SftpSession>,
+    dest_client: Arc<SftpSession>,
+    source_path: String,
+    dest_path: String,
+    dest_temp: String,
+    total: Option<u64>,
+    resume_from: u64,
+    cancel: watch::Receiver<bool>,
+    on_progress: impl FnMut(u64),
+) -> TransferOutcome {
+    let mut source = match source_client.open(source_path).await {
+        Ok(file) => file,
+        Err(error) => {
+            return TransferOutcome::Failed {
+                transferred: resume_from,
+                message: remote_error(error).to_string(),
+            }
+        }
+    };
+    if let Err(error) = source.seek(io::SeekFrom::Start(resume_from)).await {
+        return TransferOutcome::Failed {
+            transferred: resume_from,
+            message: format!("could not seek copy source: {error}"),
+        };
+    }
+    let flags = if resume_from == 0 {
+        OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE
+    } else {
+        OpenFlags::WRITE
+    };
+    let mut destination = match dest_client.open_with_flags(dest_temp.clone(), flags).await {
+        Ok(file) => file,
+        Err(error) => {
+            return TransferOutcome::Failed {
+                transferred: resume_from,
+                message: remote_error(error).to_string(),
+            }
+        }
+    };
+    if let Err(error) = destination.seek(io::SeekFrom::Start(resume_from)).await {
+        return TransferOutcome::Failed {
+            transferred: resume_from,
+            message: format!("could not seek remote partial copy: {error}"),
+        };
+    }
+
+    match copy_stream(
+        &mut source,
+        &mut destination,
+        total,
+        resume_from,
+        cancel.clone(),
+        on_progress,
+    )
+    .await
+    {
+        Ok(transferred) if *cancel.borrow() => TransferOutcome::Cancelled { transferred },
+        Ok(transferred) => {
+            match replace_remote_destination(&dest_client, &dest_temp, &dest_path).await {
+                Ok(()) => TransferOutcome::Completed { transferred },
+                Err(error) => TransferOutcome::Failed {
+                    transferred,
+                    message: format!("could not finish copy: {error}"),
+                },
+            }
+        }
+        Err(CopyFailure::Cancelled { transferred }) => TransferOutcome::Cancelled { transferred },
+        Err(CopyFailure::Io { transferred, error }) => TransferOutcome::Failed {
+            transferred,
+            message: format!("copy failed: {error}"),
         },
     }
 }
@@ -2235,6 +2826,68 @@ mod tests {
         retry.finish(TransferPhase::Completed, false);
         assert!(original.completed_file("retried.txt"));
         assert!(original.for_retry().is_err());
+    }
+
+    #[test]
+    fn copy_records_carry_both_sessions_into_a_retry() {
+        let original = TransferRecord::with_destination(
+            "source-session".into(),
+            Some("dest-session".into()),
+            TransferDescriptor::Copy {
+                source_path: "/from/tree".into(),
+                dest_path: "/to/tree".into(),
+                is_directory: true,
+            },
+        );
+        original.mark_file_completed("done.txt".into());
+        original.finish(TransferPhase::Failed, true);
+
+        let retry = original.for_retry().unwrap();
+        assert_eq!(retry.session_id, "source-session");
+        assert_eq!(retry.dest_session_id.as_deref(), Some("dest-session"));
+        assert!(retry.completed_file("done.txt"));
+    }
+
+    #[test]
+    fn copy_checkpoints_resume_only_when_the_source_is_unchanged() {
+        let source = SourceFingerprint {
+            size: 4_096,
+            modified_at: Some(1_700_000_000),
+        };
+        let partial = "/to/tree/file.bin.luma-part";
+        let checkpoint = FileCheckpoint {
+            source: source.clone(),
+            partial_path: partial.into(),
+        };
+
+        let resume = checkpoint_decision(true, Some(&checkpoint), &source, partial, Some(1_024));
+        assert_eq!(resume.resume_from, 1_024);
+        assert!(!resume.cleanup_partial);
+
+        // The same partial on a different destination host is not a resume.
+        let elsewhere = checkpoint_decision(
+            true,
+            Some(&checkpoint),
+            &source,
+            "/other/file.bin.luma-part",
+            Some(1_024),
+        );
+        assert_eq!(elsewhere.resume_from, 0);
+        assert!(elsewhere.cleanup_partial);
+
+        let changed_source = SourceFingerprint {
+            size: 8_192,
+            modified_at: Some(1_700_000_100),
+        };
+        let restart = checkpoint_decision(
+            true,
+            Some(&checkpoint),
+            &changed_source,
+            partial,
+            Some(1_024),
+        );
+        assert_eq!(restart.resume_from, 0);
+        assert!(restart.cleanup_partial);
     }
 
     #[test]
