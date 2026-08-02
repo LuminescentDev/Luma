@@ -68,6 +68,11 @@ export function TitleBar() {
     <header
       onMouseDown={(event) => {
         const target = event.target as Element;
+        // Menus opened from the bar are portalled out of the header in the DOM
+        // but still bubble React events through it. Dragging must only start
+        // from the bar itself, or startDragging() hands the gesture to the OS
+        // and the menu never sees the click that would select an item.
+        if (!event.currentTarget.contains(target)) return;
         const wasJustFocused = Date.now() - focusedAt.current < 250;
         if (
           event.button === 0 &&
