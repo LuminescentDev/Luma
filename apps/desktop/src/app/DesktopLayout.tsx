@@ -8,6 +8,7 @@ import { SectionScreen } from "../features/workspace/SectionScreen";
 import { SnippetsScreen } from "../features/snippets/SnippetsScreen";
 import { SnippetRunner } from "../features/snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../features/snippets/MultiHostRunDialog";
+import { AnalyticsConsentDialog } from "../features/privacy/AnalyticsConsentDialog";
 import { CommandPalette } from "../features/palette/CommandPalette";
 import { SerialConnectDialog } from "../features/terminal/SerialConnectDialog";
 import { CollaborationDialog } from "../features/collaboration/CollaborationDialog";
@@ -186,6 +187,9 @@ export function DesktopLayout() {
       />
       <SnippetRunner />
       <MultiHostRunDialog />
+      {/* Eager, not lazy: the first-run consent prompt must paint on the first
+          frame rather than after a chunk loads. */}
+      <AnalyticsConsentDialog />
       {/* Always mounted but idle until triggered; a null fallback keeps them
           invisible while their chunks load. */}
       <Suspense fallback={null}>

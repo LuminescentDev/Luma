@@ -6,6 +6,8 @@ commands.allow = [
   "settings_get_all",
   "settings_set",
   "settings_delete",
+  "analytics_config",
+  "analytics_set_enabled",
   "vaults_list",
   "vault_get",
   "vault_create",

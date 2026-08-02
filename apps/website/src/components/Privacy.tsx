@@ -32,13 +32,31 @@ export function Privacy() {
           <p className='mt-5 text-lg leading-8 text-muted'>
             Luma keeps your data on your devices by default. An account is required only for optional Luma Cloud services.
           </p>
-          <p className='mt-3 text-sm text-muted'>Last updated: July 24, 2026</p>
+          <p className='mt-3 text-sm text-muted'>Last updated: August 2, 2026</p>
         </div>
 
         <div className='space-y-10 leading-7 text-muted'>
           <PolicySection title='The Luma app'>
             <p>
-              Luma does not include advertising, tracking, or product-usage telemetry. Your hosts, settings, snippets, credentials, keys, and session data are stored locally on your device by default. You can use the app without creating a Luma account or sending this data to us.
+              Luma does not include advertising, cross-site tracking, or third-party analytics services. Your hosts, settings, snippets, credentials, keys, and session data are stored locally on your device by default. You can use the app without creating a Luma account or sending this data to us. The app includes optional anonymous product analytics, described below, which you can decline.
+            </p>
+          </PolicySection>
+
+          <PolicySection title='Product analytics'>
+            <p>
+              Luma asks you once, on first launch, whether to share anonymous product analytics, and you can change the answer at any time in Settings → Privacy. Nothing is collected before you answer, and nothing is collected if you decline.
+            </p>
+            <p className='mt-3'>
+              If you agree, the app reports that it was launched and, when it closes, how long it was open. Each report carries the app version, your operating system, and whether the build is a development build. It contains no hostnames, usernames, commands, command output, file paths, credentials, keys, or account identifiers.
+            </p>
+            <p className='mt-3'>
+              The app also reports when an operation fails. A failure report carries a fixed category describing the kind of failure — for example that a connection timed out, that a transfer failed, or that a stored key was unavailable — together with a count of how often that category has occurred. The error message itself is never sent, because it can quote a hostname, a username, or a file path. If the app crashes, it additionally reports the file and line of Luma's own source code where the crash occurred, and never the crash message, which can contain arbitrary values from the running program.
+            </p>
+            <p className='mt-3'>
+              Reports also carry a randomly generated identifier for that installation of Luma, so that repeated launches can be recognised as one installation rather than many. It is created only when you agree, is generated independently of your Luma account and of any identifier used for sync, is never copied to your other devices, and is deleted when you turn analytics off — so turning the setting off ends the association rather than pausing it, and turning it back on begins a new one.
+            </p>
+            <p className='mt-3'>
+              These reports go to an analytics service that we operate ourselves, not to a third-party analytics company. As with any network request, that service receives your IP address, which it uses only to derive a coarse identifier and does not retain alongside your reports. If you would like the analytics records associated with your installation deleted, contact us at the address below with the identifier shown in Settings → Privacy.
             </p>
           </PolicySection>
 
@@ -89,7 +107,7 @@ export function Privacy() {
 
           <PolicySection title='Your choices and deletion'>
             <p>
-              You can use Luma without an account, cloud sync, or collaboration. You can disable sync or sign out at any time. To delete a Luma Cloud account and its encrypted sync copies, or to request deletion of support correspondence, contact us at the address below. Deleting a cloud account does not delete copies already downloaded to your devices, shared with collaborators, or stored with a third-party sync provider. You can avoid website analytics by using browser tracking protection or a content blocker.
+              You can use Luma without an account, cloud sync, or collaboration. You can decline product analytics at the first-run prompt, or turn them off at any time in Settings → Privacy. You can disable sync or sign out at any time. To delete a Luma Cloud account and its encrypted sync copies, or to request deletion of support correspondence, contact us at the address below. Deleting a cloud account does not delete copies already downloaded to your devices, shared with collaborators, or stored with a third-party sync provider. You can avoid website analytics by using browser tracking protection or a content blocker.
             </p>
           </PolicySection>
 

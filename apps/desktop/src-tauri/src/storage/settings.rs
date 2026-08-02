@@ -11,6 +11,19 @@ const MAX_VALUE_BYTES: usize = 64 * 1024;
 /// this value. The key stays readable and validated for one release so a downgrade or
 /// an old peer's bundle still round-trips it.
 pub(crate) const SYNC_INCLUDE_PRIVATE_KEYS_KEY: &str = "sync.includePrivateKeys";
+/// Setting keys that are device-local by policy and never cross a sync bundle.
+/// `sync::is_safe_setting_key` is the single enforcement point, and it guards
+/// three directions: these keys are left out of outgoing bundles, their
+/// tombstones are not carried, and an incoming bundle containing one is
+/// rejected — so a peer can never flip an analytics consent choice made on
+/// this device. Every other device-local setting is convention only, documented
+/// in the frontend's `SETTING_KEYS`.
+pub(crate) const DEVICE_LOCAL_SETTING_KEYS: &[&str] = &[
+    crate::analytics::CONSENT_SETTING_KEY,
+    // Syncing this would let two of a user's devices be joined together, which
+    // is precisely what the install identifier must not enable.
+    crate::analytics::INSTALL_ID_SETTING_KEY,
+];
 
 pub(crate) fn validate_key(key: &str) -> Result<()> {
     if key.is_empty() || key.len() > MAX_KEY_LENGTH {

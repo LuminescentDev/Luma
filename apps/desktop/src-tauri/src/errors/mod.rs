@@ -81,6 +81,11 @@ impl LumaError {
 
 impl Serialize for LumaError {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        // Serialization happens exactly when an error crosses to the frontend,
+        // which makes this the one place that sees every user-visible failure
+        // and nothing else. Only the category travels: `to_string` below
+        // interpolates hostnames, usernames and paths, and must never be sent.
+        crate::analytics::report_error(self.category());
         let mut state = serializer.serialize_struct("LumaError", 2)?;
         state.serialize_field("category", self.category())?;
         state.serialize_field("message", &self.to_string())?;

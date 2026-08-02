@@ -7,6 +7,8 @@ import { AppearanceSection } from "../settings/AppearanceSection";
 import { VaultsSection } from "../vaults/VaultsSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
 import { AccountSection } from "../account/AccountSection";
+import { AnalyticsDisclosure } from "../privacy/AnalyticsDisclosure";
+import { useAnalyticsConsent } from "../privacy/useAnalyticsConsent";
 import { detectSpeechSupport } from "../voiceComposer/speechProvider";
 import { MobileScreen } from "./MobileScreen";
 import { Field, Section, Toggle } from "./MobileFormControls";
@@ -84,7 +86,7 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
         </Field>
         <Field
           label="Command autocomplete"
-          hint="Local only — history, snippets and remote paths. Nothing is sent anywhere. Tab on the terminal key row accepts a suggestion."
+          hint="Local only — history, snippets and remote paths. No command history ever leaves this device. Tab on the terminal key row accepts a suggestion."
         >
           <Toggle
             checked={autocomplete}
@@ -279,6 +281,46 @@ export function MobileCollaborationScreen({ onBack }: { onBack: () => void }) {
       <Section>
         <CollaborationSection />
       </Section>
+    </MobileScreen>
+  );
+}
+
+export function MobilePrivacyScreen({ onBack }: { onBack: () => void }) {
+  const analytics = useAnalyticsConsent();
+  return (
+    <MobileScreen title="Privacy" onBack={onBack}>
+      <Section>
+        <Field
+          label="Share anonymous analytics"
+          hint={
+            analytics.configured
+              ? "App version, operating system, how long the app was open, and the kind of any failures — never their message. Turning this off deletes this install's id."
+              : "Not available in this build."
+          }
+        >
+          <Toggle
+            checked={analytics.enabled}
+            label="Share anonymous analytics"
+            disabled={!analytics.configured || analytics.choose.isPending}
+            onClick={() => analytics.choose.mutate(!analytics.enabled)}
+          />
+        </Field>
+      </Section>
+      <Section title="What this sends">
+        <AnalyticsDisclosure />
+      </Section>
+      {analytics.installId && (
+        <Section title="This install's id">
+          <p className="break-all font-mono text-xs text-muted">
+            {analytics.installId}
+          </p>
+          <p className="mt-2 text-sm text-muted">
+            Quote this if you ask us to delete the analytics records for this
+            install. Turning the setting off deletes the id here and starts a
+            new one if you turn it back on.
+          </p>
+        </Section>
+      )}
     </MobileScreen>
   );
 }

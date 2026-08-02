@@ -21,6 +21,7 @@ use crate::storage::settings;
 use crate::terminal::{PtyManager, ResolvedShell};
 use crate::AppState;
 
+mod analytics;
 mod collaboration;
 mod completions;
 mod docker;
@@ -49,6 +50,7 @@ mod vaults;
 mod voice;
 mod web_preview;
 
+pub use analytics::*;
 pub use collaboration::*;
 pub use completions::*;
 pub use docker::*;

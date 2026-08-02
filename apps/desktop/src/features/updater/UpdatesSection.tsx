@@ -204,8 +204,8 @@ export function UpdatesSection() {
             Automatically check for updates on launch
           </p>
           <p className="text-xs text-muted">
-            Runs one silent check shortly after startup. Only contacts the update
-            server — no telemetry is sent.
+            Runs one silent check shortly after startup. The check itself
+            contacts only the update server.
           </p>
         </div>
         <Toggle

@@ -49,6 +49,12 @@ if [[ "${CONFIGURATION:?}" == "release" ]]; then
   profile=release
 fi
 
+# Optional analytics overrides, set as Xcode Cloud environment variables. The
+# script runs under `set -u`, so the defaults are load-bearing; empty keeps the
+# endpoint baked into the source.
+export LUMA_ANALYTICS_HOST="${LUMA_ANALYTICS_HOST:-}"
+export LUMA_ANALYTICS_KEY="${LUMA_ANALYTICS_KEY:-}"
+
 cargo "${cargo_args[@]}"
 
 library_path="${tauri_path}/target/aarch64-apple-ios/${profile}/libluma_lib.a"

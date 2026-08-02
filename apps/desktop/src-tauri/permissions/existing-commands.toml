@@ -6,6 +6,8 @@ commands.allow = [
   "settings_get_all",
   "settings_set",
   "settings_delete",
+  "analytics_config",
+  "analytics_set_enabled",
   "shells_detect",
   "profiles_list",
   "profile_create",
