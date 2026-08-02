@@ -3,3 +3,7 @@ apps/desktop/src-tauri/migrations/*.sql text eol=lf
 apps/desktop/src-tauri/gen/apple/ci_scripts/*.sh text eol=lf
 # `sh` chokes on CRLF in a script it is asked to run ("set: Illegal option -").
 scripts/luma-hook text eol=lf
+# codesign's entitlements parser (AMFIUnserializeXML) rejects CRLF: "syntax error near line 1".
+*.plist text eol=lf
+*.entitlements text eol=lf
+*.xcprivacy text eol=lf
