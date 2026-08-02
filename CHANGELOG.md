@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.15.0](https://github.com/bwmp-dev/Luma/compare/v0.14.2...v0.15.0) (2026-08-02)
+
+
+### Features
+
+* add CI scripts for iOS build process and update project configurations ([7327607](https://github.com/bwmp-dev/Luma/commit/73276077e6058dbf07250f41dd4c2265e9190890))
+* add iOS Live Activity support for monitoring SSH connections and file transfers ([0c77a52](https://github.com/bwmp-dev/Luma/commit/0c77a52d02ae5fa967bb2a6da79039f9d06e24bc))
+* add server monitoring, resilient sessions, and remote development tooling ([25e8e44](https://github.com/bwmp-dev/Luma/commit/25e8e44d0d73ceef3b3de453d711dd67922fcbe1))
+* add server monitoring, resilient sessions, and remote development tooling ([25e8e44](https://github.com/bwmp-dev/Luma/commit/25e8e44d0d73ceef3b3de453d711dd67922fcbe1))
+* **analytics:** add consent-gated anonymous product analytics ([0f94f03](https://github.com/bwmp-dev/Luma/commit/0f94f03714d93cb7f9c6d8c6874b11b0d9cd8520))
+* **appearance:** integrate system appearance handling into mobile components and update related styles ([5520992](https://github.com/bwmp-dev/Luma/commit/5520992cfae94a04d187b8be83539870d91a0a36))
+* **desktop:** add external links for website, GitHub, issues, and Discord in settings ([f630f80](https://github.com/bwmp-dev/Luma/commit/f630f80ff77a0684959d545d6c3d812bd0b0d230))
+* enhance agent inbox with heuristic event detection ([e35575f](https://github.com/bwmp-dev/Luma/commit/e35575f1439ab60935ce6767cad57a082cbe43d3))
+* enhance mobile terminal experience with keyboard assistant and accessory bar ([93bb639](https://github.com/bwmp-dev/Luma/commit/93bb639a23a7ddd5bf2b4d42a8af6e94bc912dde))
+* enhance version extraction logic in ci_pre_xcodebuild.sh for better build consistency ([e0b7bec](https://github.com/bwmp-dev/Luma/commit/e0b7bec6bee70b009eed557f24983acbf4fd1055))
+* implement context menus for mobile sessions and SFTP entries, enhance user selection behavior ([f46fe09](https://github.com/bwmp-dev/Luma/commit/f46fe0925388c549cf17b2ab7df9d3567f07a018))
+* improve keyboard accessory handling for first responders in LumaKeyboardAssistant ([00ebb56](https://github.com/bwmp-dev/Luma/commit/00ebb561b51e668891e704349de1960fc03ddb4d))
+* **mobile:** add external links for Discord, GitHub, and website in mobile UI ([d104092](https://github.com/bwmp-dev/Luma/commit/d1040928395fc9ccddf449755f6f3616dc9121f0))
+* **mobile:** add grouped mobile host editor ([2247a76](https://github.com/bwmp-dev/Luma/commit/2247a768c04f8415711a76e216f6d8b4dc933612))
+* **mobile:** add live session previews and related settings in mobile UI ([4653120](https://github.com/bwmp-dev/Luma/commit/46531203f699ec2227bbe72ed1796ac3b991b978))
+* **mobile:** add touch gesture settings for arrow keys and Tab in terminal ([3fc03b6](https://github.com/bwmp-dev/Luma/commit/3fc03b6c169368d9cf9588692ca0858b68de7169))
+* **mobile:** bring server monitoring and the agent inbox to the mobile shell ([0fa35ab](https://github.com/bwmp-dev/Luma/commit/0fa35abc045187ab3a01696adb2a4fbf61ae60ae))
+* **mobile:** implement shared-terminal collaboration and enhance mobile UI components ([6b3f222](https://github.com/bwmp-dev/Luma/commit/6b3f222877079271eed8c7b6fd0c6966529f099e))
+* **permissions:** add vault management commands to existing and mobile command permissions ([e551471](https://github.com/bwmp-dev/Luma/commit/e551471ac2bcd5711f7cae6f2f070639fd3c3307))
+* **port-forwarding:** enable port forwarding and add mobile command permissions for tunnels ([be57e8d](https://github.com/bwmp-dev/Luma/commit/be57e8d5421ae0d4b03e355a096855b98a6c750f))
+* **server-stats:** add an agentless server dashboard over SSH ([25e8e44](https://github.com/bwmp-dev/Luma/commit/25e8e44d0d73ceef3b3de453d711dd67922fcbe1))
+* **sftp:** copy files directly between two connected hosts ([d102513](https://github.com/bwmp-dev/Luma/commit/d10251362f585ab77da48a08b21b8a5317ab1fc8))
+* **sync:** implement vault key sealing and management ([d87690d](https://github.com/bwmp-dev/Luma/commit/d87690d6810827dde856fbfc06406d8c38e70787))
+* **tab-bar:** add ios-glass-tabbar plugin with permissions and initial setup ([e92daf7](https://github.com/bwmp-dev/Luma/commit/e92daf7096670f46488379e925f21a4de7304923))
+* **tab-bar:** add tab bar lab command and enhance diagnostics in mobile settings ([549230e](https://github.com/bwmp-dev/Luma/commit/549230e29a1efcfe83ca053b3ab4b47d88552b51))
+* unify mobile terminal rendering and font setup ([5c6350d](https://github.com/bwmp-dev/Luma/commit/5c6350de93d097fccfb22687ea5043b841f3f643))
+* update .gitignore and ci_build_rust.sh for asset management and build process ([9b729fe](https://github.com/bwmp-dev/Luma/commit/9b729feeb4fcff218db0906d2738a204e97d6112))
+* update ExportOptions.plist to use app-store-connect method ([3c1210a](https://github.com/bwmp-dev/Luma/commit/3c1210ab913a47b40b01f19cb6da9d69b411f14c))
+* **vaults:** enhance VaultRow to support sharing functionality and improve sync configuration handling ([625df9c](https://github.com/bwmp-dev/Luma/commit/625df9c8d934fcba06951e0bf9cd34cf47301b70))
+* **vaults:** refactor mobile settings to integrate vault management and update navigation ([bd30451](https://github.com/bwmp-dev/Luma/commit/bd30451e11056ff30e06346d0b408f8deb223644))
+* **website:** add Discord support links to Footer and Support components ([718cfa5](https://github.com/bwmp-dev/Luma/commit/718cfa56bb139de4378ff8f3269ba2427de7ef01))
+
+
+### Bug Fixes
+
+* add ITSAppUsesNonExemptEncryption key to Info.plist and project.yml ([70d2ff3](https://github.com/bwmp-dev/Luma/commit/70d2ff37d0787ae128ff9b87b0e77b57dcbb945e))
+* build Tauri Rust library in Xcode Cloud ([ba71c06](https://github.com/bwmp-dev/Luma/commit/ba71c0629189e01bdf548e881d83a5f19250e2b3))
+* improve rustup installation process with error handling and cleanup ([42bf952](https://github.com/bwmp-dev/Luma/commit/42bf95231d455ff1182c3b06cc85d406d8a1f925))
+* ios? ([93ef5a5](https://github.com/bwmp-dev/Luma/commit/93ef5a50327838bccaa61848acfac99db1c5b167))
+* **macOS:** bundle Icon Composer assets for app icons ([272fcfd](https://github.com/bwmp-dev/Luma/commit/272fcfdbb0643daaf4080cb35e3da62e2fb2a467))
+* stage frontend assets for Xcode Cloud ([db4f193](https://github.com/bwmp-dev/Luma/commit/db4f193dd15a391a81ced4be9ad5317e8d063caa))
+* update cargo build arguments for custom protocol and correct release endpoint URL ([03dc46f](https://github.com/bwmp-dev/Luma/commit/03dc46fe780efdd05ea9daff1639bf8f977a237d))
+* update iOS build settings and improve project configuration ([acc8286](https://github.com/bwmp-dev/Luma/commit/acc8286ee22a8fea50aa5ca519b65ec843e60878))
+* vault switcher dropdown not working ([8fdcb2f](https://github.com/bwmp-dev/Luma/commit/8fdcb2f37d030bb9cd32fd5dddb61d73d3012396))
+
 ## [0.14.2](https://github.com/bwmp-dev/Luma/compare/v0.14.1...v0.14.2) (2026-07-25)
 
 
