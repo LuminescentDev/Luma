@@ -13,6 +13,35 @@
 
   <body>
     <div id="root"></div>
+    <!-- Relay failures to the dev server. When the showcase is loaded by the
+         iOS app there is no reachable console: a page that throws during module
+         evaluation never opens Vite's HMR socket, so its error would otherwise
+         only exist inside the simulator. Classic script, registered before the
+         module below, so it also catches that module failing to load. -->
+    <script>
+      (function () {
+        var relay = function (kind, detail) {
+          try {
+            fetch("/__showcase/log", { method: "POST", body: kind + ": " + detail });
+          } catch (ignored) {}
+        };
+        window.addEventListener("error", function (event) {
+          relay(
+            "error",
+            (event.message || "?") +
+              " @ " + (event.filename || "?") + ":" + (event.lineno || 0) +
+              (event.error && event.error.stack ? "\n" + event.error.stack : ""),
+          );
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          var reason = event.reason;
+          relay(
+            "unhandledrejection",
+            reason && reason.stack ? reason.stack : String(reason),
+          );
+        });
+      })();
+    </script>
     <script type="module" src="/src/showcase/main.tsx"></script>
   </body>
 </html>
