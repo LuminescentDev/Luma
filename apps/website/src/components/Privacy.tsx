@@ -42,7 +42,7 @@ export function Privacy() {
             </p>
           </PolicySection>
 
-          <PolicySection title='Product analytics'>
+          <PolicySection id='product-analytics' title='Product analytics'>
             <p>
               Luma asks you once, on first launch, whether to share anonymous product analytics, and you can change the answer at any time in Settings → Privacy. Nothing is collected before you answer, and nothing is collected if you decline.
             </p>
@@ -56,7 +56,7 @@ export function Privacy() {
               Reports also carry a randomly generated identifier for that installation of Luma, so that repeated launches can be recognised as one installation rather than many. It is created only when you agree, is generated independently of your Luma account and of any identifier used for sync, is never copied to your other devices, and is deleted when you turn analytics off — so turning the setting off ends the association rather than pausing it, and turning it back on begins a new one.
             </p>
             <p className='mt-3'>
-              These reports go to an analytics service that we operate ourselves, not to a third-party analytics company. As with any network request, that service receives your IP address, which it uses only to derive a coarse identifier and does not retain alongside your reports. If you would like the analytics records associated with your installation deleted, contact us at the address below with the identifier shown in Settings → Privacy.
+              These reports go to an analytics service that we operate ourselves, not to a third-party analytics company. As with any network request, that service receives your IP address. It uses the address to look up an approximate location — country, region, and city — which is stored with each report so that we can see which regions the app is used in. The IP address itself is not stored. If you would like the analytics records associated with your installation deleted, contact us at the address below with the identifier shown in Settings → Privacy.
             </p>
           </PolicySection>
 
@@ -133,9 +133,9 @@ export function Privacy() {
   );
 }
 
-function PolicySection({ title, children }: { title: string; children: React.ReactNode }) {
+function PolicySection({ id, title, children }: { id?: string; title: string; children: React.ReactNode }) {
   return (
-    <section>
+    <section id={id}>
       <h2 className='mb-3 text-xl font-semibold text-foreground'>{title}</h2>
       {children}
     </section>

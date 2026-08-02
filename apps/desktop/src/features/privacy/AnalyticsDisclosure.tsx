@@ -26,6 +26,11 @@ export function AnalyticsDisclosure() {
             A random id for this install, so repeat launches and failures are
             recognisable as one install rather than many
           </li>
+          <li>
+            An approximate location — country, region and city — that our server
+            looks up from your IP address when a report arrives. The address
+            itself is not stored
+          </li>
         </ul>
       </div>
       <div>
