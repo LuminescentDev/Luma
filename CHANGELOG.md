@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/bwmp-dev/Luma/compare/v0.15.0...v0.16.0) (2026-08-02)
+
+
+### Features
+
+* **privacy:** add PrivacyInfo.xcprivacy file and update privacy disclosures ([484798e](https://github.com/bwmp-dev/Luma/commit/484798e08c0a37112afc35bf144edd37f227623d))
+
 ## [0.15.0](https://github.com/bwmp-dev/Luma/compare/v0.14.2...v0.15.0) (2026-08-02)
 
 
