@@ -171,6 +171,29 @@ export function sftpDownload(
   });
 }
 
+/**
+ * Copy a file or directory directly between two connected hosts. The bytes
+ * stream through the app; nothing is written to the local filesystem. The two
+ * sessions may belong to the same host.
+ */
+export function sftpCopy(
+  sourceSessionId: string,
+  sourcePath: string,
+  destSessionId: string,
+  destPath: string,
+  onProgress: (progress: TransferProgress) => void,
+): Promise<TransferHandle> {
+  const channel = new Channel<TransferProgress>();
+  channel.onmessage = onProgress;
+  return invoke<TransferHandle>("sftp_copy", {
+    sourceSessionId,
+    sourcePath,
+    destSessionId,
+    destPath,
+    onProgress: channel,
+  });
+}
+
 export type AttachUploadResult = { remotePath: string };
 
 /**

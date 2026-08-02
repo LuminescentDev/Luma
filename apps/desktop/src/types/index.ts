@@ -216,4 +216,12 @@ export const SETTING_KEYS = {
    * ends, skipping the review step this feature exists for. Default OFF. Never
    * executes — auto-send only ever inserts, never presses Enter. */
   voiceAutoSend: "voice.autoSend",
+  /** Device-local consent for anonymous product analytics. Three states:
+   * absent means the user has not been asked yet (nothing is collected and the
+   * first-run prompt shows), true is opted in, false is opted out. Note this is
+   * NOT the `!== false` default-on idiom used elsewhere — undecided is off.
+   * Enforced device-local in Rust (`storage::settings::DEVICE_LOCAL_SETTING_KEYS`)
+   * rather than by convention, so a synced peer can neither read the choice nor
+   * turn analytics on for this device. */
+  analytics: "privacy.analytics",
 } as const;

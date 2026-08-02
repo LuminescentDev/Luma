@@ -3,6 +3,7 @@ import {
   ChevronRight,
   FolderLock,
   Info,
+  Lock,
   Palette,
   ShieldCheck,
   SquareTerminal,
@@ -86,6 +87,12 @@ export function MobileProfileHub() {
       </MobileList>
 
       <MobileList className="mt-6">
+        <MobileRow
+          icon={Lock}
+          label="Privacy"
+          detail="Anonymous analytics"
+          onSelect={() => push("settings-privacy")}
+        />
         <MobileRow icon={Info} label="About" onSelect={() => push("settings-about")} />
       </MobileList>
     </MobileScreen>

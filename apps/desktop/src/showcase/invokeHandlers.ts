@@ -119,6 +119,14 @@ export function createInvokeHandler(
       case "settings_delete":
         return null;
 
+      // Configured, so Settings → Privacy screenshots the real toggle rather
+      // than the "not available in this build" state. The prompt is already
+      // suppressed by the seeded consent value.
+      case "analytics_config":
+        return { configured: true, enabled: false, installId: null };
+      case "analytics_set_enabled":
+        return null;
+
       case "shells_detect":
         return SHELLS;
       case "profiles_list":

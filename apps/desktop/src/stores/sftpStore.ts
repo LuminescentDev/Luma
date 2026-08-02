@@ -7,6 +7,7 @@ import {
   remoteJoin,
   sftpCancel,
   sftpConnect,
+  sftpCopy,
   sftpDisconnect,
   sftpDownload,
   sftpRetry,
@@ -20,12 +21,14 @@ import {
 /*
  * SFTP runtime state. Directory listings live in TanStack Query (keys
  * ["sftp-list", sessionId, path] and ["local-list", path]); this store only
- * holds session metadata, the current paths, and the transfer queue.
+ * holds session metadata, the two browser panes, and the transfer queue.
  *
- * v1 shows ONE active SFTP session at a time — the shape supports many sessions
- * (keyed by sftpSessionId) but the UI only exposes a single active one and a
- * host picker to swap. Terminal sessions are entirely separate: transfers are
- * backend tasks and nothing here touches terminalManager.
+ * Each pane points at an endpoint independently — this computer, a connected
+ * host, or nothing yet — so files move local <-> host in either direction and
+ * host -> host. Only one pane may be local at a time (there is no local-to-local
+ * transfer), which also lets a single localPath serve whichever pane holds it.
+ * Terminal sessions are entirely separate: transfers are backend tasks and
+ * nothing here touches terminalManager.
  */
 
 export type SftpSessionStatus = "connecting" | "connected" | "error";
@@ -40,7 +43,23 @@ export type SftpSession = {
   errorMessage: string | null;
 };
 
-export type TransferKind = "up" | "down";
+export type PaneSide = "left" | "right";
+
+/** What a browser pane is pointed at. */
+export type PaneEndpoint =
+  | { kind: "none" }
+  | { kind: "local" }
+  | { kind: "remote"; sessionId: string };
+
+/** An endpoint that can take part in a transfer (a pane that is not empty). */
+export type TransferEndpoint = Exclude<PaneEndpoint, { kind: "none" }>;
+
+export const OTHER_SIDE: Record<PaneSide, PaneSide> = {
+  left: "right",
+  right: "left",
+};
+
+export type TransferKind = "up" | "down" | "copy";
 
 /** A per-entry outcome recorded from a directory job's "entry" events: a skipped
  * symlink or a failed individual file. `path` is relative to the transfer root. */
@@ -54,12 +73,17 @@ export type TransferRecord = {
   transferId: string;
   kind: TransferKind;
   name: string;
-  localPath: string;
-  remotePath: string;
-  sessionId: string;
+  /** Source path, in the source endpoint's separator style. */
+  sourcePath: string;
+  /** Destination path, in the destination endpoint's separator style. */
+  destPath: string;
+  /** Session the bytes come from; null when the source is this computer. */
+  sourceSessionId: string | null;
+  /** Session the bytes go to; null when the destination is this computer. */
+  destSessionId: string | null;
   /** True when this transfer's source is a directory (aggregate progress). */
   isDirectory: boolean;
-  /** Directory whose listing to refresh when the transfer completes. */
+  /** Destination directory whose listing to refresh when the transfer completes. */
   targetDir: string;
   transferred: number;
   total: number | null;
@@ -83,20 +107,38 @@ export type TransferRecord = {
 type TransferMeta = {
   kind: TransferKind;
   name: string;
-  localPath: string;
-  remotePath: string;
-  sessionId: string;
+  sourcePath: string;
+  destPath: string;
+  sourceSessionId: string | null;
+  destSessionId: string | null;
   targetDir: string;
   isDirectory: boolean;
 };
 
+/** One transfer request covering every file dropped on / sent to a destination. */
+export type TransferRequest = {
+  source: TransferEndpoint;
+  dest: TransferEndpoint;
+  files: SftpEntry[];
+  /** Destination directory the files land in. */
+  destDir: string;
+  /** Separator style of `destDir` (always "/" for a remote destination). */
+  destSeparator: "/" | "\\";
+};
+
+type SideRecord<T> = Record<PaneSide, T>;
+
 type SftpState = {
   sessions: Record<string, SftpSession>;
-  /** The session currently shown in the dual-pane browser. */
-  activeSessionId: string | null;
-  /** In-flight connect for the host picker (hostId being connected). */
-  connectingHostId: string | null;
-  connectError: { category: string; message: string } | null;
+  /** What each pane is pointed at. */
+  panes: SideRecord<PaneEndpoint>;
+  /** In-flight connect per pane (hostId being connected). */
+  connecting: SideRecord<string | null>;
+  connectError: SideRecord<{ category: string; message: string } | null>;
+  /** True once a screen has applied its default pane layout. */
+  initialized: boolean;
+  /** Which pane the single-pane mobile browser is showing. */
+  mobileSide: PaneSide;
 
   /** Current local directory (canonical); null until the first listing. */
   localPath: string | null;
@@ -104,25 +146,26 @@ type SftpState = {
   /** Ordered transfer queue; finished rows persist until cleared. */
   transfers: TransferRecord[];
 
-  connect: (hostId: string) => Promise<void>;
-  disconnect: (sessionId: string) => Promise<void>;
+  /** Apply the default pane layout once. Desktop has a local pane; mobile does
+   * not (the local_* commands are not registered there). */
+  initPanes: (options: { localAvailable: boolean }) => void;
+  connect: (hostId: string, side?: PaneSide) => Promise<void>;
+  setMobileSide: (side: PaneSide) => void;
+  /** Point a pane at this computer (rejected when the other pane is local). */
+  setPaneLocal: (side: PaneSide) => void;
+  /** Disconnect / empty a pane, closing its session if the other pane is not
+   * also using it. */
+  clearPane: (side: PaneSide) => Promise<void>;
   reconnect: (sessionId: string) => Promise<void>;
-  clearConnectError: () => void;
+  clearConnectError: (side: PaneSide) => void;
 
   setRemotePath: (sessionId: string, path: string) => void;
   setLocalPath: (path: string) => void;
   /** Mark a session errored after a backend-initiated failure (e.g. sftp-failed). */
   markSessionError: (sessionId: string, category: string, message: string) => void;
 
-  /** Upload the given local files into a remote directory. */
-  upload: (sessionId: string, files: SftpEntry[], remoteDir: string) => void;
-  /** Download the given remote files into a local directory. */
-  download: (
-    sessionId: string,
-    files: SftpEntry[],
-    localDir: string,
-    localSeparator: "/" | "\\",
-  ) => void;
+  /** Queue a transfer of the given files between two endpoints. */
+  transfer: (request: TransferRequest) => void;
 
   cancelTransfer: (transferId: string) => void;
   retryTransfer: (transferId: string) => void;
@@ -130,10 +173,9 @@ type SftpState = {
 };
 
 function invalidateTarget(record: TransferRecord) {
-  const key =
-    record.kind === "up"
-      ? ["sftp-list", record.sessionId, record.targetDir]
-      : ["local-list", record.targetDir];
+  const key = record.destSessionId
+    ? ["sftp-list", record.destSessionId, record.targetDir]
+    : ["local-list", record.targetDir];
   void queryClient.invalidateQueries({ queryKey: key });
 }
 
@@ -145,6 +187,27 @@ function overallBytes(
   record: Pick<TransferRecord, "transferred" | "aggregate">,
 ): number {
   return record.aggregate ? record.aggregate.bytesDone : record.transferred;
+}
+
+/** True when the transfer reads from or writes to the given session. */
+function touchesSession(record: TransferRecord, sessionId: string): boolean {
+  return (
+    record.sourceSessionId === sessionId || record.destSessionId === sessionId
+  );
+}
+
+/** The pane holding a session, if any. */
+function sideForSession(
+  panes: SideRecord<PaneEndpoint>,
+  sessionId: string,
+): PaneSide | null {
+  if (panes.left.kind === "remote" && panes.left.sessionId === sessionId) {
+    return "left";
+  }
+  if (panes.right.kind === "remote" && panes.right.sessionId === sessionId) {
+    return "right";
+  }
+  return null;
 }
 
 export const useSftpStore = create<SftpState>((set, get) => {
@@ -242,9 +305,10 @@ export const useSftpStore = create<SftpState>((set, get) => {
           transferId: progress.transferId,
           kind: "up",
           name: "",
-          localPath: "",
-          remotePath: "",
-          sessionId: "",
+          sourcePath: "",
+          destPath: "",
+          sourceSessionId: null,
+          destSessionId: null,
           isDirectory: isDirEvent,
           targetDir: "",
           transferred: aggregate ? aggregate.bytesDone : progress.transferred,
@@ -342,22 +406,36 @@ export const useSftpStore = create<SftpState>((set, get) => {
     }));
   }
 
+  /** Dispatch to the invoke matching the endpoint pair. */
+  function invokeTransfer(meta: TransferMeta) {
+    if (meta.kind === "up") {
+      return sftpUpload(
+        meta.destSessionId as string,
+        meta.sourcePath,
+        meta.destPath,
+        applyProgress,
+      );
+    }
+    if (meta.kind === "down") {
+      return sftpDownload(
+        meta.sourceSessionId as string,
+        meta.sourcePath,
+        meta.destPath,
+        applyProgress,
+      );
+    }
+    return sftpCopy(
+      meta.sourceSessionId as string,
+      meta.sourcePath,
+      meta.destSessionId as string,
+      meta.destPath,
+      applyProgress,
+    );
+  }
+
   async function startTransfer(meta: TransferMeta) {
     try {
-      const handle =
-        meta.kind === "up"
-          ? await sftpUpload(
-              meta.sessionId,
-              meta.localPath,
-              meta.remotePath,
-              applyProgress,
-            )
-          : await sftpDownload(
-              meta.sessionId,
-              meta.remotePath,
-              meta.localPath,
-              applyProgress,
-            );
+      const handle = await invokeTransfer(meta);
       registerTransfer(handle.transferId, meta);
     } catch (error) {
       const { message } = parseLumaError(error);
@@ -412,18 +490,24 @@ export const useSftpStore = create<SftpState>((set, get) => {
     });
   }
 
-  /** Retry an existing (backend-known) transfer via sftp_retry. Keeps the row
-   * on failure with the returned error message. */
-  async function retryExisting(record: TransferRecord) {
-    const meta: TransferMeta = {
+  /** The metadata needed to re-run or retry an existing row. */
+  function metaOf(record: TransferRecord): TransferMeta {
+    return {
       kind: record.kind,
       name: record.name,
-      localPath: record.localPath,
-      remotePath: record.remotePath,
-      sessionId: record.sessionId,
+      sourcePath: record.sourcePath,
+      destPath: record.destPath,
+      sourceSessionId: record.sourceSessionId,
+      destSessionId: record.destSessionId,
       targetDir: record.targetDir,
       isDirectory: record.isDirectory,
     };
+  }
+
+  /** Retry an existing (backend-known) transfer via sftp_retry. Keeps the row
+   * on failure with the returned error message. */
+  async function retryExisting(record: TransferRecord) {
+    const meta = metaOf(record);
     try {
       const handle = await sftpRetry(record.transferId, applyProgress);
       rebindRetry(record.transferId, handle.transferId, meta);
@@ -439,21 +523,74 @@ export const useSftpStore = create<SftpState>((set, get) => {
     }
   }
 
+  /** Detach a pane from its endpoint, returning the session that is now unused
+   * and should be closed (null when the other pane still holds it). */
+  function detachPane(side: PaneSide): string | null {
+    const state = get();
+    const endpoint = state.panes[side];
+    set({ panes: { ...state.panes, [side]: { kind: "none" } } });
+    if (endpoint.kind !== "remote") return null;
+    const other = state.panes[OTHER_SIDE[side]];
+    const stillUsed =
+      other.kind === "remote" && other.sessionId === endpoint.sessionId;
+    return stillUsed ? null : endpoint.sessionId;
+  }
+
+  /** Close a session and drop it from the store, cancelling its transfers. */
+  async function closeSession(sessionId: string) {
+    // Optimistically mark this session's running transfers cancelled — the
+    // backend cancels them as it tears down the ssh child.
+    set((state) => ({
+      transfers: state.transfers.map((record) =>
+        touchesSession(record, sessionId) && record.state === "running"
+          ? { ...record, state: "cancelled" as TransferState }
+          : record,
+      ),
+    }));
+    await sftpDisconnect(sessionId).catch(() => {});
+    set((state) => {
+      const sessions = { ...state.sessions };
+      delete sessions[sessionId];
+      return { sessions };
+    });
+  }
+
   return {
     sessions: {},
-    activeSessionId: null,
-    connectingHostId: null,
-    connectError: null,
+    panes: { left: { kind: "none" }, right: { kind: "none" } },
+    connecting: { left: null, right: null },
+    connectError: { left: null, right: null },
+    initialized: false,
+    // Matches connect()'s default side, so a connection started elsewhere
+    // (e.g. the command palette) lands on the pane mobile is showing.
+    mobileSide: "right",
     localPath: null,
     transfers: [],
 
-    connect: async (hostId) => {
-      set({ connectingHostId: hostId, connectError: null });
+    initPanes: ({ localAvailable }) => {
+      if (get().initialized) return;
+      set((state) => ({
+        initialized: true,
+        panes: localAvailable
+          ? { ...state.panes, left: { kind: "local" } }
+          : state.panes,
+      }));
+    },
+
+    connect: async (hostId, side = "right") => {
+      set((state) => ({
+        connecting: { ...state.connecting, [side]: hostId },
+        connectError: { ...state.connectError, [side]: null },
+      }));
       try {
         const { sftpSessionId, initialPath } = await sftpConnect(hostId);
+        const released = detachPane(side);
         set((state) => ({
-          connectingHostId: null,
-          activeSessionId: sftpSessionId,
+          connecting: { ...state.connecting, [side]: null },
+          panes: {
+            ...state.panes,
+            [side]: { kind: "remote", sessionId: sftpSessionId },
+          },
           sessions: {
             ...state.sessions,
             [sftpSessionId]: {
@@ -466,54 +603,51 @@ export const useSftpStore = create<SftpState>((set, get) => {
             },
           },
         }));
+        if (released) await closeSession(released);
       } catch (error) {
         const parsed = parseLumaError(error);
-        set({ connectingHostId: null, connectError: parsed });
+        set((state) => ({
+          connecting: { ...state.connecting, [side]: null },
+          connectError: { ...state.connectError, [side]: parsed },
+        }));
       }
     },
 
-    disconnect: async (sessionId) => {
-      // Optimistically mark this session's running transfers cancelled — the
-      // backend cancels them as it tears down the ssh child.
+    setMobileSide: (side) => set({ mobileSide: side }),
+
+    setPaneLocal: (side) => {
+      // Only one pane may be local: there is no local-to-local transfer.
+      if (get().panes[OTHER_SIDE[side]].kind === "local") return;
+      const released = detachPane(side);
       set((state) => ({
-        transfers: state.transfers.map((record) =>
-          record.sessionId === sessionId && record.state === "running"
-            ? { ...record, state: "cancelled" as TransferState }
-            : record,
-        ),
+        panes: { ...state.panes, [side]: { kind: "local" } },
+        connectError: { ...state.connectError, [side]: null },
       }));
-      await sftpDisconnect(sessionId).catch(() => {});
-      set((state) => {
-        const sessions = { ...state.sessions };
-        delete sessions[sessionId];
-        const remaining = Object.keys(sessions);
-        return {
-          sessions,
-          activeSessionId:
-            state.activeSessionId === sessionId
-              ? (remaining[0] ?? null)
-              : state.activeSessionId,
-        };
-      });
+      if (released) void closeSession(released);
+    },
+
+    clearPane: async (side) => {
+      const released = detachPane(side);
+      set((state) => ({
+        connectError: { ...state.connectError, [side]: null },
+      }));
+      if (released) await closeSession(released);
     },
 
     reconnect: async (sessionId) => {
       const session = get().sessions[sessionId];
       if (!session) return;
-      // Drop the dead session, then connect fresh to the same host.
-      set((state) => {
-        const sessions = { ...state.sessions };
-        delete sessions[sessionId];
-        return {
-          sessions,
-          activeSessionId:
-            state.activeSessionId === sessionId ? null : state.activeSessionId,
-        };
-      });
-      await get().connect(session.hostId);
+      const side = sideForSession(get().panes, sessionId) ?? "right";
+      // Drop the dead session, then connect fresh to the same host in place.
+      detachPane(side);
+      await closeSession(sessionId);
+      await get().connect(session.hostId, side);
     },
 
-    clearConnectError: () => set({ connectError: null }),
+    clearConnectError: (side) =>
+      set((state) => ({
+        connectError: { ...state.connectError, [side]: null },
+      })),
 
     setRemotePath: (sessionId, path) =>
       set((state) => {
@@ -546,30 +680,27 @@ export const useSftpStore = create<SftpState>((set, get) => {
         };
       }),
 
-    upload: (sessionId, files, remoteDir) => {
+    transfer: ({ source, dest, files, destDir, destSeparator }) => {
+      // Local to local is not a transfer the backend performs, and the UI keeps
+      // both panes from being local at once.
+      if (source.kind === "local" && dest.kind === "local") return;
+      const sourceSessionId = source.kind === "remote" ? source.sessionId : null;
+      const destSessionId = dest.kind === "remote" ? dest.sessionId : null;
+      const kind: TransferKind =
+        source.kind === "local" ? "up" : dest.kind === "local" ? "down" : "copy";
       // Files AND directories are accepted; the backend recurses directories.
       for (const file of files) {
         void startTransfer({
-          kind: "up",
+          kind,
           name: file.name,
-          localPath: file.path,
-          remotePath: remoteJoin(remoteDir, file.name),
-          sessionId,
-          targetDir: remoteDir,
-          isDirectory: file.kind === "dir",
-        });
-      }
-    },
-
-    download: (sessionId, files, localDir, localSeparator) => {
-      for (const file of files) {
-        void startTransfer({
-          kind: "down",
-          name: file.name,
-          localPath: joinPath(localDir, file.name, localSeparator),
-          remotePath: file.path,
-          sessionId,
-          targetDir: localDir,
+          sourcePath: file.path,
+          destPath:
+            dest.kind === "remote"
+              ? remoteJoin(destDir, file.name)
+              : joinPath(destDir, file.name, destSeparator),
+          sourceSessionId,
+          destSessionId,
+          targetDir: destDir,
           isDirectory: file.kind === "dir",
         });
       }
@@ -589,15 +720,7 @@ export const useSftpStore = create<SftpState>((set, get) => {
         set((state) => ({
           transfers: state.transfers.filter((t) => t.transferId !== transferId),
         }));
-        void startTransfer({
-          kind: record.kind,
-          name: record.name,
-          localPath: record.localPath,
-          remotePath: record.remotePath,
-          sessionId: record.sessionId,
-          targetDir: record.targetDir,
-          isDirectory: record.isDirectory,
-        });
+        void startTransfer(metaOf(record));
         return;
       }
       void retryExisting(record);
@@ -621,14 +744,18 @@ export function selectRunningForSession(
   sessionId: string,
 ): number {
   return transfers.filter(
-    (t) => t.sessionId === sessionId && t.state === "running",
+    (t) => touchesSession(t, sessionId) && t.state === "running",
   ).length;
 }
 
-/** Convenience selector for the active session record. */
-export function selectActiveSession(state: SftpState): SftpSession | null {
-  return state.activeSessionId
-    ? (state.sessions[state.activeSessionId] ?? null)
+/** The session a pane is showing, or null when it is empty or local. */
+export function selectPaneSession(
+  state: SftpState,
+  side: PaneSide,
+): SftpSession | null {
+  const endpoint = state.panes[side];
+  return endpoint.kind === "remote"
+    ? (state.sessions[endpoint.sessionId] ?? null)
     : null;
 }
 

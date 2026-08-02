@@ -19,6 +19,8 @@ import { KnownHostsScreen } from "../knownHosts/KnownHostsScreen";
 import { SnippetRunner } from "../snippets/SnippetRunner";
 import { MultiHostRunDialog } from "../snippets/MultiHostRunDialog";
 import { MobileFontSizeSetup } from "./MobileFontSizeSetup";
+import { MobileAnalyticsConsentSheet } from "../privacy/MobileAnalyticsConsentSheet";
+import { useAnalyticsConsent } from "../privacy/useAnalyticsConsent";
 import { VoiceComposerDialog } from "../voiceComposer/VoiceComposerDialog";
 import { MobileAgentInboxScreen } from "./MobileAgentInboxScreen";
 import { MobileHostSurfaces } from "./MobileHostSurfaces";
@@ -32,6 +34,7 @@ import {
   MobileAccountScreen,
   MobileAppearanceScreen,
   MobileCollaborationScreen,
+  MobilePrivacyScreen,
   MobileSshSettingsScreen,
   MobileTerminalSettingsScreen,
   MobileVaultsScreen,
@@ -69,6 +72,10 @@ export function MobileLayout() {
   const setActiveTab = useSessionStore((s) => s.setActiveTab);
   const focusSession = useSessionStore((s) => s.focusSession);
   const prevCount = useRef(tabCount);
+
+  // Decides which of the two first-run prompts owns the screen; see the mount
+  // at the bottom of the shell.
+  const consentPending = useAnalyticsConsent().shouldPrompt;
 
   const showingSession = fullscreen && tabCount > 0;
   // A shared terminal joined as a viewer covers the whole shell, like a session.
@@ -115,6 +122,10 @@ export function MobileLayout() {
         <Suspense fallback={null}>
           <SyncDialogs />
         </Suspense>
+        {/* Also mounted here, unlike MobileFontSizeSetup: workspace restore can
+            drop a returning user straight into a session, and the consent
+            prompt has to be answered before anything is collected. */}
+        <MobileAnalyticsConsentSheet />
       </>
     );
   }
@@ -167,7 +178,9 @@ export function MobileLayout() {
       <Suspense fallback={null}>
         <SyncDialogs />
       </Suspense>
-      <MobileFontSizeSetup />
+      {/* Exclusive: on a fresh install both would otherwise stack. Consent is
+          answered first, then the font-size picker. */}
+      {consentPending ? <MobileAnalyticsConsentSheet /> : <MobileFontSizeSetup />}
     </div>
   );
 }
@@ -289,6 +302,8 @@ function RouteScreen({
       return <MobileVaultsScreen onBack={onBack} />;
     case "settings-collaboration":
       return <MobileCollaborationScreen onBack={onBack} />;
+    case "settings-privacy":
+      return <MobilePrivacyScreen onBack={onBack} />;
     case "settings-about":
       return <MobileAboutScreen onBack={onBack} />;
   }

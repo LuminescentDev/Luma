@@ -270,6 +270,9 @@ export function buildSettings(theme: ThemeMode): Record<string, unknown> {
     [SETTING_KEYS.checkOnLaunch]: false,
     [SETTING_KEYS.restoreSessions]: false,
     [SETTING_KEYS.autoReconnect]: true,
+    // An explicit choice, so the first-run consent prompt cannot fire over a
+    // marketing screenshot.
+    [SETTING_KEYS.analytics]: false,
   };
 }
 

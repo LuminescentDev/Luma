@@ -137,6 +137,26 @@ pub async fn sftp_download(
 }
 
 #[tauri::command]
+pub async fn sftp_copy(
+    manager: State<'_, SftpManager>,
+    source_session_id: String,
+    source_path: String,
+    dest_session_id: String,
+    dest_path: String,
+    on_progress: Channel<TransferProgress>,
+) -> Result<TransferStartResponse> {
+    sftp::sftp_copy(
+        &manager,
+        &source_session_id,
+        &source_path,
+        &dest_session_id,
+        &dest_path,
+        on_progress,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn sftp_cancel(manager: State<'_, SftpManager>, transfer_id: String) -> Result<()> {
     manager.cancel_transfer(&transfer_id)
 }

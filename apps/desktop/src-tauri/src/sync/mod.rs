@@ -3122,7 +3122,9 @@ fn read_encrypted_bundle(path: &str, app_data_dir: &Path, passphrase: &str) -> R
 }
 
 fn is_safe_setting_key(key: &str) -> bool {
-    if key == settings::SYNC_INCLUDE_PRIVATE_KEYS_KEY {
+    if key == settings::SYNC_INCLUDE_PRIVATE_KEYS_KEY
+        || settings::DEVICE_LOCAL_SETTING_KEYS.contains(&key)
+    {
         return false;
     }
     let normalized = key.to_ascii_lowercase().replace('_', "-");
@@ -4716,6 +4718,35 @@ mod tests {
         let error = encrypt_bundle(&bundle, &"correct passphrase".into()).unwrap_err();
         assert_eq!(error.category(), "invalid-input");
         assert!(!error.to_string().contains("do-not-sync"));
+    }
+
+    #[test]
+    fn analytics_consent_is_device_local() {
+        assert!(!is_safe_setting_key(crate::analytics::CONSENT_SETTING_KEY));
+    }
+
+    #[test]
+    fn the_analytics_install_id_is_device_local() {
+        // Syncing it would let two of a user's devices be joined together.
+        assert!(!is_safe_setting_key(
+            crate::analytics::INSTALL_ID_SETTING_KEY
+        ));
+    }
+
+    #[test]
+    fn rejects_a_bundle_carrying_an_analytics_consent_choice() {
+        // Consent is per-device. Without this, a peer's bundle — or a tampered
+        // one — could silently turn analytics on here.
+        let mut bundle = empty_bundle("11111111-1111-4111-8111-111111111111");
+        bundle.settings.insert(
+            crate::analytics::CONSENT_SETTING_KEY.into(),
+            SyncSetting {
+                value: json!(true),
+                updated_at: 1,
+            },
+        );
+        let error = encrypt_bundle(&bundle, &"correct passphrase".into()).unwrap_err();
+        assert_eq!(error.category(), "invalid-input");
     }
 
     fn temporary_directory() -> PathBuf {

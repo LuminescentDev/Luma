@@ -3,7 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  ArrowLeftRight,
   ChevronRight,
+  Copy,
   CornerLeftUp,
   Download,
   File as FileIcon,
@@ -21,9 +23,10 @@ import {
 import { useHosts } from "../../hooks/useHosts";
 import { sftpListKey, useSftpList } from "../../hooks/useSftp";
 import {
-  selectActiveSession,
+  OTHER_SIDE,
   selectRunningForSession,
   useSftpStore,
+  type PaneSide,
 } from "../../stores/sftpStore";
 import {
   breadcrumbSegments,
@@ -33,6 +36,7 @@ import {
   sftpMkdir,
   sftpRename,
   remoteJoin,
+  type DirectoryListing,
   type SftpEntry,
 } from "../../lib/sftp";
 import { parseLumaError } from "../../lib/hosts";
@@ -51,6 +55,11 @@ import { cn } from "../../lib/utils";
  * @tauri-apps/plugin-dialog. Browse / mkdir / rename / delete / upload /
  * download / cancel / retry all reuse the shared sftpStore + lib/sftp transport
  * and the desktop TransferQueue.
+ *
+ * The store's two panes both hold hosts here: one is on screen at a time
+ * (mobileSide) and the endpoint switcher moves between them, which is what makes
+ * the "Copy to <host>" row action — a direct host-to-host transfer — possible on
+ * a phone-sized screen.
  */
 
 /** Basename of a local path (handles both "/" and "\" separators). */
@@ -67,26 +76,67 @@ function KindIcon({ kind }: { kind: SftpEntry["kind"] }) {
 }
 
 export function MobileSftpScreen() {
-  const activeSession = useSftpStore(selectActiveSession);
-  const activeSessionId = useSftpStore((s) => s.activeSessionId);
+  const initPanes = useSftpStore((s) => s.initPanes);
+  const side = useSftpStore((s) => s.mobileSide);
+  const endpoint = useSftpStore((s) => s.panes[side]);
+  const otherEndpoint = useSftpStore((s) => s.panes[OTHER_SIDE[side]]);
+  const setMobileSide = useSftpStore((s) => s.setMobileSide);
 
-  if (!activeSession || !activeSessionId) {
-    return <HostPicker />;
+  // Mobile has no local pane: both panes hold hosts.
+  useEffect(() => {
+    initPanes({ localAvailable: false });
+  }, [initPanes]);
+
+  if (endpoint.kind !== "remote") {
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-background">
+        {otherEndpoint.kind === "remote" && (
+          <button
+            type="button"
+            onClick={() => setMobileSide(OTHER_SIDE[side])}
+            className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border px-3 text-sm text-accent"
+          >
+            <CornerLeftUp size={15} /> Back to the connected host
+          </button>
+        )}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <HostPicker side={side} />
+        </div>
+      </div>
+    );
   }
-  return <ConnectedView key={activeSessionId} sessionId={activeSessionId} />;
+  return (
+    <ConnectedView
+      key={endpoint.sessionId}
+      sessionId={endpoint.sessionId}
+      side={side}
+    />
+  );
 }
 
-function ConnectedView({ sessionId }: { sessionId: string }) {
+function ConnectedView({
+  sessionId,
+  side,
+}: {
+  sessionId: string;
+  side: PaneSide;
+}) {
   const queryClient = useQueryClient();
   const { data: hosts } = useHosts();
 
   const session = useSftpStore((s) => s.sessions[sessionId]);
+  const otherEndpoint = useSftpStore((s) => s.panes[OTHER_SIDE[side]]);
+  const otherSession = useSftpStore((s) =>
+    otherEndpoint.kind === "remote"
+      ? (s.sessions[otherEndpoint.sessionId] ?? null)
+      : null,
+  );
   const setRemotePath = useSftpStore((s) => s.setRemotePath);
+  const setMobileSide = useSftpStore((s) => s.setMobileSide);
   const markSessionError = useSftpStore((s) => s.markSessionError);
-  const disconnect = useSftpStore((s) => s.disconnect);
+  const clearPane = useSftpStore((s) => s.clearPane);
   const reconnect = useSftpStore((s) => s.reconnect);
-  const upload = useSftpStore((s) => s.upload);
-  const download = useSftpStore((s) => s.download);
+  const transfer = useSftpStore((s) => s.transfer);
   const runningForSession = useSftpStore((s) =>
     selectRunningForSession(s.transfers, sessionId),
   );
@@ -106,6 +156,11 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [pendingCopy, setPendingCopy] = useState<{
+    name: string;
+    target: string;
+    run: () => void;
+  } | null>(null);
 
   // Canonicalize the remote path from the resolved listing.
   useEffect(() => {
@@ -126,6 +181,11 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
     [hosts, session?.hostId],
   );
   const hostLabel = host?.name ?? "Remote";
+  const otherHost = useMemo(
+    () => (hosts ?? []).find((h) => h.id === otherSession?.hostId),
+    [hosts, otherSession?.hostId],
+  );
+  const otherLabel = otherHost?.name ?? "the other host";
 
   const entries = listing.data?.entries ?? [];
   const visible = useMemo(() => {
@@ -160,7 +220,13 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
       modifiedAt: null,
       permissions: null,
     }));
-    upload(sessionId, files, remotePath);
+    transfer({
+      source: { kind: "local" },
+      dest: { kind: "remote", sessionId },
+      files,
+      destDir: remotePath,
+      destSeparator: "/",
+    });
   };
 
   // Download: pick a destination folder via the system picker, then fetch the
@@ -168,7 +234,39 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
   const pickAndDownload = async (entry: SftpEntry) => {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== "string") return;
-    download(sessionId, [entry], dir, dir.includes("\\") ? "\\" : "/");
+    transfer({
+      source: { kind: "remote", sessionId },
+      dest: { kind: "local" },
+      files: [entry],
+      destDir: dir,
+      destSeparator: dir.includes("\\") ? "\\" : "/",
+    });
+  };
+
+  // Copy straight to the host held by the other pane, into whatever directory
+  // it is currently showing.
+  const copyToOtherHost = (entry: SftpEntry) => {
+    if (otherEndpoint.kind !== "remote" || !otherSession) return;
+    const destDir = otherSession.remotePath;
+    if (!destDir) return;
+    const run = () =>
+      transfer({
+        source: { kind: "remote", sessionId },
+        dest: { kind: "remote", sessionId: otherEndpoint.sessionId },
+        files: [entry],
+        destDir,
+        destSeparator: "/",
+      });
+    // Luma picks this destination itself (unlike the system picker paths), so
+    // warn before silently replacing a file on the other host.
+    const destListing = queryClient.getQueryData<DirectoryListing>(
+      sftpListKey(otherEndpoint.sessionId, destDir),
+    );
+    const collides = (destListing?.entries ?? []).some(
+      (candidate) => candidate.name === entry.name,
+    );
+    if (collides) setPendingCopy({ name: entry.name, target: otherLabel, run });
+    else run();
   };
 
   const submitMkdir = async (name: string) => {
@@ -222,7 +320,11 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
           either. */}
       <div className="shrink-0 border-b border-border bg-surface px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold">{hostLabel}</span>
+          <EndpointSwitcher
+            label={hostLabel}
+            otherLabel={otherEndpoint.kind === "remote" ? otherLabel : null}
+            onSwitch={() => setMobileSide(OTHER_SIDE[side])}
+          />
           <button
             type="button"
             aria-label="Refresh"
@@ -256,7 +358,7 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
             onClick={() =>
               runningForSession > 0
                 ? setConfirmDisconnect(true)
-                : void disconnect(sessionId)
+                : void clearPane(side)
             }
             className="flex h-10 w-10 items-center justify-center rounded-md border border-border text-muted active:bg-raised"
           >
@@ -334,6 +436,15 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
                   icon: <Download size={15} />,
                   onSelect: () => void pickAndDownload(entry),
                 },
+                ...(otherEndpoint.kind === "remote" && otherSession
+                  ? [
+                      {
+                        label: `Copy to ${otherLabel}`,
+                        icon: <Copy size={15} />,
+                        onSelect: () => copyToOtherHost(entry),
+                      },
+                    ]
+                  : []),
                 {
                   label: "Rename",
                   icon: <Pencil size={15} />,
@@ -434,6 +545,26 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
         }
       />
       <ConfirmDialog
+        open={pendingCopy !== null}
+        onOpenChange={(o) => !o && setPendingCopy(null)}
+        title="Replace existing file?"
+        destructive
+        confirmLabel="Replace"
+        onConfirm={() => {
+          pendingCopy?.run();
+          setPendingCopy(null);
+        }}
+        message={
+          <>
+            <span className="font-medium text-foreground">
+              {pendingCopy?.name}
+            </span>{" "}
+            already exists in the current folder on {pendingCopy?.target} and
+            will be overwritten.
+          </>
+        }
+      />
+      <ConfirmDialog
         open={confirmDisconnect}
         onOpenChange={setConfirmDisconnect}
         title="Disconnect SFTP"
@@ -441,7 +572,7 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
         confirmLabel="Disconnect"
         onConfirm={() => {
           setConfirmDisconnect(false);
-          void disconnect(sessionId);
+          void clearPane(side);
         }}
         message={
           <>
@@ -451,6 +582,36 @@ function ConnectedView({ sessionId }: { sessionId: string }) {
         }
       />
     </div>
+  );
+}
+
+/** Shows the host on screen and, once a second host is connected, swaps to it. */
+function EndpointSwitcher({
+  label,
+  otherLabel,
+  onSwitch,
+}: {
+  label: string;
+  otherLabel: string | null;
+  onSwitch: () => void;
+}) {
+  if (!otherLabel) {
+    return (
+      <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+        {label}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onSwitch}
+      className="flex min-h-11 min-w-0 flex-1 items-center gap-1.5 text-left"
+    >
+      <span className="min-w-0 truncate text-sm font-semibold">{label}</span>
+      <ArrowLeftRight size={14} className="shrink-0 text-muted" />
+      <span className="min-w-0 truncate text-xs text-muted">{otherLabel}</span>
+    </button>
   );
 }
 

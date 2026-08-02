@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setInvoke, invoke } from "../test/tauriMock";
+import { queryClient } from "../lib/queryClient";
 import { useSftpStore } from "./sftpStore";
 import type { SftpEntry, TransferProgress } from "../lib/sftp";
+
+const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
 
 function fire(channel: unknown, payload: TransferProgress): void {
   (channel as { onmessage: (message: TransferProgress) => void }).onmessage(
@@ -29,12 +32,48 @@ function transfers() {
   return useSftpStore.getState().transfers;
 }
 
+/** Local -> host, the shape most of these cases exercise. */
+function upload(files: SftpEntry[], sessionId = "sess", dir = "/remote") {
+  useSftpStore.getState().transfer({
+    source: { kind: "local" },
+    dest: { kind: "remote", sessionId },
+    files,
+    destDir: dir,
+    destSeparator: "/",
+  });
+}
+
+/** Host -> local. */
+function download(files: SftpEntry[], sessionId = "sess", dir = "/local") {
+  useSftpStore.getState().transfer({
+    source: { kind: "remote", sessionId },
+    dest: { kind: "local" },
+    files,
+    destDir: dir,
+    destSeparator: "/",
+  });
+}
+
+function session(id: string, hostId = "h1", remotePath = "/") {
+  return {
+    sftpSessionId: id,
+    hostId,
+    status: "connected" as const,
+    remotePath,
+    errorCategory: null,
+    errorMessage: null,
+  };
+}
+
 beforeEach(() => {
+  invalidateQueries.mockClear();
   useSftpStore.setState({
     sessions: {},
-    activeSessionId: null,
-    connectingHostId: null,
-    connectError: null,
+    panes: { left: { kind: "none" }, right: { kind: "none" } },
+    connecting: { left: null, right: null },
+    connectError: { left: null, right: null },
+    initialized: false,
+    mobileSide: "right",
     localPath: null,
     transfers: [],
   });
@@ -51,13 +90,13 @@ describe("SFTP transfer queue transitions", () => {
       throw new Error(`unexpected ${cmd}`);
     });
 
-    useSftpStore.getState().upload("sess", [file("a.txt")], "/remote");
+    upload([file("a.txt")]);
     await flush();
 
     let record = transfers().find((t) => t.transferId === "up-1");
     expect(record?.state).toBe("running");
     expect(record?.name).toBe("a.txt");
-    expect(record?.remotePath).toBe("/remote/a.txt");
+    expect(record?.destPath).toBe("/remote/a.txt");
 
     fire(channel, {
       transferId: "up-1",
@@ -100,7 +139,7 @@ describe("SFTP transfer queue transitions", () => {
       modifiedAt: null,
       permissions: null,
     };
-    useSftpStore.getState().download("sess", [remote], "/local", "/");
+    download([remote]);
     await flush();
 
     // First event of a resumed file carries resumedFrom; transferred starts there.
@@ -143,14 +182,14 @@ describe("SFTP transfer queue transitions", () => {
       throw new Error(`unexpected ${cmd}`);
     });
 
-    useSftpStore.getState().upload("sess", [file("b.txt")], "/remote");
+    upload([file("b.txt")]);
     await flush();
 
     const record = transfers().find((t) => t.transferId === "up-2");
     // The stub (transferred=10) is merged with the metadata once registered.
     expect(record?.transferred).toBe(10);
     expect(record?.name).toBe("b.txt");
-    expect(record?.sessionId).toBe("sess");
+    expect(record?.destSessionId).toBe("sess");
   });
 
   it("records a failed row when the invoke rejects, and retry re-runs it", async () => {
@@ -164,7 +203,7 @@ describe("SFTP transfer queue transitions", () => {
       throw new Error(`unexpected ${cmd}`);
     });
 
-    useSftpStore.getState().upload("sess", [file("c.txt")], "/remote");
+    upload([file("c.txt")]);
     await flush();
 
     let all = transfers();
@@ -193,7 +232,7 @@ describe("SFTP transfer queue transitions", () => {
     });
 
     const dir: SftpEntry = { ...file("folder"), kind: "dir" };
-    useSftpStore.getState().upload("sess", [dir], "/remote");
+    upload([dir]);
     await flush();
 
     let record = transfers().find((t) => t.transferId === "dir-1");
@@ -296,7 +335,7 @@ describe("SFTP transfer queue transitions", () => {
     });
 
     const dir: SftpEntry = { ...file("folder"), kind: "dir" };
-    useSftpStore.getState().upload("sess", [dir], "/remote");
+    upload([dir]);
     await flush();
     fire(uploadChannel, {
       transferId: "dir-old",
@@ -352,7 +391,7 @@ describe("SFTP transfer queue transitions", () => {
     });
 
     const dir: SftpEntry = { ...file("folder"), kind: "dir" };
-    useSftpStore.getState().upload("sess", [dir], "/remote");
+    upload([dir]);
     await flush();
     fire(uploadChannel, {
       transferId: "dir-x",
@@ -389,25 +428,17 @@ describe("SFTP transfer queue transitions", () => {
     });
     const now = Date.now();
     useSftpStore.setState({
-      sessions: {
-        s1: {
-          sftpSessionId: "s1",
-          hostId: "h1",
-          status: "connected",
-          remotePath: "/",
-          errorCategory: null,
-          errorMessage: null,
-        },
-      },
-      activeSessionId: "s1",
+      sessions: { s1: session("s1") },
+      panes: { left: { kind: "local" }, right: { kind: "remote", sessionId: "s1" } },
       transfers: [
         {
           transferId: "run-1",
           kind: "up",
           name: "x",
-          localPath: "/l/x",
-          remotePath: "/r/x",
-          sessionId: "s1",
+          sourcePath: "/l/x",
+          destPath: "/r/x",
+          sourceSessionId: null,
+          destSessionId: "s1",
           isDirectory: false,
           targetDir: "/r",
           transferred: 5,
@@ -425,10 +456,152 @@ describe("SFTP transfer queue transitions", () => {
       ],
     });
 
-    await useSftpStore.getState().disconnect("s1");
+    await useSftpStore.getState().clearPane("right");
 
     expect(transfers()[0].state).toBe("cancelled");
     expect(useSftpStore.getState().sessions.s1).toBeUndefined();
-    expect(useSftpStore.getState().activeSessionId).toBeNull();
+    expect(useSftpStore.getState().panes.right).toEqual({ kind: "none" });
+  });
+
+  it("copies host to host and refreshes the destination session's listing", async () => {
+    let channel: unknown;
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_copy") {
+        expect(args.sourceSessionId).toBe("a");
+        expect(args.destSessionId).toBe("b");
+        expect(args.sourcePath).toBe("/local/a.txt");
+        expect(args.destPath).toBe("/srv/a.txt");
+        channel = args.onProgress;
+        return { transferId: "cp-1" };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    useSftpStore.getState().transfer({
+      source: { kind: "remote", sessionId: "a" },
+      dest: { kind: "remote", sessionId: "b" },
+      files: [file("a.txt")],
+      destDir: "/srv",
+      destSeparator: "/",
+    });
+    await flush();
+
+    let record = transfers().find((t) => t.transferId === "cp-1");
+    expect(record?.kind).toBe("copy");
+    expect(record?.sourceSessionId).toBe("a");
+    expect(record?.destSessionId).toBe("b");
+
+    fire(channel, {
+      transferId: "cp-1",
+      transferred: 100,
+      total: 100,
+      state: "completed",
+      errorMessage: null,
+    });
+    record = transfers().find((t) => t.transferId === "cp-1");
+    expect(record?.state).toBe("completed");
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["sftp-list", "b", "/srv"],
+    });
+  });
+
+  it("cancels a copy when either end disconnects", async () => {
+    setInvoke((cmd) => {
+      if (cmd === "sftp_disconnect") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    const now = Date.now();
+    useSftpStore.setState({
+      sessions: { a: session("a"), b: session("b", "h2") },
+      panes: {
+        left: { kind: "remote", sessionId: "a" },
+        right: { kind: "remote", sessionId: "b" },
+      },
+      transfers: [
+        {
+          transferId: "cp-run",
+          kind: "copy",
+          name: "x",
+          sourcePath: "/a/x",
+          destPath: "/b/x",
+          sourceSessionId: "a",
+          destSessionId: "b",
+          isDirectory: false,
+          targetDir: "/b",
+          transferred: 5,
+          total: 10,
+          state: "running",
+          errorMessage: null,
+          aggregate: null,
+          entries: [],
+          resumedFrom: null,
+          startedAt: now,
+          lastTickAt: now,
+          lastTickBytes: 5,
+          rate: 0,
+        },
+      ],
+    });
+
+    // Dropping the SOURCE pane must cancel the row, not just the destination.
+    await useSftpStore.getState().clearPane("left");
+    expect(transfers()[0].state).toBe("cancelled");
+  });
+});
+
+describe("SFTP panes", () => {
+  it("defaults the left pane to local only when local browsing exists", () => {
+    useSftpStore.getState().initPanes({ localAvailable: true });
+    expect(useSftpStore.getState().panes.left).toEqual({ kind: "local" });
+    expect(useSftpStore.getState().panes.right).toEqual({ kind: "none" });
+
+    // Applied once: a later init (e.g. remounting the screen) must not undo a
+    // pane the user has since disconnected.
+    void useSftpStore.getState().clearPane("left");
+    useSftpStore.getState().initPanes({ localAvailable: true });
+    expect(useSftpStore.getState().panes.left).toEqual({ kind: "none" });
+  });
+
+  it("leaves both panes empty on mobile, where there is no local browsing", () => {
+    useSftpStore.getState().initPanes({ localAvailable: false });
+    expect(useSftpStore.getState().panes).toEqual({
+      left: { kind: "none" },
+      right: { kind: "none" },
+    });
+  });
+
+  it("refuses to put both panes on this computer", () => {
+    useSftpStore.setState({
+      panes: { left: { kind: "local" }, right: { kind: "none" } },
+    });
+    useSftpStore.getState().setPaneLocal("right");
+    expect(useSftpStore.getState().panes.right).toEqual({ kind: "none" });
+  });
+
+  it("closes the session a pane gives up, and assigns a connect to its side", async () => {
+    setInvoke((cmd) => {
+      if (cmd === "sftp_connect") {
+        return { sftpSessionId: "new-session", initialPath: "/home/me" };
+      }
+      if (cmd === "sftp_disconnect") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    useSftpStore.setState({
+      sessions: { old: session("old") },
+      panes: { left: { kind: "local" }, right: { kind: "remote", sessionId: "old" } },
+    });
+
+    await useSftpStore.getState().connect("h2", "right");
+
+    expect(useSftpStore.getState().panes.right).toEqual({
+      kind: "remote",
+      sessionId: "new-session",
+    });
+    expect(useSftpStore.getState().sessions.old).toBeUndefined();
+    expect(useSftpStore.getState().sessions["new-session"].remotePath).toBe(
+      "/home/me",
+    );
+    // The untouched pane is left alone.
+    expect(useSftpStore.getState().panes.left).toEqual({ kind: "local" });
   });
 });

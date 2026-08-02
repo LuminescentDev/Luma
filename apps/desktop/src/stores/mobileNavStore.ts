@@ -35,6 +35,7 @@ export type MobileRoute =
   | "settings-ssh"
   | "settings-vaults"
   | "settings-collaboration"
+  | "settings-privacy"
   | "settings-about";
 
 export const MOBILE_TABS: MobileTab[] = ["vaults", "connections", "profile"];

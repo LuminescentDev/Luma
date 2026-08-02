@@ -1,4 +1,5 @@
 mod agent_events;
+mod analytics;
 mod collaboration;
 mod commands;
 mod docker;
@@ -118,6 +119,26 @@ pub fn run() {
             &app.state::<keystore::KeystoreState>(),
         ))?;
         app.manage(sync_state);
+        // Anonymous product analytics: opt-out, app/version/platform only. An
+        // absent consent value means the user has not been asked yet, so
+        // nothing is collected until the prompt is answered. Reads settings
+        // with the same block_on the keystore and sync use above.
+        let stored_settings =
+            tauri::async_runtime::block_on(storage::settings::all(&app.state::<AppState>().pool))?;
+        // Published to a global rather than managed: `LumaError::serialize` has
+        // no access to Tauri state, and commands need the same handle, so the
+        // global is the single owner and `State` would only duplicate it.
+        analytics::install(analytics::init(
+            app.package_info().version.to_string(),
+            stored_settings
+                .get(analytics::CONSENT_SETTING_KEY)
+                .and_then(serde_json::Value::as_bool),
+            stored_settings
+                .get(analytics::INSTALL_ID_SETTING_KEY)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        ));
+        analytics::install_panic_hook();
         app.manage(collaboration::CollaborationRuntimeState::default());
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         app.manage(PtyManager::default());
@@ -161,6 +182,8 @@ pub fn run() {
         commands::settings_get_all,
         commands::settings_set,
         commands::settings_delete,
+        commands::analytics_config,
+        commands::analytics_set_enabled,
         commands::shells_detect,
         commands::profiles_list,
         commands::profile_create,
@@ -244,6 +267,7 @@ pub fn run() {
         commands::local_delete,
         commands::sftp_upload,
         commands::sftp_download,
+        commands::sftp_copy,
         commands::sftp_cancel,
         commands::sftp_retry,
         commands::terminal_attach_upload,
@@ -327,6 +351,8 @@ pub fn run() {
         commands::settings_get_all,
         commands::settings_set,
         commands::settings_delete,
+        commands::analytics_config,
+        commands::analytics_set_enabled,
         commands::vaults_list,
         commands::vault_get,
         commands::vault_create,
@@ -397,6 +423,7 @@ pub fn run() {
         commands::sftp_delete,
         commands::sftp_upload,
         commands::sftp_download,
+        commands::sftp_copy,
         commands::sftp_cancel,
         commands::sftp_retry,
         commands::terminal_attach_upload,
@@ -483,6 +510,9 @@ pub fn run() {
             app_handle.state::<TunnelManager>().kill_all();
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             app_handle.state::<PtyManager>().kill_all();
+            // Last: reaping children promptly matters more than the exit
+            // event, and the flush is deadline-bounded either way.
+            analytics::handle().shutdown();
         }
     });
 }

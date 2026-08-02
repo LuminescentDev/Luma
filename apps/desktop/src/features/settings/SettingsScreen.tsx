@@ -4,6 +4,7 @@ import {
   Info,
   Keyboard,
   Palette,
+  ShieldCheck,
   Terminal as TerminalIcon,
   UserRound,
   Vault as VaultIcon,
@@ -21,6 +22,8 @@ import { AccountSection } from "../account/AccountSection";
 import { CollaborationSection } from "../collaboration/CollaborationSection";
 import { VaultsSection } from "../vaults/VaultsSection";
 import { UpdatesSection } from "../updater/UpdatesSection";
+import { AnalyticsDisclosure } from "../privacy/AnalyticsDisclosure";
+import { useAnalyticsConsent } from "../privacy/useAnalyticsConsent";
 import { detectSpeechSupport } from "../voiceComposer/speechProvider";
 
 type CategoryId =
@@ -29,6 +32,7 @@ type CategoryId =
   | "shortcuts"
   | "account"
   | "vaults"
+  | "privacy"
   | "updates"
   | "about";
 
@@ -38,6 +42,7 @@ const CATEGORIES: { id: CategoryId; label: string; icon: LucideIcon }[] = [
   { id: "shortcuts", label: "Keyboard shortcuts", icon: Keyboard },
   { id: "account", label: "Account", icon: UserRound },
   { id: "vaults", label: "Vaults & Sync", icon: VaultIcon },
+  { id: "privacy", label: "Privacy", icon: ShieldCheck },
   { id: "updates", label: "Updates", icon: Download },
   { id: "about", label: "About", icon: Info },
 ];
@@ -47,6 +52,7 @@ export function SettingsScreen() {
   const setSetting = useSetSetting();
   const { data: shells } = useShells();
   const { data: profiles } = useProfiles();
+  const analytics = useAnalyticsConsent();
 
   const [active, setActive] = useState<CategoryId>("appearance");
 
@@ -129,7 +135,7 @@ export function SettingsScreen() {
               </Field>
               <Field
                 label="Command autocomplete"
-                hint="Local only — history, snippets and remote paths. Nothing is sent anywhere."
+                hint="Local only — history, snippets and remote paths. No command history ever leaves this device."
               >
                 <Toggle
                   checked={autocomplete}
@@ -233,6 +239,41 @@ export function SettingsScreen() {
         );
       case "vaults":
         return <VaultsSection />;
+      case "privacy":
+        return (
+          <div className="space-y-6">
+            <Field
+              label="Share anonymous analytics"
+              hint={
+                analytics.configured
+                  ? "App version, operating system, how long the app was open, and the kind of any failures — never their message. Turning this off deletes this install's id."
+                  : "Not available in this build."
+              }
+            >
+              <Toggle
+                checked={analytics.enabled}
+                label="Share anonymous analytics"
+                disabled={!analytics.configured || analytics.choose.isPending}
+                onClick={() => analytics.choose.mutate(!analytics.enabled)}
+              />
+            </Field>
+            <Subsection title="What this sends">
+              <AnalyticsDisclosure />
+            </Subsection>
+            {analytics.installId && (
+              <Subsection title="This install's id">
+                <p className="break-all font-mono text-xs text-muted">
+                  {analytics.installId}
+                </p>
+                <p className="mt-2 text-sm text-muted">
+                  Quote this if you ask us to delete the analytics records for
+                  this install. Turning the setting off deletes the id here and
+                  starts a new one if you turn it back on.
+                </p>
+              </Subsection>
+            )}
+          </div>
+        );
       case "updates":
         return <UpdatesSection />;
       case "about":

@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Copy,
   Download,
   Folder,
   Link2,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   useSftpStore,
+  type TransferKind,
   type TransferRecord,
 } from "../../stores/sftpStore";
 import { formatBytes, formatRate, type TransferState } from "../../lib/sftp";
@@ -37,6 +39,12 @@ const STATE_CHIP: Record<TransferState, { label: string; className: string }> = 
   cancelled: { label: "Cancelled", className: "bg-muted/15 text-muted" },
   skipped: { label: "Skipped", className: "bg-amber-400/15 text-amber-400" },
 };
+
+function KindIcon({ kind, size }: { kind: TransferKind; size: number }) {
+  if (kind === "up") return <Upload size={size} />;
+  if (kind === "down") return <Download size={size} />;
+  return <Copy size={size} />;
+}
 
 export function TransferQueue() {
   const transfers = useSftpStore((s) => s.transfers);
@@ -111,8 +119,9 @@ function TransferRow({
     record.total && record.total > 0
       ? Math.min(100, Math.round((record.transferred / record.total) * 100))
       : 0;
-  const uploadFailurePartial =
-    record.kind === "up" &&
+  // Transfers writing to a host leave a .luma-part behind when interrupted.
+  const remotePartialLeftBehind =
+    record.destSessionId !== null &&
     (record.state === "failed" || record.state === "cancelled");
   const hasEntries = record.entries.length > 0;
   const failedEntries = record.entries.filter((e) => e.state === "failed").length;
@@ -126,19 +135,13 @@ function TransferRow({
     <li className="rounded-md px-2 py-1.5 text-xs hover:bg-raised">
       <div className="flex items-center gap-3">
         <span className="shrink-0 text-muted">
-          {record.isDirectory ? (
-            <Folder size={14} />
-          ) : record.kind === "up" ? (
-            <Upload size={14} />
-          ) : (
-            <Download size={14} />
-          )}
+          {record.isDirectory ? <Folder size={14} /> : <KindIcon kind={record.kind} size={14} />}
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             {record.isDirectory ? (
               <span className="shrink-0 text-muted">
-                {record.kind === "up" ? <Upload size={11} /> : <Download size={11} />}
+                <KindIcon kind={record.kind} size={11} />
               </span>
             ) : null}
             <span
@@ -214,7 +217,7 @@ function TransferRow({
                 {record.errorMessage}
               </span>
             )}
-            {uploadFailurePartial && !record.isDirectory && (
+            {remotePartialLeftBehind && !record.isDirectory && (
               <span className="text-muted/80">
                 a partial file may remain on the remote
               </span>
