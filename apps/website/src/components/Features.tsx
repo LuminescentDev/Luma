@@ -1,4 +1,5 @@
 import {
+  Activity,
   KeyRound,
   type LucideIcon,
   Server,
@@ -39,6 +40,7 @@ const features: Feature[] = [
       'Embedded russh across every platform',
       'Encrypted reusable identities',
       'ProxyJump, keepalive, startup commands',
+      'Auto-reconnecting sessions',
       'Explicit unknown-host confirmation',
       'Import from OpenSSH, Tabby, and Electerm',
     ],
@@ -53,8 +55,23 @@ const features: Feature[] = [
       'Drag-and-drop transfers',
       'Progress, cancel, and retry',
       'Recursive directory transfers',
+      'Direct host-to-host copies',
       'Parameterized snippet runner',
       'Port forwarding and command palette',
+    ],
+  },
+  {
+    icon: Activity,
+    title: 'Monitoring & collaboration',
+    summary:
+      'See what a server is doing and hand a session to someone else, with nothing to install on the host.',
+    points: [
+      'Agentless server dashboard over SSH',
+      'CPU, memory, disks, network, processes',
+      'Docker containers and failed services',
+      'Fleet health across saved hosts',
+      'Agent inbox for coding agents',
+      'End-to-end encrypted shared terminals',
     ],
   },
   {
@@ -92,9 +109,9 @@ export function Features() {
           Everything you need in one client
         </h2>
         <p className='mt-4 text-base text-muted sm:text-lg'>
-          Local shells, remote sessions, file transfers, and secrets management
-          — designed to work together instead of across a handful of separate
-          tools.
+          Local shells, remote sessions, file transfers, server monitoring, and
+          secrets management — designed to work together instead of across a
+          handful of separate tools.
         </p>
       </div>
 
