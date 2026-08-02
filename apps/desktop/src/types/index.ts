@@ -199,6 +199,11 @@ export const SETTING_KEYS = {
    * it is on, a double-tap no longer selects the word under the finger. Never
    * synced. */
   gestureDoubleTapTab: "mobile.gestureDoubleTapTab",
+  /** Mobile-only toggle: show a live read-only preview of each open session on
+   * the Connections list. Default ON. Every visible preview is a second xterm
+   * instance mirroring its session, so it is worth being able to switch off.
+   * Never synced. */
+  connectionPreviews: "mobile.connectionPreviews",
   /** Device-local map of hostId -> { multiplexer, sessionName } to re-attach
    * automatically when connecting to that host. Never synced. */
   multiplexerResume: "multiplexer.resume",

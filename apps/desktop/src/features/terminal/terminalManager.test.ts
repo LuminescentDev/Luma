@@ -697,3 +697,124 @@ describe("terminalManager buffer snapshot", () => {
     terminalManager.dispose("buf-backend");
   });
 });
+
+describe("terminalManager preview mirror", () => {
+  /** Stub the PTY backend, create a local session, and return its terminal plus
+   * the data channel the backend would push output through. */
+  async function createLocalWithOutput(id: string): Promise<{
+    term: Terminal;
+    emit: (data: string) => void;
+  }> {
+    let dataChannel: { onmessage: (message: string) => void } | undefined;
+    setInvoke((cmd, args) => {
+      if (cmd === "pty_spawn") {
+        dataChannel = args.onData as typeof dataChannel;
+        return { sessionId: `${id}-backend`, shellName: "bash" };
+      }
+      if (cmd === "pty_kill" || cmd === "pty_resize") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    const startIndex = createdTerminals.length;
+    await terminalManager.createSession(id, { kind: "local", ref: undefined }, callbacks());
+    return {
+      term: createdTerminals[startIndex],
+      emit: (data) => dataChannel?.onmessage(data),
+    };
+  }
+
+  /** The terminal the mirror created (the most recent one). */
+  function newestTerminal(): Terminal {
+    return createdTerminals[createdTerminals.length - 1];
+  }
+
+  it("seeds the mirror with the source's buffer, then streams its live output", async () => {
+    const { term, emit } = await createLocalWithOutput("mirror-src");
+    term.setLine(0, "hello");
+    term.setLine(1, "world");
+
+    const stop = terminalManager.mirrorSession("preview:mirror-src", "mirror-src");
+    const mirror = newestTerminal();
+
+    expect(mirror.writes).toEqual(["hello\r\nworld"]);
+
+    emit("later output");
+    expect(mirror.writes).toEqual(["hello\r\nworld", "later output"]);
+
+    stop();
+    terminalManager.dispose("mirror-src");
+  });
+
+  it("seeds only the tail of a long buffer", async () => {
+    const { term } = await createLocalWithOutput("mirror-tail");
+    for (let line = 0; line < 10; line += 1) term.setLine(line, `line ${line}`);
+
+    const stop = terminalManager.mirrorSession("preview:mirror-tail", "mirror-tail", {
+      lines: 3,
+    });
+
+    expect(newestTerminal().writes).toEqual(["line 7\r\nline 8\r\nline 9"]);
+
+    stop();
+    terminalManager.dispose("mirror-tail");
+  });
+
+  it("is read-only, so a preview can never type into the source", async () => {
+    await createLocalWithOutput("mirror-ro");
+
+    const stop = terminalManager.mirrorSession("preview:mirror-ro", "mirror-ro");
+
+    expect(newestTerminal().options.disableStdin).toBe(true);
+
+    stop();
+    terminalManager.dispose("mirror-ro");
+  });
+
+  it("stops streaming and disposes the mirror on teardown", async () => {
+    const { emit } = await createLocalWithOutput("mirror-stop");
+    const stop = terminalManager.mirrorSession("preview:mirror-stop", "mirror-stop");
+    const mirror = newestTerminal();
+
+    stop();
+    mirror.writes.length = 0;
+    emit("after teardown");
+
+    expect(mirror.writes).toEqual([]);
+    // The id is released, so re-mirroring the same session (scrolling the card
+    // back into view) builds a fresh terminal instead of hitting the duplicate
+    // guard and silently showing nothing.
+    const restarted = terminalManager.mirrorSession("preview:mirror-stop", "mirror-stop");
+    expect(newestTerminal()).not.toBe(mirror);
+
+    restarted();
+    terminalManager.dispose("mirror-stop");
+  });
+
+  it("no-ops for a session that does not exist yet", () => {
+    const before = createdTerminals.length;
+
+    const stop = terminalManager.mirrorSession("preview:absent", "absent");
+    stop();
+
+    expect(createdTerminals.length).toBe(before);
+  });
+
+  it("does not mirror twice into the same preview id", async () => {
+    const { emit } = await createLocalWithOutput("mirror-dupe");
+    const stop = terminalManager.mirrorSession("preview:mirror-dupe", "mirror-dupe");
+    const mirror = newestTerminal();
+    const after = createdTerminals.length;
+
+    const second = terminalManager.mirrorSession("preview:mirror-dupe", "mirror-dupe");
+    second();
+
+    // The duplicate created nothing, and its teardown left the first mirror
+    // alive rather than disposing a terminal it does not own.
+    expect(createdTerminals.length).toBe(after);
+    mirror.writes.length = 0;
+    emit("still live");
+    expect(mirror.writes).toEqual(["still live"]);
+
+    stop();
+    terminalManager.dispose("mirror-dupe");
+  });
+});

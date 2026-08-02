@@ -42,6 +42,8 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
   const gestureArrowPad = settings?.[SETTING_KEYS.gestureArrowPad] !== false;
   const gestureDoubleTapTab =
     settings?.[SETTING_KEYS.gestureDoubleTapTab] !== false;
+  const connectionPreviews =
+    settings?.[SETTING_KEYS.connectionPreviews] !== false;
   // Both default OFF. Dictation because the only engine a webview can reach may
   // be cloud-backed; auto-send because it skips the review step.
   const voiceDictation = settings?.[SETTING_KEYS.voiceDictation] === true;
@@ -93,6 +95,24 @@ export function MobileTerminalSettingsScreen({ onBack }: { onBack: () => void })
               setSetting.mutate({
                 key: SETTING_KEYS.terminalAutocomplete,
                 value: !autocomplete,
+              })
+            }
+          />
+        </Field>
+      </Section>
+
+      <Section title="Connections">
+        <Field
+          label="Live session previews"
+          hint="Shows what each open session is doing on the Connections list. Each visible preview mirrors its terminal, so turning this off saves battery."
+        >
+          <Toggle
+            checked={connectionPreviews}
+            label="Live session previews"
+            onClick={() =>
+              setSetting.mutate({
+                key: SETTING_KEYS.connectionPreviews,
+                value: !connectionPreviews,
               })
             }
           />

@@ -639,6 +639,11 @@ type ManagedSession = {
 // but notify the backing PTY only after the layout has briefly settled.
 const BACKEND_RESIZE_DEBOUNCE_MS = 100;
 
+// How much of a source session's buffer a preview mirror is seeded with. A
+// preview card shows a dozen or so rows, so this only needs to cover the visible
+// grid plus a little slack for re-wrapping at the card's narrower width.
+const PREVIEW_SEED_LINES = 60;
+
 type ManagerConfig = {
   fontSize: number;
   fontFamily: string;
@@ -1774,8 +1779,20 @@ export const terminalManager = {
     if (session) session.descriptor = descriptor;
   },
 
-  /** Mount the terminal into a host element (tab activation). */
-  attach(sessionId: string, host: HTMLElement): void {
+  /**
+   * Mount the terminal into a host element (tab activation).
+   *
+   * `focus: false` is for a surface that must not take focus when it appears —
+   * a preview mirror, which would otherwise pull focus off the screen it sits on
+   * (and, on mobile, could raise the soft keyboard). `accelerated: false` keeps
+   * it off the WebGL renderer; see the call site below.
+   */
+  attach(
+    sessionId: string,
+    host: HTMLElement,
+    options: { focus?: boolean; accelerated?: boolean } = {},
+  ): void {
+    const takeFocus = options.focus !== false;
     const session = sessions.get(sessionId);
     if (!session) {
       pendingHosts.set(sessionId, host);
@@ -1791,7 +1808,11 @@ export const terminalManager = {
       // Prefer the same renderer on every platform. loadWebgl catches
       // initialization failures and disposes itself on context loss, leaving
       // xterm's built-in renderer as the automatic fallback.
-      void loadWebgl(session.term);
+      //
+      // Previews opt out: a webview allows only a handful of live WebGL
+      // contexts, and spending them on decorative miniatures risks evicting the
+      // context of the terminal the user is actually working in.
+      if (options.accelerated !== false) void loadWebgl(session.term);
 
       void bundledTerminalFontReady.then(() => {
         if (session.disposed || !session.term.element?.isConnected) return;
@@ -1808,7 +1829,7 @@ export const terminalManager = {
     this.fitSession(sessionId);
     requestAnimationFrame(() => {
       this.fitSession(sessionId);
-      session.term.focus();
+      if (takeFocus) session.term.focus();
       // Re-appending a terminal element detaches and reconnects its canvases;
       // under the WebGL renderer the drawing buffer is cleared on detach, so an
       // idle session (no new output) would stay blank until it next writes.
@@ -2200,6 +2221,51 @@ export const terminalManager = {
       pendingHosts.delete(sessionId);
       this.attach(sessionId, pendingHost);
     }
+  },
+
+  /**
+   * Mirror a live session into a second, read-only terminal so another surface
+   * can show what it is doing — the mobile Connections list previews each open
+   * session this way.
+   *
+   * The mirror is a display session with no backend: it is seeded with the tail
+   * of the source's buffer and then fed the very same output bytes the source
+   * receives. Both halves run inside the manager, so a preview never puts
+   * terminal bytes on a React path; the caller only attaches a host element.
+   *
+   * Fidelity is deliberately limited to what a small card can honestly show:
+   * the mirror fits its own container, so it re-wraps rather than reproducing
+   * the source's grid, and a full-screen TUI (which addresses absolute cursor
+   * positions in the source's geometry) will look approximate. Line-oriented
+   * shell output — the case a preview is for — matches.
+   *
+   * @param previewId Id for the mirror; must not collide with a real session.
+   * @param sourceId The live session to mirror.
+   * @returns a teardown that stops mirroring and disposes the mirror. Safe to
+   * call when the source does not exist: nothing is created and teardown no-ops.
+   */
+  mirrorSession(
+    previewId: string,
+    sourceId: string,
+    options: { lines?: number } = {},
+  ): () => void {
+    if (!sessions.has(sourceId) || sessions.has(previewId)) return () => {};
+    // No onInput: createDisplaySession then sets disableStdin, so the mirror is
+    // read-only and cannot send anything to the source's PTY.
+    this.createDisplaySession(previewId);
+    // Each serialized line closes its own SGR state, so slicing to a tail keeps
+    // colors intact and spares the mirror a full scrollback replay.
+    const seed = this.getBufferText(sourceId);
+    const lines = options.lines ?? PREVIEW_SEED_LINES;
+    const tail = seed.split("\r\n").slice(-lines).join("\r\n");
+    this.writeOutput(previewId, tail);
+    const unsubscribe = this.subscribeOutput(sourceId, (bytes) =>
+      this.writeOutput(previewId, bytes),
+    );
+    return () => {
+      unsubscribe();
+      this.dispose(previewId);
+    };
   },
 
   /** Clear a display-only session's screen and scrollback, so a buffer snapshot

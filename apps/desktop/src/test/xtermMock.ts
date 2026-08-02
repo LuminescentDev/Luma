@@ -232,9 +232,19 @@ export class Terminal {
     return { dispose() {} };
   }
 
-  write(_data: unknown): void {}
+  /** Everything written into this terminal, in order. Display sessions (collab
+   * viewers, preview mirrors) are fed entirely through write(), so this is how a
+   * test observes what they were shown. */
+  writes: string[] = [];
+  write(data: unknown): void {
+    this.writes.push(
+      typeof data === "string" ? data : new TextDecoder().decode(data as Uint8Array),
+    );
+  }
   clear(): void {}
-  reset(): void {}
+  reset(): void {
+    this.writes.length = 0;
+  }
   focus(): void {}
   dispose(): void {}
   resize(cols: number, rows: number): void {

@@ -9,10 +9,12 @@ import {
 } from "lucide-react";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useMobileNavStore } from "../../stores/mobileNavStore";
+import { useSettings } from "../../hooks/useSettings";
 import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
-import type { PaneNode } from "../../types";
+import { SETTING_KEYS, type PaneNode } from "../../types";
 import { cn } from "../../lib/utils";
 import { MobileList, MobileRow, MobileScreen } from "./MobileScreen";
+import { MobileTerminalPreview } from "./MobileTerminalPreview";
 import { useAgentInboxUnread } from "./MobileAgentInboxScreen";
 
 /*
@@ -42,6 +44,10 @@ export function MobileConnectionsScreen({
   const restartSession = useSessionStore((s) => s.restartSession);
   const push = useMobileNavStore((s) => s.push);
   const unreadAgents = useAgentInboxUnread();
+  // Default ON. Each visible preview is a second (read-only) xterm instance, so
+  // it can be turned off on a device where that is not worth the battery.
+  const { data: settings } = useSettings();
+  const previews = settings?.[SETTING_KEYS.connectionPreviews] !== false;
 
   // Agent activity is checked far more often than it is acted on, so it sits at
   // the top of this tab with its own count rather than behind a session.
@@ -132,36 +138,48 @@ export function MobileConnectionsScreen({
             ];
             return (
               <ContextMenu key={tab.id} actions={actions} minWidth="min-w-44">
-                <li className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onOpen(tab.id)}
-                    className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-xl bg-raised px-3 text-left active:ring-1 active:ring-accent"
-                  >
-                    <span
-                      className={cn(
-                        "h-2.5 w-2.5 shrink-0 rounded-full",
-                        DOT[status] ?? "bg-muted",
-                      )}
+                <li className="overflow-hidden rounded-xl bg-raised">
+                  {/* A live miniature of the session, so the list answers "what
+                      is it doing?" without opening it. Only rendered once there
+                      is a session to mirror; the row below is the tap target. */}
+                  {previews && sessionId && (
+                    <MobileTerminalPreview
+                      sessionId={sessionId}
+                      status={status}
+                      className="h-44 w-full border-b border-border/60 bg-background px-2 pt-1.5"
                     />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-foreground">
-                        {title}
+                  )}
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onOpen(tab.id)}
+                      className="flex min-h-14 min-w-0 flex-1 items-center gap-3 px-3 text-left active:bg-surface"
+                    >
+                      <span
+                        className={cn(
+                          "h-2.5 w-2.5 shrink-0 rounded-full",
+                          DOT[status] ?? "bg-muted",
+                        )}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-foreground">
+                          {title}
+                        </span>
+                        <span className="block truncate text-xs text-muted">
+                          {session?.connectionTarget ?? status}
+                        </span>
                       </span>
-                      <span className="block truncate text-xs text-muted">
-                        {session?.connectionTarget ?? status}
-                      </span>
-                    </span>
-                    <ChevronRight size={16} className="shrink-0 text-muted" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Close ${title}`}
-                    onClick={() => closeTab(tab.id)}
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted active:bg-raised"
-                  >
-                    <X size={16} />
-                  </button>
+                      <ChevronRight size={16} className="shrink-0 text-muted" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Close ${title}`}
+                      onClick={() => closeTab(tab.id)}
+                      className="mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-muted active:bg-surface"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
                 </li>
               </ContextMenu>
             );
