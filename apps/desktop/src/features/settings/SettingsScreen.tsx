@@ -1,8 +1,14 @@
 import { useState } from "react";
 import {
+  // lucide dropped brand marks in v1, so GitHub gets the generic code glyph.
+  Code,
   Download,
+  ExternalLink,
+  Globe,
   Info,
   Keyboard,
+  MessageSquarePlus,
+  MessagesSquare,
   Palette,
   ShieldCheck,
   Terminal as TerminalIcon,
@@ -10,6 +16,8 @@ import {
   Vault as VaultIcon,
   type LucideIcon,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { LINKS } from "../../lib/links";
 import { useSettings, useSetSetting } from "../../hooks/useSettings";
 import { useProfiles, useShells } from "../../hooks/useShells";
 import { parseShellRef, serializeShellRef } from "../../lib/terminal";
@@ -278,9 +286,37 @@ export function SettingsScreen() {
         return <UpdatesSection />;
       case "about":
         return (
-          <p className="text-sm text-muted">
-            Luma 0.1.0 — a lightweight terminal &amp; SSH client. MIT licensed.
-          </p>
+          <div className="space-y-6">
+            <p className="text-sm text-muted">
+              Luma 0.1.0 — a lightweight terminal &amp; SSH client. MIT licensed.
+            </p>
+            <div className="divide-y divide-border overflow-hidden rounded-lg border border-border">
+              <LinkRow
+                icon={Globe}
+                label="Website"
+                detail="luma.bwmp.dev"
+                href={LINKS.website}
+              />
+              <LinkRow
+                icon={Code}
+                label="GitHub"
+                detail="Browse the source"
+                href={LINKS.github}
+              />
+              <LinkRow
+                icon={MessageSquarePlus}
+                label="Issues & feature requests"
+                detail="Report a bug or suggest a feature"
+                href={LINKS.issues}
+              />
+              <LinkRow
+                icon={MessagesSquare}
+                label="Discord"
+                detail="Get help and follow development"
+                href={LINKS.discord}
+              />
+            </div>
+          </div>
         );
     }
   };
@@ -341,6 +377,35 @@ function Field({
       </div>
       {children}
     </div>
+  );
+}
+
+/** Row that hands a project URL to the OS browser. Not an <a>: the webview has
+ * no navigation target, so links open through the opener plugin. */
+function LinkRow({
+  icon: Icon,
+  label,
+  detail,
+  href,
+}: {
+  icon: LucideIcon;
+  label: string;
+  detail: string;
+  href: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => void openUrl(href)}
+      className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-raised"
+    >
+      <Icon size={16} className="shrink-0 text-muted" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm">{label}</span>
+        <span className="block truncate text-xs text-muted">{detail}</span>
+      </span>
+      <ExternalLink size={14} className="shrink-0 text-muted" />
+    </button>
   );
 }
 
