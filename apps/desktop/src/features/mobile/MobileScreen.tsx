@@ -1,4 +1,9 @@
-import { ChevronLeft, ChevronRight, type LucideIcon } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  type LucideIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../../lib/utils";
 
@@ -137,6 +142,7 @@ export function MobileRow({
   count,
   onSelect,
   iconClassName,
+  external = false,
 }: {
   icon: LucideIcon;
   label: string;
@@ -147,6 +153,9 @@ export function MobileRow({
   onSelect: () => void;
   /** Tint for the leading icon; defaults to the foreground monochrome look. */
   iconClassName?: string;
+  /** Leaves the app (opens a browser). Swaps the disclosure chevron for the
+   * external-link glyph so the row does not promise a pushed screen. */
+  external?: boolean;
 }) {
   return (
     <li>
@@ -169,7 +178,11 @@ export function MobileRow({
         {count !== undefined && (
           <span className="shrink-0 text-sm tabular-nums text-muted">{count}</span>
         )}
-        <ChevronRight size={18} className="shrink-0 text-muted" />
+        {external ? (
+          <ExternalLink size={17} className="shrink-0 text-muted" />
+        ) : (
+          <ChevronRight size={18} className="shrink-0 text-muted" />
+        )}
       </button>
     </li>
   );

@@ -4,12 +4,15 @@ import {
   FolderLock,
   Info,
   Lock,
+  MessagesSquare,
   Palette,
   ShieldCheck,
   SquareTerminal,
   UserRound,
   Users,
 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { LINKS } from "../../lib/links";
 import { useCollabStore } from "../../stores/collabStore";
 import { useMobileNavStore } from "../../stores/mobileNavStore";
 import { MobileList, MobileRow, MobileScreen } from "./MobileScreen";
@@ -92,6 +95,13 @@ export function MobileProfileHub() {
           label="Privacy"
           detail="Anonymous analytics"
           onSelect={() => push("settings-privacy")}
+        />
+        <MobileRow
+          icon={MessagesSquare}
+          label="Discord"
+          detail="Get help and follow development"
+          external
+          onSelect={() => void openUrl(LINKS.discord)}
         />
         <MobileRow icon={Info} label="About" onSelect={() => push("settings-about")} />
       </MobileList>

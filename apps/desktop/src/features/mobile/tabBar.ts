@@ -36,22 +36,6 @@ function setTabBarHeight(height: number): void {
 /** Whether the native bar successfully attached for this session. */
 let nativeActive = false;
 
-export type TabBarStatus =
-  | { kind: "native"; height: number }
-  | { kind: "web"; reason: string }
-  | { kind: "pending" };
-
-let status: TabBarStatus = { kind: "pending" };
-
-/**
- * What is actually drawing the tab bar. Surfaced in Profile > About because the
- * fallback is otherwise silent: a denied command or an older iOS just yields
- * the web capsule, which looks like a styling problem rather than a wiring one.
- */
-export function tabBarStatus(): TabBarStatus {
-  return status;
-}
-
 export function isNativeTabBarActive(): boolean {
   return nativeActive;
 }
@@ -68,7 +52,6 @@ export async function attachNativeTabBar(
   // not enough to prove a native bar exists there.
   if (useCapabilityStore.getState().capabilities.os !== "ios") {
     nativeActive = false;
-    status = { kind: "web", reason: "native plugin is iOS-only" };
     setTabBarHeight(WEB_TAB_BAR_HEIGHT);
     return false;
   }
@@ -77,20 +60,13 @@ export async function attachNativeTabBar(
     const selectedIndex = tabIndex(useMobileNavStore.getState().tab);
     await setItems(nativeTabs(), selectedIndex);
     await Promise.all([syncBadges(sessionCount), syncTintColor()]);
-    const height = WEB_TAB_BAR_HEIGHT;
     nativeActive = true;
-    status = { kind: "native", height };
-    setTabBarHeight(height);
+    setTabBarHeight(WEB_TAB_BAR_HEIGHT);
     return true;
-  } catch (error) {
+  } catch {
     // Android, iOS below the plugin's minimum, a denied command permission, or
-    // a harness with no backend. Keep the reason: it is the difference between
-    // "this platform has no native bar" and "the bar is misconfigured".
+    // a harness with no backend: fall back to the web capsule.
     nativeActive = false;
-    status = {
-      kind: "web",
-      reason: error instanceof Error ? error.message : String(error),
-    };
     setTabBarHeight(WEB_TAB_BAR_HEIGHT);
     return false;
   }
