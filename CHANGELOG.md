@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.17.0](https://github.com/bwmp-dev/Luma/compare/v0.16.0...v0.17.0) (2026-08-07)
+
+
+### Features
+
+* **screenshots:** capture App Store shots from the iOS Simulator ([#22](https://github.com/bwmp-dev/Luma/issues/22)) ([cb7b45a](https://github.com/bwmp-dev/Luma/commit/cb7b45a8ae1d87ae8fa84a93046dc586634f565b))
+* **sftp:** implement clipboard functionality for file transfers ([bbbf500](https://github.com/bwmp-dev/Luma/commit/bbbf500b892cb25faddd1cff9697c9e6f8983798))
+
 ## [0.16.0](https://github.com/bwmp-dev/Luma/compare/v0.15.0...v0.16.0) (2026-08-02)
 
 
