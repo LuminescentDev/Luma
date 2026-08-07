@@ -226,10 +226,17 @@ export class Terminal {
     this.bellHandlers.push(cb);
     return { dispose() {} };
   }
-  onResize(_cb: (size: { cols: number; rows: number }) => void): {
+  private resizeHandlers: Array<(size: { cols: number; rows: number }) => void> = [];
+  onResize(cb: (size: { cols: number; rows: number }) => void): {
     dispose(): void;
   } {
-    return { dispose() {} };
+    this.resizeHandlers.push(cb);
+    return {
+      dispose: () => {
+        const index = this.resizeHandlers.indexOf(cb);
+        if (index >= 0) this.resizeHandlers.splice(index, 1);
+      },
+    };
   }
 
   /** Everything written into this terminal, in order. Display sessions (collab
@@ -247,9 +254,13 @@ export class Terminal {
   }
   focus(): void {}
   dispose(): void {}
+  /** Like real xterm, a size change notifies onResize listeners; a resize to the
+   * size already in effect is a no-op and fires nothing. */
   resize(cols: number, rows: number): void {
+    if (this.cols === cols && this.rows === rows) return;
     this.cols = cols;
     this.rows = rows;
+    for (const handler of this.resizeHandlers) handler({ cols, rows });
   }
   /** Builds the element tree the manager reaches into (notably `.xterm-screen`,
    * whose rendered height is compared against the host to detect a clipped

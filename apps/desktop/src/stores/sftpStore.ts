@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import { parseLumaError } from "../lib/hosts";
 import { queryClient } from "../lib/queryClient";
+import { getAllSettings, setSetting } from "../lib/settings";
+import { SETTING_KEYS } from "../types";
+import {
+  DEFAULT_VIEW_PREFS,
+  parseViewPrefs,
+  type ViewPrefs,
+} from "../features/sftp/viewPrefs";
 import {
   inferSeparator,
   joinPath,
@@ -115,6 +122,23 @@ type TransferMeta = {
   isDirectory: boolean;
 };
 
+/**
+ * Files put on the SFTP clipboard by a "Copy" action, plus where they came
+ * from. The endpoint is captured at copy time so a paste still knows its source
+ * after the user has navigated elsewhere or switched the pane to another host.
+ *
+ * Entries are a snapshot, not a live reference: a file deleted between copy and
+ * paste fails that one transfer with a backend error, which is the same outcome
+ * as any other stale path and is reported on the transfer row.
+ */
+export type SftpClipboard = {
+  source: TransferEndpoint;
+  files: SftpEntry[];
+  /** Directory the files were copied FROM, used to detect a paste back into the
+   * same folder (which the backend rejects as identical source/dest). */
+  sourceDir: string;
+};
+
 /** One transfer request covering every file dropped on / sent to a destination. */
 export type TransferRequest = {
   source: TransferEndpoint;
@@ -146,6 +170,18 @@ type SftpState = {
   /** Ordered transfer queue; finished rows persist until cleared. */
   transfers: TransferRecord[];
 
+  /** Files held by the last "Copy", or null when nothing is on the clipboard.
+   * Deliberately app-level rather than per-pane: copying in one pane and
+   * pasting in the other is the point. */
+  clipboard: SftpClipboard | null;
+
+  /** Listing presentation (sort + hidden files). Loaded from settings once and
+   * persisted on change; the browsers read it directly. */
+  viewPrefs: ViewPrefs;
+  /** True once the persisted prefs have been read (or failed to read), so a
+   * browser mounting early does not save the defaults over a stored value. */
+  viewPrefsLoaded: boolean;
+
   /** Apply the default pane layout once. Desktop has a local pane; mobile does
    * not (the local_* commands are not registered there). */
   initPanes: (options: { localAvailable: boolean }) => void;
@@ -166,6 +202,31 @@ type SftpState = {
 
   /** Queue a transfer of the given files between two endpoints. */
   transfer: (request: TransferRequest) => void;
+
+  /** Put files on the clipboard, replacing whatever was there. */
+  copyToClipboard: (
+    source: TransferEndpoint,
+    files: SftpEntry[],
+    sourceDir: string,
+  ) => void;
+  clearClipboard: () => void;
+  /**
+   * Paste the clipboard into a directory. Returns the names that would be
+   * overwritten so the caller can confirm first (and re-call with
+   * `force: true`), or null when the paste cannot run at all — nothing copied,
+   * or the destination is the folder the files came from.
+   */
+  pasteInto: (
+    dest: TransferEndpoint,
+    destDir: string,
+    destSeparator: "/" | "\\",
+    options?: { force?: boolean },
+  ) => string[] | null;
+
+  /** Read persisted view preferences once at startup. */
+  loadViewPrefs: () => Promise<void>;
+  /** Update and persist view preferences. */
+  setViewPrefs: (prefs: ViewPrefs) => void;
 
   cancelTransfer: (transferId: string) => void;
   retryTransfer: (transferId: string) => void;
@@ -546,6 +607,13 @@ export const useSftpStore = create<SftpState>((set, get) => {
           ? { ...record, state: "cancelled" as TransferState }
           : record,
       ),
+      // Files copied from this session can no longer be read, so drop them
+      // rather than leaving a Paste that would fail on every entry.
+      clipboard:
+        state.clipboard?.source.kind === "remote" &&
+        state.clipboard.source.sessionId === sessionId
+          ? null
+          : state.clipboard,
     }));
     await sftpDisconnect(sessionId).catch(() => {});
     set((state) => {
@@ -566,6 +634,9 @@ export const useSftpStore = create<SftpState>((set, get) => {
     mobileSide: "right",
     localPath: null,
     transfers: [],
+    clipboard: null,
+    viewPrefs: DEFAULT_VIEW_PREFS,
+    viewPrefsLoaded: false,
 
     initPanes: ({ localAvailable }) => {
       if (get().initialized) return;
@@ -706,6 +777,80 @@ export const useSftpStore = create<SftpState>((set, get) => {
       }
     },
 
+    copyToClipboard: (source, files, sourceDir) => {
+      if (files.length === 0) return;
+      set({ clipboard: { source, files: [...files], sourceDir } });
+    },
+
+    clearClipboard: () => set({ clipboard: null }),
+
+    pasteInto: (dest, destDir, destSeparator, options = {}) => {
+      const clipboard = get().clipboard;
+      if (!clipboard || !destDir) return null;
+      // Local-to-local is not a transfer the backend performs; the UI already
+      // keeps both panes from being local, and mobile has no local pane at all.
+      if (clipboard.source.kind === "local" && dest.kind === "local") return null;
+      // Pasting into the folder the files came from would ask the backend to
+      // copy a path onto itself, which it rejects. Nothing sensible to do here
+      // (there is no "copy 2" naming), so the action is simply unavailable.
+      const sameEndpoint =
+        clipboard.source.kind === dest.kind &&
+        (clipboard.source.kind !== "remote" ||
+          dest.kind !== "remote" ||
+          clipboard.source.sessionId === dest.sessionId);
+      if (sameEndpoint && clipboard.sourceDir === destDir) return null;
+
+      if (!options.force) {
+        // Overwrites happen without backend prompting, so surface collisions
+        // from the destination's cached listing and let the caller confirm.
+        const destKey =
+          dest.kind === "remote"
+            ? ["sftp-list", dest.sessionId, destDir]
+            : ["local-list", destDir];
+        const listing = queryClient.getQueryData<{ entries: SftpEntry[] }>(
+          destKey,
+        );
+        const existing = new Set((listing?.entries ?? []).map((e) => e.name));
+        const collisions = clipboard.files
+          .filter((file) => existing.has(file.name))
+          .map((file) => file.name);
+        if (collisions.length > 0) return collisions;
+      }
+
+      get().transfer({
+        source: clipboard.source,
+        dest,
+        files: clipboard.files,
+        destDir,
+        destSeparator,
+      });
+      // The clipboard persists after a paste, matching a file manager: the same
+      // copy can be dropped into several folders without re-copying.
+      return [];
+    },
+
+    loadViewPrefs: async () => {
+      if (get().viewPrefsLoaded) return;
+      try {
+        const settings = await getAllSettings();
+        set({
+          viewPrefs: parseViewPrefs(settings[SETTING_KEYS.sftpViewPrefs]),
+          viewPrefsLoaded: true,
+        });
+      } catch {
+        // First run or unreadable settings: the defaults already in state apply.
+        set({ viewPrefsLoaded: true });
+      }
+    },
+
+    setViewPrefs: (prefs) => {
+      set({ viewPrefs: prefs, viewPrefsLoaded: true });
+      void setSetting(SETTING_KEYS.sftpViewPrefs, prefs).catch(() => {
+        // Persistence is best-effort; the in-memory preference still applies
+        // for this run, matching the other preference stores.
+      });
+    },
+
     cancelTransfer: (transferId) => {
       void sftpCancel(transferId).catch(() => {});
     },
@@ -762,4 +907,32 @@ export function selectPaneSession(
 /** Derive the local separator from the current local path (defaults to "/"). */
 export function localSeparator(localPath: string | null): "/" | "\\" {
   return localPath ? inferSeparator(localPath) : "/";
+}
+
+/**
+ * Whether a Paste into `destDir` of `dest` would do anything, so the action can
+ * be hidden or disabled rather than failing silently. Mirrors pasteInto's own
+ * guards: something copied, not local-to-local, and not the source folder.
+ */
+export function selectCanPaste(
+  clipboard: SftpClipboard | null,
+  dest: PaneEndpoint,
+  destDir: string,
+): boolean {
+  if (!clipboard || dest.kind === "none" || !destDir) return false;
+  if (clipboard.source.kind === "local" && dest.kind === "local") return false;
+  const sameEndpoint =
+    clipboard.source.kind === dest.kind &&
+    (clipboard.source.kind !== "remote" ||
+      dest.kind !== "remote" ||
+      clipboard.source.sessionId === dest.sessionId);
+  return !(sameEndpoint && clipboard.sourceDir === destDir);
+}
+
+/** Label for the paste action, naming what is on the clipboard ("Paste 3
+ * items") so it is clear what a stale clipboard would drop. */
+export function describeClipboard(clipboard: SftpClipboard | null): string {
+  if (!clipboard) return "Paste";
+  if (clipboard.files.length === 1) return `Paste “${clipboard.files[0].name}”`;
+  return `Paste ${clipboard.files.length} items`;
 }

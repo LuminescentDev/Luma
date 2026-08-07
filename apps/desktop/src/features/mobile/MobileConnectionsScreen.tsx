@@ -141,12 +141,14 @@ export function MobileConnectionsScreen({
                 <li className="overflow-hidden rounded-xl bg-raised">
                   {/* A live miniature of the session, so the list answers "what
                       is it doing?" without opening it. Only rendered once there
-                      is a session to mirror; the row below is the tap target. */}
+                      is a session to mirror; the row below is the tap target.
+                      The preview renders the session's real grid scaled down, so
+                      this box is what decides how many lines of tail it shows. */}
                   {previews && sessionId && (
                     <MobileTerminalPreview
                       sessionId={sessionId}
                       status={status}
-                      className="h-44 w-full border-b border-border/60 bg-background px-2 pt-1.5"
+                      className="h-36 w-full border-b border-border/60 bg-background px-2 py-1.5"
                     />
                   )}
                   <div className="flex items-center gap-1">

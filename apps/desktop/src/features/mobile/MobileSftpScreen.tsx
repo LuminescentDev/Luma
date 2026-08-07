@@ -5,6 +5,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   ArrowLeftRight,
   ChevronRight,
+  ClipboardPaste,
   Copy,
   CornerLeftUp,
   Download,
@@ -23,11 +24,23 @@ import {
 import { useHosts } from "../../hooks/useHosts";
 import { sftpListKey, useSftpList } from "../../hooks/useSftp";
 import {
+  describeClipboard,
   OTHER_SIDE,
+  selectCanPaste,
   selectRunningForSession,
   useSftpStore,
   type PaneSide,
 } from "../../stores/sftpStore";
+import {
+  applyViewPrefs,
+  hiddenCount,
+  type ViewPrefs,
+} from "../sftp/viewPrefs";
+import {
+  MENU_CONTENT_CLASS,
+  MENU_ITEM_CLASS,
+  ViewMenuItems,
+} from "../sftp/ViewMenu";
 import {
   breadcrumbSegments,
   formatBytes,
@@ -137,6 +150,12 @@ function ConnectedView({
   const clearPane = useSftpStore((s) => s.clearPane);
   const reconnect = useSftpStore((s) => s.reconnect);
   const transfer = useSftpStore((s) => s.transfer);
+  const clipboard = useSftpStore((s) => s.clipboard);
+  const copyToClipboard = useSftpStore((s) => s.copyToClipboard);
+  const pasteInto = useSftpStore((s) => s.pasteInto);
+  const viewPrefs = useSftpStore((s) => s.viewPrefs);
+  const setViewPrefs = useSftpStore((s) => s.setViewPrefs);
+  const loadViewPrefs = useSftpStore((s) => s.loadViewPrefs);
   const runningForSession = useSftpStore((s) =>
     selectRunningForSession(s.transfers, sessionId),
   );
@@ -161,6 +180,11 @@ function ConnectedView({
     target: string;
     run: () => void;
   } | null>(null);
+  const [pendingPaste, setPendingPaste] = useState<string[] | null>(null);
+
+  useEffect(() => {
+    void loadViewPrefs();
+  }, [loadViewPrefs]);
 
   // Canonicalize the remote path from the resolved listing.
   useEffect(() => {
@@ -188,12 +212,40 @@ function ConnectedView({
   const otherLabel = otherHost?.name ?? "the other host";
 
   const entries = listing.data?.entries ?? [];
+  // Sort and hidden-file filtering are presentation over the same cached
+  // listing, so changing either re-renders rather than re-fetching.
+  const ordered = useMemo(
+    () => applyViewPrefs(entries, viewPrefs),
+    [entries, viewPrefs],
+  );
+  const hidden = useMemo(
+    () => hiddenCount(entries, viewPrefs),
+    [entries, viewPrefs],
+  );
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     return needle
-      ? entries.filter((e) => e.name.toLowerCase().includes(needle))
-      : entries;
-  }, [entries, filter]);
+      ? ordered.filter((e) => e.name.toLowerCase().includes(needle))
+      : ordered;
+  }, [ordered, filter]);
+
+  const canPaste = selectCanPaste(
+    clipboard,
+    { kind: "remote", sessionId },
+    remotePath,
+  );
+
+  // Paste the clipboard here, confirming first when it would overwrite.
+  const runPaste = (force = false) => {
+    const collisions = pasteInto(
+      { kind: "remote", sessionId },
+      remotePath,
+      "/",
+      { force },
+    );
+    if (collisions && collisions.length > 0) setPendingPaste(collisions);
+    else setPendingPaste(null);
+  };
 
   const parent = parentPath(remotePath, "/");
   const segments = breadcrumbSegments(remotePath, "/");
@@ -333,17 +385,17 @@ function ConnectedView({
           >
             <RefreshCw size={16} className={listing.isFetching ? "animate-spin" : undefined} />
           </button>
-          <button
-            type="button"
-            aria-label="New folder"
-            onClick={() => {
+          <FolderMenu
+            canPaste={canPaste}
+            pasteLabel={describeClipboard(clipboard)}
+            onPaste={() => runPaste()}
+            onNewFolder={() => {
               setMkdirError(null);
               setMkdirOpen(true);
             }}
-            className="flex h-10 w-10 items-center justify-center rounded-md border border-border text-muted active:bg-raised"
-          >
-            <FolderPlus size={16} />
-          </button>
+            prefs={viewPrefs}
+            onPrefsChange={setViewPrefs}
+          />
           <button
             type="button"
             aria-label="Upload files"
@@ -426,11 +478,31 @@ function ConnectedView({
         ) : listing.isError ? (
           <Message tone="danger">{parseLumaError(listing.error).message}</Message>
         ) : visible.length === 0 ? (
-          <Message>{filter ? "No matching entries." : "This folder is empty."}</Message>
+          <Message>
+            {filter
+              ? "No matching entries."
+              : hidden > 0
+                ? // Not actually empty — say so, or the Hidden files toggle is
+                  // the last place anyone would think to look.
+                  `This folder has only hidden files (${hidden}).`
+                : "This folder is empty."}
+          </Message>
         ) : (
           <ul role="list">
             {visible.map((entry) => {
               const rowActions: MenuAction[] = [
+                {
+                  // Long-press → Copy, then Paste from the toolbar menu in
+                  // whatever folder (or host) you navigate to next.
+                  label: "Copy",
+                  icon: <Copy size={15} />,
+                  onSelect: () =>
+                    copyToClipboard(
+                      { kind: "remote", sessionId },
+                      [entry],
+                      remotePath,
+                    ),
+                },
                 {
                   label: "Download",
                   icon: <Download size={15} />,
@@ -440,7 +512,7 @@ function ConnectedView({
                   ? [
                       {
                         label: `Copy to ${otherLabel}`,
-                        icon: <Copy size={15} />,
+                        icon: <ArrowLeftRight size={15} />,
                         onSelect: () => copyToOtherHost(entry),
                       },
                     ]
@@ -565,6 +637,30 @@ function ConnectedView({
         }
       />
       <ConfirmDialog
+        open={pendingPaste !== null}
+        onOpenChange={(o) => !o && setPendingPaste(null)}
+        title="Replace existing files?"
+        destructive
+        confirmLabel="Replace"
+        onConfirm={() => runPaste(true)}
+        message={
+          <div className="space-y-2">
+            <p>
+              {pendingPaste?.length} item
+              {pendingPaste?.length === 1 ? "" : "s"} already exist in this
+              folder and will be overwritten:
+            </p>
+            <ul className="max-h-32 overflow-y-auto rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-xs text-foreground/90">
+              {pendingPaste?.map((name) => (
+                <li key={name} className="truncate">
+                  {name}
+                </li>
+              ))}
+            </ul>
+          </div>
+        }
+      />
+      <ConfirmDialog
         open={confirmDisconnect}
         onOpenChange={setConfirmDisconnect}
         title="Disconnect SFTP"
@@ -582,6 +678,73 @@ function ConnectedView({
         }
       />
     </div>
+  );
+}
+
+/**
+ * The folder-level overflow menu: Paste, New folder, and the shared sort /
+ * hidden-files controls. Paste lives here rather than on a row because it acts
+ * on the folder being viewed, which is also where the equivalent desktop action
+ * sits (the pane's background menu).
+ */
+function FolderMenu({
+  canPaste,
+  pasteLabel,
+  onPaste,
+  onNewFolder,
+  prefs,
+  onPrefsChange,
+}: {
+  canPaste: boolean;
+  pasteLabel: string;
+  onPaste: () => void;
+  onNewFolder: () => void;
+  prefs: ViewPrefs;
+  onPrefsChange: (next: ViewPrefs) => void;
+}) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label="Folder actions"
+          className="flex h-10 w-10 items-center justify-center rounded-md border border-border text-muted active:bg-raised"
+        >
+          <MoreHorizontal size={16} />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={4}
+          className={cn(MENU_CONTENT_CLASS, "min-w-56")}
+        >
+          {/* Only offered when it would do something: nothing copied, or this
+              is the folder the files came from. */}
+          {canPaste && (
+            <>
+              <DropdownMenu.Item
+                onSelect={onPaste}
+                className={cn(MENU_ITEM_CLASS, "min-h-11")}
+              >
+                <ClipboardPaste size={15} />
+                <span className="truncate">{pasteLabel}</span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className="my-1 h-px bg-border" />
+            </>
+          )}
+          <DropdownMenu.Item
+            onSelect={onNewFolder}
+            className={cn(MENU_ITEM_CLASS, "min-h-11")}
+          >
+            <FolderPlus size={15} />
+            New folder
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className="my-1 h-px bg-border" />
+          <ViewMenuItems prefs={prefs} onChange={onPrefsChange} />
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 

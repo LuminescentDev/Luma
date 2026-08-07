@@ -204,6 +204,11 @@ export const SETTING_KEYS = {
    * instance mirroring its session, so it is worth being able to switch off.
    * Never synced. */
   connectionPreviews: "mobile.connectionPreviews",
+  /** Device-local SFTP browser view preferences (sort field + direction, show
+   * hidden files), serialized as JSON. Shared by the desktop dual-pane browser
+   * and the mobile one so both order a listing the same way. Presentation only:
+   * it never changes what is fetched. Never synced. */
+  sftpViewPrefs: "sftp.viewPrefs",
   /** Device-local map of hostId -> { multiplexer, sessionName } to re-attach
    * automatically when connecting to that host. Never synced. */
   multiplexerResume: "multiplexer.resume",

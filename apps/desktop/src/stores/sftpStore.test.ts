@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setInvoke, invoke } from "../test/tauriMock";
 import { queryClient } from "../lib/queryClient";
-import { useSftpStore } from "./sftpStore";
+import {
+  describeClipboard,
+  selectCanPaste,
+  useSftpStore,
+} from "./sftpStore";
+import { DEFAULT_VIEW_PREFS } from "../features/sftp/viewPrefs";
 import type { SftpEntry, TransferProgress } from "../lib/sftp";
 
 const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
@@ -76,6 +81,9 @@ beforeEach(() => {
     mobileSide: "right",
     localPath: null,
     transfers: [],
+    clipboard: null,
+    viewPrefs: DEFAULT_VIEW_PREFS,
+    viewPrefsLoaded: false,
   });
 });
 
@@ -603,5 +611,257 @@ describe("SFTP panes", () => {
     );
     // The untouched pane is left alone.
     expect(useSftpStore.getState().panes.left).toEqual({ kind: "local" });
+  });
+});
+
+describe("SFTP clipboard", () => {
+  /** A remote entry on some session, in directory `dir`. */
+  function remoteFile(name: string, dir = "/src"): SftpEntry {
+    return {
+      name,
+      path: `${dir}/${name}`,
+      kind: "file",
+      size: 10,
+      modifiedAt: null,
+      permissions: null,
+    };
+  }
+
+  function copy(files: SftpEntry[], sessionId = "a", dir = "/src") {
+    useSftpStore
+      .getState()
+      .copyToClipboard({ kind: "remote", sessionId }, files, dir);
+  }
+
+  it("pastes onto another host as a host-to-host copy", async () => {
+    const calls: Record<string, unknown>[] = [];
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_copy") {
+        calls.push(args);
+        return { transferId: `cp-${calls.length}` };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    copy([remoteFile("one.txt"), remoteFile("two.txt")]);
+    const collisions = useSftpStore
+      .getState()
+      .pasteInto({ kind: "remote", sessionId: "b" }, "/dest", "/");
+    await flush();
+
+    expect(collisions).toEqual([]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].sourceSessionId).toBe("a");
+    expect(calls[0].sourcePath).toBe("/src/one.txt");
+    expect(calls[0].destSessionId).toBe("b");
+    expect(calls[0].destPath).toBe("/dest/one.txt");
+    expect(transfers().every((t) => t.kind === "copy")).toBe(true);
+  });
+
+  it("pastes into another folder on the SAME host", async () => {
+    const calls: Record<string, unknown>[] = [];
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_copy") {
+        calls.push(args);
+        return { transferId: "cp-same" };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    copy([remoteFile("one.txt")]);
+    useSftpStore
+      .getState()
+      .pasteInto({ kind: "remote", sessionId: "a" }, "/dest", "/");
+    await flush();
+
+    // Same session on both ends is exactly what sftp_copy supports; only an
+    // identical source AND destination path is rejected.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sourceSessionId).toBe("a");
+    expect(calls[0].destSessionId).toBe("a");
+    expect(calls[0].destPath).toBe("/dest/one.txt");
+  });
+
+  it("refuses to paste back into the folder the files came from", () => {
+    setInvoke(() => {
+      throw new Error("no transfer should start");
+    });
+
+    copy([remoteFile("one.txt")], "a", "/src");
+    const result = useSftpStore
+      .getState()
+      .pasteInto({ kind: "remote", sessionId: "a" }, "/src", "/");
+
+    // Null (not an empty array) so the caller can tell "nothing to do" from
+    // "started"; the backend would reject copying a path onto itself.
+    expect(result).toBeNull();
+    expect(transfers()).toHaveLength(0);
+  });
+
+  it("reports collisions before overwriting, and proceeds when forced", async () => {
+    const calls: Record<string, unknown>[] = [];
+    setInvoke((cmd, args) => {
+      if (cmd === "sftp_copy") {
+        calls.push(args);
+        return { transferId: `cp-${calls.length}` };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    });
+    queryClient.setQueryData(["sftp-list", "b", "/dest"], {
+      path: "/dest",
+      entries: [remoteFile("one.txt", "/dest")],
+    });
+
+    copy([remoteFile("one.txt"), remoteFile("two.txt")]);
+    const collisions = useSftpStore
+      .getState()
+      .pasteInto({ kind: "remote", sessionId: "b" }, "/dest", "/");
+    await flush();
+
+    expect(collisions).toEqual(["one.txt"]);
+    // Nothing started: the caller confirms first.
+    expect(calls).toHaveLength(0);
+
+    useSftpStore
+      .getState()
+      .pasteInto({ kind: "remote", sessionId: "b" }, "/dest", "/", {
+        force: true,
+      });
+    await flush();
+    expect(calls).toHaveLength(2);
+
+    queryClient.removeQueries({ queryKey: ["sftp-list", "b", "/dest"] });
+  });
+
+  it("keeps the clipboard after a paste so it can be dropped repeatedly", async () => {
+    setInvoke((cmd) => {
+      if (cmd === "sftp_copy") return { transferId: "cp-1" };
+      throw new Error(`unexpected ${cmd}`);
+    });
+
+    copy([remoteFile("one.txt")]);
+    useSftpStore
+      .getState()
+      .pasteInto({ kind: "remote", sessionId: "b" }, "/dest", "/");
+    await flush();
+
+    expect(useSftpStore.getState().clipboard?.files).toHaveLength(1);
+  });
+
+  it("drops the clipboard when its source session disconnects", async () => {
+    setInvoke((cmd) => {
+      if (cmd === "sftp_disconnect") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    useSftpStore.setState({
+      sessions: { a: session("a") },
+      panes: { left: { kind: "none" }, right: { kind: "remote", sessionId: "a" } },
+    });
+    copy([remoteFile("one.txt")], "a");
+
+    await useSftpStore.getState().clearPane("right");
+
+    // Those paths are unreachable now; a Paste offering them would fail on
+    // every entry.
+    expect(useSftpStore.getState().clipboard).toBeNull();
+  });
+
+  it("leaves the clipboard alone when a DIFFERENT session disconnects", async () => {
+    setInvoke((cmd) => {
+      if (cmd === "sftp_disconnect") return undefined;
+      throw new Error(`unexpected ${cmd}`);
+    });
+    useSftpStore.setState({
+      sessions: { a: session("a"), b: session("b") },
+      panes: {
+        left: { kind: "remote", sessionId: "a" },
+        right: { kind: "remote", sessionId: "b" },
+      },
+    });
+    copy([remoteFile("one.txt")], "a");
+
+    await useSftpStore.getState().clearPane("right");
+
+    expect(useSftpStore.getState().clipboard?.source).toEqual({
+      kind: "remote",
+      sessionId: "a",
+    });
+  });
+
+  it("never pastes local to local", () => {
+    setInvoke(() => {
+      throw new Error("no transfer should start");
+    });
+    useSftpStore
+      .getState()
+      .copyToClipboard({ kind: "local" }, [file("a.txt")], "/local");
+
+    expect(
+      useSftpStore.getState().pasteInto({ kind: "local" }, "/other", "/"),
+    ).toBeNull();
+    expect(transfers()).toHaveLength(0);
+  });
+
+  it("ignores a copy of nothing", () => {
+    copy([]);
+    expect(useSftpStore.getState().clipboard).toBeNull();
+  });
+});
+
+describe("selectCanPaste", () => {
+  const clipboard = {
+    source: { kind: "remote" as const, sessionId: "a" },
+    files: [
+      {
+        name: "one.txt",
+        path: "/src/one.txt",
+        kind: "file" as const,
+        size: 1,
+        modifiedAt: null,
+        permissions: null,
+      },
+    ],
+    sourceDir: "/src",
+  };
+
+  it("is false with an empty clipboard or no destination", () => {
+    expect(selectCanPaste(null, { kind: "remote", sessionId: "b" }, "/d")).toBe(
+      false,
+    );
+    expect(selectCanPaste(clipboard, { kind: "none" }, "/d")).toBe(false);
+    expect(
+      selectCanPaste(clipboard, { kind: "remote", sessionId: "b" }, ""),
+    ).toBe(false);
+  });
+
+  it("is false for the source folder but true for a sibling on the same host", () => {
+    expect(
+      selectCanPaste(clipboard, { kind: "remote", sessionId: "a" }, "/src"),
+    ).toBe(false);
+    expect(
+      selectCanPaste(clipboard, { kind: "remote", sessionId: "a" }, "/other"),
+    ).toBe(true);
+  });
+
+  it("is true for the same path on a DIFFERENT host", () => {
+    // /src on host b is not the folder these files came from.
+    expect(
+      selectCanPaste(clipboard, { kind: "remote", sessionId: "b" }, "/src"),
+    ).toBe(true);
+  });
+});
+
+describe("describeClipboard", () => {
+  it("names a single file and counts a multi-file clipboard", () => {
+    expect(describeClipboard(null)).toBe("Paste");
+    const one = {
+      source: { kind: "remote" as const, sessionId: "a" },
+      sourceDir: "/src",
+      files: [file("a.txt")],
+    };
+    expect(describeClipboard(one)).toBe("Paste “a.txt”");
+    expect(
+      describeClipboard({ ...one, files: [file("a.txt"), file("b.txt")] }),
+    ).toBe("Paste 2 items");
   });
 });

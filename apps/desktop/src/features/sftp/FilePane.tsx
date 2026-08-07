@@ -4,7 +4,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   ChevronRight,
+  ClipboardPaste,
+  Copy,
   CornerLeftUp,
   File as FileIcon,
   FileText,
@@ -14,6 +18,7 @@ import {
   MoreHorizontal,
   Pencil,
   RefreshCw,
+  SlidersHorizontal,
   SquarePen,
   Trash2,
 } from "lucide-react";
@@ -40,7 +45,22 @@ import { ContextMenu, type MenuAction } from "../../components/ContextMenu";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { NameDialog } from "./NameDialog";
 import { beginDrag, endDrag, LUMA_DND_TYPE, peekDrag } from "./dragState";
-import type { PaneEndpoint, PaneSide } from "../../stores/sftpStore";
+import {
+  describeClipboard,
+  selectCanPaste,
+  useSftpStore,
+  type PaneEndpoint,
+  type PaneSide,
+} from "../../stores/sftpStore";
+import {
+  applyViewPrefs,
+  hiddenCount,
+  SORT_FIELD_LABELS,
+  toggleSort,
+  type SortField,
+  type ViewPrefs,
+} from "./viewPrefs";
+import { MENU_CONTENT_CLASS, ViewMenuItems } from "./ViewMenu";
 
 /** Cap on rendered rows to keep very large directories cheap. */
 const RENDER_CAP = 1000;
@@ -104,6 +124,13 @@ export function FilePane({
   headerExtra,
 }: FilePaneProps) {
   const queryClient = useQueryClient();
+  const clipboard = useSftpStore((s) => s.clipboard);
+  const copyToClipboard = useSftpStore((s) => s.copyToClipboard);
+  const pasteInto = useSftpStore((s) => s.pasteInto);
+  const viewPrefs = useSftpStore((s) => s.viewPrefs);
+  const setViewPrefs = useSftpStore((s) => s.setViewPrefs);
+  const loadViewPrefs = useSftpStore((s) => s.loadViewPrefs);
+  const [pendingPaste, setPendingPaste] = useState<string[] | null>(null);
   const [filter, setFilter] = useState("");
   const [editingPath, setEditingPath] = useState(false);
   const [pathDraft, setPathDraft] = useState(path);
@@ -157,14 +184,28 @@ export function FilePane({
   const childPath = (name: string) => joinPath(path, name, separator);
   const parent = parentPath(path, separator);
 
+  useEffect(() => {
+    void loadViewPrefs();
+  }, [loadViewPrefs]);
+
   const entries = listing.data?.entries ?? [];
+  // Sort + hidden filtering are presentation over the cached listing, so
+  // changing either re-renders without re-fetching.
+  const ordered = useMemo(
+    () => applyViewPrefs(entries, viewPrefs),
+    [entries, viewPrefs],
+  );
+  const hidden = useMemo(
+    () => hiddenCount(entries, viewPrefs),
+    [entries, viewPrefs],
+  );
   const visible = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     const filtered = needle
-      ? entries.filter((e) => e.name.toLowerCase().includes(needle))
-      : entries;
+      ? ordered.filter((e) => e.name.toLowerCase().includes(needle))
+      : ordered;
     return filtered;
-  }, [entries, filter]);
+  }, [ordered, filter]);
   const capped = useMemo(() => visible.slice(0, RENDER_CAP), [visible]);
   const overflow = visible.length - capped.length;
 
@@ -208,15 +249,42 @@ export function FilePane({
     focusRow(next);
   };
 
+  const canPaste = selectCanPaste(clipboard, endpoint, path);
+
+  /** Put entries on the app clipboard. Falls back to the row that was acted on
+   * when it is not part of the current selection, matching how drag and the
+   * row context menu already retarget. */
+  const copyEntries = (entries: SftpEntry[]) => {
+    if (entries.length === 0) return;
+    copyToClipboard(endpoint, entries, path);
+  };
+
+  const runPaste = (force = false) => {
+    const collisions = pasteInto(endpoint, path, separator, { force });
+    if (collisions && collisions.length > 0) setPendingPaste(collisions);
+    else setPendingPaste(null);
+  };
+
   const onPaneKeyDown = (event: React.KeyboardEvent) => {
     // Never hijack typing in the filter or path inputs.
     if (event.target instanceof HTMLInputElement) return;
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod && event.key.toLowerCase() === "a") {
       event.preventDefault();
       setSelected(new Set(capped.map((entry) => entry.path)));
       if (anchorIndex.current === null && capped.length > 0) {
         anchorIndex.current = 0;
       }
+      return;
+    }
+    if (mod && event.key.toLowerCase() === "c" && selectedEntries.length > 0) {
+      event.preventDefault();
+      copyEntries(selectedEntries);
+      return;
+    }
+    if (mod && event.key.toLowerCase() === "v" && canPaste) {
+      event.preventDefault();
+      runPaste();
       return;
     }
     if (event.key === "Escape" && selected.size > 0) {
@@ -453,8 +521,21 @@ export function FilePane({
 
   const segments = breadcrumbSegments(path, separator);
 
-  // Right-click on empty pane space mirrors the header IconButton actions.
-  const backgroundActions: MenuAction[] = [
+  // Right-click on empty pane space mirrors the header IconButton actions, plus
+  // Paste — which acts on the folder being viewed, so the background is where
+  // it belongs (the mobile browser puts it in its folder menu for the same
+  // reason).
+  const backgroundActions: MenuAction[] = [];
+  if (canPaste) {
+    backgroundActions.push({
+      label: describeClipboard(clipboard),
+      icon: <ClipboardPaste size={14} />,
+      hint: "Ctrl+V",
+      onSelect: () => runPaste(),
+    });
+    backgroundActions.push({ separator: true });
+  }
+  backgroundActions.push(
     {
       label: "New folder",
       icon: <FolderPlus size={14} />,
@@ -468,7 +549,7 @@ export function FilePane({
       icon: <RefreshCw size={14} />,
       onSelect: () => void listing.refetch(),
     },
-  ];
+  );
 
   return (
     <div
@@ -563,6 +644,9 @@ export function FilePane({
           >
             <FolderPlus size={14} />
           </IconButton>
+          {/* Sort is also on the column headers; this is where "Hidden files"
+              lives, and it keeps both browsers offering the same menu. */}
+          <ViewMenu prefs={viewPrefs} onChange={setViewPrefs} />
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -594,11 +678,27 @@ export function FilePane({
         </div>
       </div>
 
-      {/* Column header ----------------------------------------------------- */}
+      {/* Column header — also the sort control: clicking a column sorts by it,
+          clicking the active one reverses. ------------------------------- */}
       <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted/70">
-        <span className="min-w-0 flex-1">Name</span>
-        <span className="w-20 text-right">Size</span>
-        <span className="hidden w-32 text-right sm:block">Modified</span>
+        <SortHeader
+          field="name"
+          prefs={viewPrefs}
+          onChange={setViewPrefs}
+          className="min-w-0 flex-1"
+        />
+        <SortHeader
+          field="size"
+          prefs={viewPrefs}
+          onChange={setViewPrefs}
+          className="w-20 justify-end"
+        />
+        <SortHeader
+          field="modified"
+          prefs={viewPrefs}
+          onChange={setViewPrefs}
+          className="hidden w-32 justify-end sm:flex"
+        />
         {isRemote && (
           <span className="hidden w-24 text-right md:block">Perms</span>
         )}
@@ -638,7 +738,15 @@ export function FilePane({
             </button>
           </PaneMessage>
         ) : capped.length === 0 ? (
-          <PaneMessage>{filter ? "No matching entries." : "This folder is empty."}</PaneMessage>
+          <PaneMessage>
+            {filter
+              ? "No matching entries."
+              : hidden > 0
+                ? // Not actually empty — without this the Hidden files toggle
+                  // is the last place anyone would think to look.
+                  `This folder has only hidden files (${hidden}).`
+                : "This folder is empty."}
+          </PaneMessage>
         ) : (
           <ul role="list">
             {capped.map((entry, index) => {
@@ -652,6 +760,22 @@ export function FilePane({
                   onSelect: () => onRequestTransfer(side, [entry], "__counterpart__"),
                 });
               }
+              // Copies the whole selection when this row is part of it, so the
+              // menu matches what dragging the same row would move.
+              rowActions.push({
+                label:
+                  isSelected && selectedEntries.length > 1
+                    ? `Copy ${selectedEntries.length} items`
+                    : "Copy",
+                icon: <Copy size={14} />,
+                hint: "Ctrl+C",
+                onSelect: () =>
+                  copyEntries(
+                    isSelected && selectedEntries.length > 0
+                      ? selectedEntries
+                      : [entry],
+                  ),
+              });
               if (entry.kind === "dir" || entry.kind === "symlink") {
                 rowActions.push({
                   label: "Open",
@@ -777,6 +901,7 @@ export function FilePane({
       <div className="flex items-center justify-between border-t border-border px-3 py-1.5 text-[10px] text-muted">
         <span>
           {entries.length.toLocaleString()} item{entries.length === 1 ? "" : "s"}
+          {hidden > 0 && ` (${hidden} hidden)`}
         </span>
         {selected.size > 0 && <span>{selected.size} selected</span>}
       </div>
@@ -801,6 +926,30 @@ export function FilePane({
         busy={renameBusy}
         error={renameError}
         onSubmit={submitRename}
+      />
+      <ConfirmDialog
+        open={pendingPaste !== null}
+        onOpenChange={(o) => !o && setPendingPaste(null)}
+        title="Replace existing files?"
+        destructive
+        confirmLabel="Replace"
+        onConfirm={() => runPaste(true)}
+        message={
+          <div className="space-y-2">
+            <p>
+              {pendingPaste?.length} item
+              {pendingPaste?.length === 1 ? "" : "s"} already exist in this
+              folder and will be overwritten:
+            </p>
+            <ul className="max-h-32 overflow-y-auto rounded-md border border-border bg-background px-2.5 py-1.5 font-mono text-xs text-foreground/90">
+              {pendingPaste?.map((name) => (
+                <li key={name} className="truncate">
+                  {name}
+                </li>
+              ))}
+            </ul>
+          </div>
+        }
       />
       <ConfirmDialog
         open={deleting !== null}
@@ -833,6 +982,78 @@ export function FilePane({
         }
       />
     </div>
+  );
+}
+
+/**
+ * A column heading that doubles as the sort control. The active column shows
+ * its direction, so the header row alone answers "how is this sorted?" without
+ * opening the view menu.
+ */
+function SortHeader({
+  field,
+  prefs,
+  onChange,
+  className,
+}: {
+  field: SortField;
+  prefs: ViewPrefs;
+  onChange: (next: ViewPrefs) => void;
+  className?: string;
+}) {
+  const active = prefs.sortField === field;
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(toggleSort(prefs, field))}
+      aria-label={`Sort by ${SORT_FIELD_LABELS[field].toLowerCase()}`}
+      className={cn(
+        "flex items-center gap-1 truncate text-left uppercase tracking-wider hover:text-foreground",
+        active && "text-foreground",
+        className,
+      )}
+    >
+      <span className="truncate">{SORT_FIELD_LABELS[field]}</span>
+      {active &&
+        (prefs.sortDirection === "asc" ? (
+          <ArrowUp size={10} className="shrink-0" />
+        ) : (
+          <ArrowDown size={10} className="shrink-0" />
+        ))}
+    </button>
+  );
+}
+
+/** Header dropdown carrying the shared sort + hidden-files controls. */
+function ViewMenu({
+  prefs,
+  onChange,
+}: {
+  prefs: ViewPrefs;
+  onChange: (next: ViewPrefs) => void;
+}) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label="View options"
+          title="Sort and hidden files"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-raised text-muted hover:border-accent hover:text-accent"
+        >
+          <SlidersHorizontal size={13} />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={4}
+          className={cn(MENU_CONTENT_CLASS, "min-w-48 text-xs")}
+        >
+          <ViewMenuItems prefs={prefs} onChange={onChange} compact />
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 

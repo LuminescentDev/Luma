@@ -9,6 +9,12 @@ import { cn } from "../../lib/utils";
  * it the same output bytes the source receives. This component only owns the
  * host element and the lifetime — no terminal bytes pass through React.
  *
+ * The mirror keeps the SOURCE's grid rather than refitting to the card, so the
+ * preview renders exactly what the terminal renders: same wrap points, same
+ * right-aligned prompt segments, same TUI layout. Fitting is done by shrinking
+ * the font (fitPreview) until that grid fits the card — a scaled-down terminal
+ * instead of a re-flowed one.
+ *
  * A mirror is a second xterm instance, so one is only kept alive while its card
  * is actually on screen: scrolling a card out of view tears its mirror down, and
  * scrolling back re-seeds a fresh one from the source's current buffer. That
@@ -19,6 +25,17 @@ import { cn } from "../../lib/utils";
 /** Rendered off the visible edge so a card just below the fold is already warm
  * by the time it scrolls in. */
 const PRELOAD_MARGIN = "200px";
+
+/** Ceiling for the miniature's font. A preview is a glanceable thumbnail, not a
+ * second place to read output, so it stays well under the terminal's own size
+ * even when the grid would allow more. */
+const MAX_PREVIEW_FONT_SIZE = 7;
+
+/** fitPreview scales from the metrics currently on screen, and xterm rounds cell
+ * dimensions, so the first pass lands close rather than exact. Re-running it
+ * converges within a pass or two; this only bounds the loop so a pathological
+ * case (a font whose metrics never settle) cannot spin every frame forever. */
+const MAX_FIT_PASSES = 4;
 
 export function MobileTerminalPreview({
   sessionId,
@@ -59,12 +76,50 @@ export function MobileTerminalPreview({
     const host = hostRef.current;
     if (!host || !visible) return;
     const previewId = `preview:${sessionId}`;
-    const stopMirror = terminalManager.mirrorSession(previewId, sessionId);
+    let frame: number | null = null;
+    // Each pass measures what is actually rendered and applies one correction,
+    // so passes are chained across frames — a font change only shows up in the
+    // next frame's metrics — until fitPreview reports the size unchanged.
+    const scheduleFit = (pass = 0) => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        const before = terminalManager.previewFontSize(previewId);
+        const after = terminalManager.fitPreview(previewId, MAX_PREVIEW_FONT_SIZE);
+        if (after !== null && after !== before && pass + 1 < MAX_FIT_PASSES) {
+          scheduleFit(pass + 1);
+        }
+      });
+    };
+
+    const stopMirror = terminalManager.mirrorSession(previewId, sessionId, {
+      // The source's grid changed shape (rotation, or the session being opened
+      // full-screen) while this card's box did not, so nothing else would
+      // prompt a refit.
+      onGridChange: scheduleFit,
+    });
     // Mirror first, then attach: attaching an id the manager does not know yet
     // parks the host for the session to claim later, which would bypass the
-    // focus option below.
-    terminalManager.attach(previewId, host, { focus: false, accelerated: false });
+    // options below.
+    terminalManager.attach(previewId, host, {
+      focus: false,
+      accelerated: false,
+      // The mirror owns the source's grid; refitting it to this card is exactly
+      // what would re-wrap the output and make the preview stop matching.
+      fit: false,
+    });
+    // The card's width is known only after layout, and the bundled font can
+    // still be loading (which changes cell metrics), so fit on every box change
+    // rather than once at mount.
+    // Wrapped rather than passed directly: ResizeObserver hands its callback an
+    // entry list, which would arrive as scheduleFit's pass counter.
+    const observer = new ResizeObserver(() => scheduleFit());
+    observer.observe(host);
+    scheduleFit();
+
     return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      observer.disconnect();
       terminalManager.detach(previewId);
       stopMirror();
     };
