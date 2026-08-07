@@ -2,6 +2,11 @@ import type { Host, HostGroup, KeyReference, Identity } from "../lib/hosts";
 import type { Snippet } from "../lib/snippets";
 import type { Vault } from "../lib/vaults";
 import type { DetectedShell, TerminalProfile } from "../lib/terminal";
+import type {
+  CpuCounters,
+  ServerStatsSnapshot,
+} from "../lib/serverStats";
+import type { SftpEntry, SftpKind } from "../lib/sftp";
 import { SETTING_KEYS, type ThemeMode } from "../types";
 
 /** The showcase demonstrates a single-vault workspace. */
@@ -291,3 +296,151 @@ export const SYNC_CONFIG = {
   passphraseSet: false,
   passphraseRemembered: false,
 };
+
+/*
+ * Server dashboard, files and agent inbox data.
+ *
+ * These screens are new in 0.16 and have no backend in the showcase, so the
+ * shapes below stand in for what an SSH round trip would return. Everything is
+ * deterministic: the App Store shots have to be reproducible, so nothing here
+ * reads the clock or randomises.
+ */
+
+/** The host the dashboard scenario points at. */
+export const STATS_HOST = { id: "h-web-01", name: "vps-0cd97c22" };
+
+/* CPU and network counters are cumulative — the dashboard derives utilization
+ * and throughput from the delta between two samples, so a single frozen
+ * snapshot renders "waiting for next sample…" and empty meters. `sample`
+ * advances the counters at a fixed rate to give the second fetch something to
+ * subtract. Deltas are sized in jiffies for a ~2s gap on 4 cores. */
+function cpuCore(name: string, sample: number, busyPerSample: number): CpuCounters {
+  const idlePerSample = 200 - busyPerSample;
+  return {
+    name,
+    user: 120_000 + sample * Math.round(busyPerSample * 0.72),
+    nice: 400,
+    system: 45_000 + sample * Math.round(busyPerSample * 0.24),
+    idle: 980_000 + sample * idlePerSample,
+    iowait: 3_200 + sample * 3,
+    irq: 0,
+    softirq: 900 + sample * Math.round(busyPerSample * 0.04),
+    steal: 0,
+  };
+}
+
+export function serverStatsSnapshot(sample: number): ServerStatsSnapshot {
+  const cores = [
+    cpuCore("cpu0", sample, 78),
+    cpuCore("cpu1", sample, 41),
+    cpuCore("cpu2", sample, 63),
+    cpuCore("cpu3", sample, 22),
+  ];
+  return {
+    system: {
+      os: "linux",
+      osPrettyName: "Ubuntu 24.04.2 LTS",
+      kernel: "6.8.0-51-generic",
+      arch: "x86_64",
+      hostname: "vps-0cd97c22",
+      uptimeSeconds: 1_904_732,
+      uptimeText: null,
+    },
+    cpu: {
+      total: cpuCore("cpu", sample, 51),
+      cores,
+      loadAverage: [0.62, 0.74, 0.81],
+    },
+    memory: {
+      totalKb: 8_138_240,
+      freeKb: 612_400,
+      availableKb: 4_281_920,
+      buffersKb: 198_640,
+      cachedKb: 3_470_880,
+      swapTotalKb: 2_097_148,
+      swapFreeKb: 2_097_148,
+    },
+    disks: [
+      {
+        filesystem: "/dev/vda1",
+        mountPoint: "/",
+        totalKb: 75_057_664,
+        usedKb: 32_284_672,
+        availableKb: 42_772_992,
+        usedPercent: 43,
+      },
+      {
+        filesystem: "/dev/vdb1",
+        mountPoint: "/mnt/backups",
+        totalKb: 209_715_200,
+        usedKb: 96_468_992,
+        availableKb: 113_246_208,
+        usedPercent: 46,
+      },
+    ],
+    network: [
+      {
+        name: "eth0",
+        rxBytes: 84_211_998_720 + sample * 2_412_544,
+        txBytes: 31_884_562_432 + sample * 1_048_576,
+      },
+      {
+        name: "wg0",
+        rxBytes: 4_233_871_360 + sample * 131_072,
+        txBytes: 2_918_744_064 + sample * 98_304,
+      },
+    ],
+    topProcesses: {
+      byCpu: [
+        { pid: 1284, user: "postgres", cpuPercent: 24.6, memPercent: 11.2, command: "postgres: writer process" },
+        { pid: 998, user: "ubuntu", cpuPercent: 12.1, memPercent: 6.4, command: "node /srv/api/server.js" },
+        { pid: 2210, user: "root", cpuPercent: 6.8, memPercent: 2.1, command: "dockerd" },
+        { pid: 1477, user: "www-data", cpuPercent: 3.2, memPercent: 1.8, command: "nginx: worker process" },
+        { pid: 640, user: "root", cpuPercent: 1.4, memPercent: 0.9, command: "containerd" },
+      ],
+      byMemory: [
+        { pid: 1284, user: "postgres", cpuPercent: 24.6, memPercent: 11.2, command: "postgres: writer process" },
+        { pid: 998, user: "ubuntu", cpuPercent: 12.1, memPercent: 6.4, command: "node /srv/api/server.js" },
+        { pid: 1806, user: "redis", cpuPercent: 0.8, memPercent: 4.7, command: "redis-server *:6379" },
+        { pid: 2210, user: "root", cpuPercent: 6.8, memPercent: 2.1, command: "dockerd" },
+        { pid: 1477, user: "www-data", cpuPercent: 3.2, memPercent: 1.8, command: "nginx: worker process" },
+      ],
+    },
+    docker: [
+      { name: "api", state: "running", status: "Up 6 days", image: "ghcr.io/luma/api:1.8.2", health: "healthy" },
+      { name: "postgres", state: "running", status: "Up 6 days", image: "postgres:16-alpine", health: "healthy" },
+      { name: "redis", state: "running", status: "Up 6 days", image: "redis:7-alpine", health: null },
+      { name: "caddy", state: "running", status: "Up 2 hours", image: "caddy:2", health: "starting" },
+    ],
+    failedServices: [],
+    // Fixed: `new Date(...).toLocaleTimeString()` in the header would otherwise
+    // differ between capture runs. 2026-01-01 09:41:00 UTC.
+    sampledAtMs: 1_767_260_460_000,
+  };
+}
+
+/** Remote listing for the Files screen, shown for the primary host. */
+export const SFTP_INITIAL_PATH = "/home/ubuntu";
+
+function entry(
+  name: string,
+  kind: SftpKind,
+  size: number | null,
+  modifiedAt: number,
+  permissions: string,
+): SftpEntry {
+  return { name, path: `${SFTP_INITIAL_PATH}/${name}`, kind, size, modifiedAt, permissions };
+}
+
+export const SFTP_LISTING: SftpEntry[] = [
+  entry("deploy", "dir", null, 1_766_916_000, "rwxr-xr-x"),
+  entry("logs", "dir", null, 1_767_174_000, "rwxr-xr-x"),
+  entry("scripts", "dir", null, 1_766_483_000, "rwxr-xr-x"),
+  entry("backups", "dir", null, 1_767_225_600, "rwx------"),
+  entry("docker-compose.yml", "file", 3_412, 1_767_218_400, "rw-r--r--"),
+  entry("nginx.conf", "file", 8_976, 1_766_829_600, "rw-r--r--"),
+  entry(".env.production", "file", 1_204, 1_767_045_600, "rw-------"),
+  entry("api-1.8.2.tar.gz", "file", 48_312_704, 1_767_232_800, "rw-r--r--"),
+  entry("dump-2026-01-01.sql", "file", 214_958_080, 1_767_256_800, "rw-r--r--"),
+  entry("README.md", "file", 2_048, 1_765_792_800, "rw-r--r--"),
+];

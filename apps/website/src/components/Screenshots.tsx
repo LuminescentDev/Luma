@@ -52,27 +52,41 @@ const desktopSlides: Slide[] = [
   },
 ];
 
-// The mobile shell has no command palette, so it ships four views.
+/*
+ * Captured from the real app in the iOS Simulator, not from the browser
+ * harness the desktop shots use — see scripts/derive-website-mobile-screenshots.mjs.
+ * The view names must match the file names that script writes.
+ */
 const mobileSlides: Slide[] = [
   {
     view: 'terminal',
     label: 'Terminal',
-    alt: 'Luma on iPhone showing a single full-screen SSH session with a colour system summary and git status output, plus a touch key bar for Ctrl, Alt, Esc, and Tab above the keyboard.',
+    alt: 'Luma on iPhone showing a full-screen SSH session with a colour system summary and git status output, above a touch key bar for Esc, Tab, and arrow keys.',
+  },
+  {
+    view: 'server-dashboard',
+    label: 'Server stats',
+    alt: 'Luma on iPhone showing the agentless server dashboard for a host, with system details, CPU utilisation meters per core, load average, and memory usage read over SSH.',
   },
   {
     view: 'hosts',
     label: 'Hosts',
-    alt: 'Luma on iPhone showing the hosts tab with folders and saved connections in a scrollable list above the bottom tab navigation.',
+    alt: 'Luma on iPhone showing saved SSH connections grouped into folders in a scrollable list.',
   },
   {
-    view: 'snippets',
-    label: 'Snippets',
-    alt: 'Luma on iPhone showing the snippets tab, where each saved command can be inserted or run in the focused terminal with one tap.',
+    view: 'vaults',
+    label: 'Vaults',
+    alt: 'Luma on iPhone showing the vaults hub linking to hosts, keys, port forwarding, snippets, server stats, fleet health, and files.',
   },
   {
-    view: 'settings',
-    label: 'Settings',
-    alt: 'Luma on iPhone showing the settings tab with theme mode and colour theme pickers sized for touch.',
+    view: 'sftp',
+    label: 'Files',
+    alt: 'Luma on iPhone browsing a connected server over SFTP, listing folders and files with sizes and an upload action.',
+  },
+  {
+    view: 'agent-inbox',
+    label: 'Agent inbox',
+    alt: 'Luma on iPhone showing the agent inbox, where coding agents running in terminal sessions report that they need approval, are waiting for input, or have completed a turn.',
   },
 ];
 
@@ -163,9 +177,9 @@ export function Screenshots() {
             See Luma in action
           </h2>
           <p className='mt-4 text-base text-muted sm:text-lg'>
-            From local terminals to saved hosts, snippets, and the command
-            palette — the same clean interface on the desktop and in your
-            pocket.
+            Local terminals, saved hosts, snippets, and the command palette on
+            the desktop; full-screen sessions, server monitoring, files, and the
+            agent inbox in your pocket.
           </p>
         </div>
 

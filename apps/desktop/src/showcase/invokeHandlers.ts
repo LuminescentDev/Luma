@@ -9,10 +9,13 @@ import {
   PROFILES,
   RECENT_HOSTS,
   SHELLS,
+  SFTP_INITIAL_PATH,
+  SFTP_LISTING,
   SNIPPETS,
   SYNC_CONFIG,
   VAULTS,
   buildSettings,
+  serverStatsSnapshot,
 } from "./seed";
 import {
   DEBIAN_SESSION,
@@ -41,6 +44,8 @@ const AUTH_FINALIZE_MS = 750;
 const CONTENT_DELAY_MS = AUTH_FINALIZE_MS + 350;
 
 let backendSeq = 0;
+/** Advances per server_stats_fetch so consecutive snapshots differ. */
+let statsSample = 0;
 
 function driveSsh(
   channel: ByteChannel,
@@ -183,6 +188,25 @@ export function createInvokeHandler(
         return { sessionId: backendId, shellName: "bash" };
       }
 
+      /* The dashboard derives utilization from the delta between consecutive
+       * snapshots, so each fetch has to advance the counters — returning one
+       * frozen snapshot leaves every meter at zero and reading "waiting for
+       * next sample…". */
+      case "server_stats_fetch":
+        return serverStatsSnapshot(++statsSample);
+
+      case "sftp_connect":
+        return {
+          sftpSessionId: `sftp-${++backendSeq}`,
+          initialPath: SFTP_INITIAL_PATH,
+        };
+
+      case "sftp_sessions":
+        return [];
+
+      case "sftp_list":
+        return { path: (args.path as string) ?? SFTP_INITIAL_PATH, entries: SFTP_LISTING };
+
       case "pty_write":
       case "pty_resize":
       case "pty_kill":
@@ -191,6 +215,8 @@ export function createInvokeHandler(
       case "ssh_disconnect":
       case "serial_write":
       case "serial_kill":
+      case "server_stats_close":
+      case "sftp_disconnect":
         return null;
 
       default:
